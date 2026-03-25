@@ -6,10 +6,10 @@ import numpy as np
 
 class MicroScalpEngine:
     """
-    Micro-Scalping Signal Engine - v7.3.0
+    Micro-Scalping Signal Engine - v8.0.0
 
     High-frequency market microstructure scalping system.
-    Uses cutting-edge microstructure signals tuned for 1-minute bars on Kraken.
+    Uses cutting-edge microstructure signals tuned for 5-minute bars on Kraken.
     Adapts to both trending (Jan–Mar) and ranging/sideways (Apr–Oct) regimes.
 
     Score: 0.0 – 1.0 across five equal signals (0.20 each).
@@ -18,12 +18,13 @@ class MicroScalpEngine:
 
     Signals
     -------
-    1. Order Book Imbalance (OBI): bid/ask pressure (tightened threshold)
+    1. Order Book Imbalance (OBI): bid/ask pressure — LIVE ONLY (synthetic in backtest)
     2. Volume Ignition: 4× volume surge (tightened from 3×)
     3. MTF Trend Alignment: EMA5 > EMA20 (short-term trend aligned with medium)
     4a. ADX Trend: ADX > 18 with bullish DI bias (max 0.15)
     4b. Mean Reversion: RSI oversold + price near lower BB when ADX is low (max 0.15)
     5. VWAP Reclaim: price above rolling 20-bar VWAP (institutional reference level)
+    6. CVD Absorption: cumulative volume delta — LIVE ONLY (approximated from OHLCV in backtest)
     """
 
     # Tunable signal thresholds (easy to adjust for backtesting)
@@ -69,17 +70,19 @@ class MicroScalpEngine:
             # OBI = (bid_size - ask_size) / (bid_size + ask_size)
             # Strong buy pressure when OBI > 0.6 (bid wall dominates).
             # Tightened from 0.5 → 0.6 to reduce false signals.
+            # DISABLED in backtest — synthetic quote data is unreliable.
             # ----------------------------------------------------------
-            bid_size = crypto.get('bid_size', 0.0)
-            ask_size = crypto.get('ask_size', 0.0)
-            total_size = bid_size + ask_size
-            if total_size > 0:
-                obi = (bid_size - ask_size) / total_size
-                if obi > self.OBI_STRONG_THRESHOLD:
-                    components['obi'] = 0.20
-                elif obi > self.OBI_PARTIAL_THRESHOLD:
-                    # Partial credit for meaningful buy-side imbalance
-                    components['obi'] = 0.10
+            if self.algo.LiveMode:
+                bid_size = crypto.get('bid_size', 0.0)
+                ask_size = crypto.get('ask_size', 0.0)
+                total_size = bid_size + ask_size
+                if total_size > 0:
+                    obi = (bid_size - ask_size) / total_size
+                    if obi > self.OBI_STRONG_THRESHOLD:
+                        components['obi'] = 0.20
+                    elif obi > self.OBI_PARTIAL_THRESHOLD:
+                        # Partial credit for meaningful buy-side imbalance
+                        components['obi'] = 0.10
 
             # ----------------------------------------------------------
             # Signal 2: Volume Ignition
@@ -221,13 +224,15 @@ class MicroScalpEngine:
             # Signal 6: CVD Divergence (Absorption)
             # Price at or below VWAP -2SD lower band AND CVD trending up
             # over last 5 bars → limit buyers absorbing sellers at support.
+            # DISABLED in backtest — approximated from OHLCV, unreliable.
             # ----------------------------------------------------------
-            cvd = crypto.get('cvd')
-            if (vwap_sd2_lower > 0 and len(crypto['prices']) >= 1
-                    and cvd is not None and len(cvd) >= 5):
-                price = crypto['prices'][-1]
-                if price <= vwap_sd2_lower and cvd[-1] > cvd[-5]:
-                    components['cvd_absorption'] = 0.25
+            if self.algo.LiveMode:
+                cvd = crypto.get('cvd')
+                if (vwap_sd2_lower > 0 and len(crypto['prices']) >= 1
+                        and cvd is not None and len(cvd) >= 5):
+                    price = crypto['prices'][-1]
+                    if price <= vwap_sd2_lower and cvd[-1] > cvd[-5]:
+                        components['cvd_absorption'] = 0.25
 
             # ----------------------------------------------------------
             # Signal 7: Kalman Mean Reversion
@@ -249,9 +254,15 @@ class MicroScalpEngine:
 
         # Graduated microstructure gate: smoothly raises the score ceiling
         # based on real order-flow presence (OBI + vol_ignition strength).
-        # No microstructure → cap at 0.50; full microstructure → uncapped.
-        microstructure_strength = components.get('obi', 0) + components.get('vol_ignition', 0)
-        gate_cap = 0.50 + min(microstructure_strength / 0.20, 1.0) * 0.50
+        # In live: OBI + vol_ignition raise the cap from 0.50 to uncapped.
+        # In backtest: OBI is disabled, gate only on volume (less restrictive).
+        if self.algo.LiveMode:
+            microstructure_strength = components.get('obi', 0) + components.get('vol_ignition', 0)
+            gate_cap = 0.50 + min(microstructure_strength / 0.20, 1.0) * 0.50
+        else:
+            # In backtest, gate only on volume (OBI disabled)
+            vol_strength = components.get('vol_ignition', 0)
+            gate_cap = 0.55 + min(vol_strength / 0.20, 1.0) * 0.45
         score = min(score, gate_cap)
 
         return min(score, 1.0), components

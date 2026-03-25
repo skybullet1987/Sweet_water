@@ -76,9 +76,9 @@ class RealisticCryptoSlippage:
     Altcoins under $1 routinely have 0.3-0.5% effective slippage."""
 
     def __init__(self):
-        self.base_slippage_pct = 0.002    # 0.2% base (was 0.1% — too optimistic)
-        self.volume_impact_factor = 0.15   # was 0.10
-        self.max_slippage_pct = 0.03       # 3% cap (was 2%)
+        self.base_slippage_pct = 0.004    # 0.4% base (doubled for realistic altcoin fills)
+        self.volume_impact_factor = 0.25   # increased from 0.15
+        self.max_slippage_pct = 0.05       # 5% cap (increased from 3%)
 
     def get_slippage_approximation(self, asset, order):
         price = asset.Price
@@ -98,13 +98,13 @@ class RealisticCryptoSlippage:
 
         # Price tier penalties — low-price alts have wider spreads
         if price < 0.01:
-            slippage_pct *= 4.0    # was 3.0
+            slippage_pct *= 5.0    # was 4.0
         elif price < 0.10:
-            slippage_pct *= 2.5    # was 2.0
+            slippage_pct *= 3.5    # was 2.5
         elif price < 1.0:
-            slippage_pct *= 1.8    # was 1.5
+            slippage_pct *= 2.5    # was 1.8
         elif price < 10.0:
-            slippage_pct *= 1.2    # NEW — mid-price alts still have wider spreads
+            slippage_pct *= 1.8    # was 1.2
 
         slippage_pct = min(slippage_pct, self.max_slippage_pct)
 
@@ -467,15 +467,17 @@ def get_spread_pct(algo, symbol):
 def spread_ok(algo, symbol):
     sp = get_spread_pct(algo, symbol)
     if sp is None:
-        # Allow unknown spreads in both live and backtest — the spread cap
-        # check below will catch genuinely wide spreads once data arrives.
         if algo.LiveMode:
+            # Allow unknown spreads in live — data may arrive later
             now = algo.Time
             last_warn = algo._spread_warning_times.get(symbol.Value)
             if last_warn is None or (now - last_warn).total_seconds() >= 3600:
                 debug_limited(algo, f"SPREAD UNKNOWN: {symbol.Value} — allowing (no bid/ask yet)")
                 algo._spread_warning_times[symbol.Value] = now
-        return True
+            return True
+        else:
+            # BACKTEST: reject unknown spreads — don't assume zero spread
+            return False
     effective_spread_cap = algo.max_spread_pct
     if algo.LiveMode and (algo.volatility_regime == "high" or algo.market_regime == "sideways"):
         effective_spread_cap = min(effective_spread_cap, 0.025)
@@ -531,7 +533,7 @@ def sync_existing_positions(algo):
             continue
         if symbol not in algo.Securities:
             try:
-                algo.AddCrypto(ticker, Resolution.Minute, Market.Kraken)
+                algo.AddCrypto(ticker, Resolution.FiveMinute, Market.Kraken)
             except Exception as e:
                 algo.Debug(f"Error adding crypto {ticker}: {e}")
                 continue
@@ -544,9 +546,9 @@ def sync_existing_positions(algo):
         algo.Debug(f"SYNCED: {ticker} | Entry: ${holding.AveragePrice:.4f} | Now: ${current_price:.4f} | PnL: {pnl_pct:+.2%}")
         if current_price > holding.AveragePrice:
             algo.highest_prices[symbol] = current_price
-        if pnl_pct >= algo.base_take_profit:
+        if pnl_pct >= algo.quick_take_profit:
             positions_to_close.append((symbol, ticker, pnl_pct, "Sync TP"))
-        elif pnl_pct <= -algo.base_stop_loss:
+        elif pnl_pct <= -algo.tight_stop_loss:
             positions_to_close.append((symbol, ticker, pnl_pct, "Sync SL"))
     algo.Debug(f"Synced {synced_count} positions")
     algo.Debug(f"Cash: ${algo.Portfolio.Cash:.2f}")
@@ -770,10 +772,27 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 algo.Debug(f"Price unavailable for {symbol.Value}, using market order")
                 return algo.MarketOrder(symbol, quantity, tag=tag)
 
-        # BACKTEST REALISM: simulate ~25% of limit orders not filling
-        # (order sits in book, price moves away, times out)
-        if not algo.LiveMode and random.random() < 0.25:
-            return None
+        # BACKTEST REALISM: volatility-correlated non-fill simulation
+        # Real non-fills are adversely selected — higher volatility = more non-fills
+        # because price moves away faster. NOT random.
+        if not algo.LiveMode:
+            crypto = algo.crypto_data.get(symbol)
+            if crypto and len(crypto.get('volatility', [])) > 0:
+                recent_vol = float(crypto['volatility'][-1])
+                # Base non-fill rate 15%, scales up to 60% in high-vol environments.
+                # Scaling factor 8.0: a per-bar vol of ~0.005 (0.5% move) → 15%+4%=19%;
+                # a per-bar vol of ~0.056 (5.6% move) → capped at 60%.
+                non_fill_prob = min(0.15 + recent_vol * 8.0, 0.60)
+            else:
+                non_fill_prob = 0.30  # conservative default when vol data unavailable
+            if random.random() < non_fill_prob:
+                return None
+
+        # BACKTEST: use market orders to avoid perfect limit fill bias.
+        # In backtest, limit orders fill at stated price which inflates PnL.
+        # Market orders apply the slippage model for more realistic fills.
+        if not algo.LiveMode:
+            return algo.MarketOrder(symbol, quantity, tag=tag)
 
         # Place maker limit order
         limit_ticket = algo.LimitOrder(symbol, quantity, limit_price, tag=tag)
@@ -945,7 +964,7 @@ def resync_holdings_full(algo):
         for symbol in missing:
             try:
                 if symbol not in algo.Securities:
-                    algo.AddCrypto(symbol.Value, Resolution.Minute, Market.Kraken)
+                    algo.AddCrypto(symbol.Value, Resolution.FiveMinute, Market.Kraken)
                 holding = algo.Portfolio[symbol]
                 entry = holding.AveragePrice
                 algo.entry_prices[symbol] = entry

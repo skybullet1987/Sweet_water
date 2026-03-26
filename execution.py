@@ -70,19 +70,18 @@ MIN_NOTIONAL_FALLBACK = {
 KRAKEN_SELL_FEE_BUFFER = 0.006  # 0.6% (0.4% base fee + 0.2% safety margin)
 
 
-class _LocalCryptoSlippage:
-    """Volume-aware slippage model for crypto (internal use only).
+class RealisticCryptoSlippage:
+    """Volume-aware slippage model for crypto.
     Calibrated against empirical Kraken fill data.
     Altcoins under $1 routinely have 0.5-1.5% effective slippage.
-    NOTE: Does not inherit ISlippageModel — not used by the engine.
-    Use RealisticCryptoSlippage from realistic_slippage.py for SetSlippageModel()."""
+    Uses duck typing — no ISlippageModel inheritance (avoids PythonNet crash)."""
 
     def __init__(self):
-        self.base_slippage_pct = 0.003    # 0.3% base (increased from 0.2%)
-        self.volume_impact_factor = 0.20   # increased from 0.15 for more market impact
-        self.max_slippage_pct = 0.05       # 5% cap (increased from 3%)
+        self.base_slippage_pct = 0.003    # 0.3% base
+        self.volume_impact_factor = 0.20
+        self.max_slippage_pct = 0.05       # 5% cap
 
-    def get_slippage_approximation(self, asset, order):
+    def GetSlippageApproximation(self, asset, order):
         price = asset.Price
         if price <= 0:
             return 0

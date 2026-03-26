@@ -1,6 +1,6 @@
 from AlgorithmImports import *
 from execution import *
-from realistic_slippage import RealisticCryptoSlippage
+from events import on_order_event
 from scoring import MicroScalpEngine
 from collections import deque
 import numpy as np
@@ -30,7 +30,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
         self.SetEndDate(2026, 12, 1)
-        self.SetCash(5000)
+        self.SetCash(250)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
         self.entry_threshold = 0.50
@@ -74,12 +74,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.min_volume_usd         = 25000  # $25K min (was $10K)
 
         self.skip_hours_utc         = []
-        self.max_daily_trades       = 2000
+        self.max_daily_trades       = 200
         self.daily_trade_count      = 0
         self.last_trade_date        = None
         self.exit_cooldown_hours    = 1.0
         self.cancel_cooldown_minutes = 1
         self.max_symbol_trades_per_day = 3
+        self.min_hold_minutes       = 5
 
         self.expected_round_trip_fees = 0.0035
         self.fee_slippage_buffer      = 0.001
@@ -230,7 +231,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if self.LiveMode:
             cleanup_object_store(self)
             load_persisted_state(self)
-            self.Debug("=== LIVE TRADING (MICRO-SCALP) v8.0.0 ===")
+            self.Debug("=== LIVE TRADING (MICRO-SCALP) v8.1.0 ===")
             self.Debug(f"Capital: ${self.Portfolio.Cash:.2f} | Max pos: {self.max_positions} | Size: {self.position_size_pct:.0%}")
 
     def CustomSecurityInitializer(self, security):
@@ -1068,6 +1069,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._failed_exit_counts.pop(kvp.Key, None)
                 continue
 
+            # Orphan detection: invested but crypto_data missing — force liquidate
+            if self.crypto_data.get(kvp.Key) is None:
+                self.Debug(f"ORPHAN DETECTED: {kvp.Key.Value} has no crypto_data — force liquidating")
+                smart_liquidate(self, kvp.Key, "Orphan Position")
+                continue
+
             if self._failed_exit_counts.get(kvp.Key, 0) >= 3:
                 continue
             self._check_exit(kvp.Key, self.Securities[kvp.Key].Price, kvp.Value)
@@ -1109,6 +1116,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.entry_prices[symbol] = holding.AveragePrice
             self.highest_prices[symbol] = holding.AveragePrice
             self.entry_times[symbol] = self.Time
+        # Minimum hold time — prevent same-bar or near-instant exits
+        entry_time = self.entry_times.get(symbol)
+        if entry_time is not None:
+            minutes_held = (self.Time - entry_time).total_seconds() / 60.0
+            if minutes_held < self.min_hold_minutes:
+                return
         entry = self.entry_prices[symbol]
         highest = self.highest_prices.get(symbol, entry)
         if price > highest:
@@ -1233,168 +1246,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     self._choppy_regime_entries.pop(symbol, None)
 
     def OnOrderEvent(self, event):
-        try:
-            symbol = event.Symbol
-            self.Debug(f"ORDER: {symbol.Value} {event.Status} {event.Direction} qty={event.FillQuantity or event.Quantity} price={event.FillPrice} id={event.OrderId}")
-            if event.Status == OrderStatus.Submitted:
-                if symbol not in self._pending_orders:
-                    self._pending_orders[symbol] = 0
-                intended_qty = abs(event.Quantity) if event.Quantity != 0 else abs(event.FillQuantity)
-                self._pending_orders[symbol] += intended_qty
-                if symbol not in self._submitted_orders:
-                    has_position = symbol in self.Portfolio and self.Portfolio[symbol].Invested
-                    if event.Direction == OrderDirection.Sell and has_position:
-                        inferred_intent = 'exit'
-                    elif event.Direction == OrderDirection.Buy and not has_position:
-                        inferred_intent = 'entry'
-                    else:
-                        inferred_intent = 'entry' if event.Direction == OrderDirection.Buy else 'exit'
-                    
-                    self._submitted_orders[symbol] = {
-                        'order_id': event.OrderId,
-                        'time': self.Time,
-                        'quantity': event.Quantity,
-                        'intent': inferred_intent
-                    }
-                else:
-                    self._submitted_orders[symbol]['order_id'] = event.OrderId
-            elif event.Status == OrderStatus.PartiallyFilled:
-                if symbol in self._pending_orders:
-                    self._pending_orders[symbol] -= abs(event.FillQuantity)
-                    if self._pending_orders[symbol] <= 0:
-                        self._pending_orders.pop(symbol, None)
-                
-                # FIX 1: Minimum fill threshold (20% of intended quantity)
-                intended_qty = abs(event.Quantity)
-                filled_qty = abs(event.FillQuantity)
-                fill_pct = filled_qty / intended_qty if intended_qty > 0 else 0
-                
-                if fill_pct < 0.20:
-                    self.Debug(f"⚠️ INSUFFICIENT FILL: {symbol.Value} | Filled {fill_pct:.1%} | Canceling")
-                    try:
-                        self.Transactions.CancelOrder(event.OrderId)
-                    except Exception as e:
-                        self.Debug(f"Error canceling: {e}")
-                
-                # FIX 2: Track SELL partial fills
-                if event.Direction == OrderDirection.Buy:
-                    if symbol not in self.entry_prices:
-                        self.entry_prices[symbol] = event.FillPrice
-                        self.highest_prices[symbol] = event.FillPrice
-                        self.entry_times[symbol] = self.Time
-                elif event.Direction == OrderDirection.Sell and fill_pct < 1.0:
-                    if not hasattr(self, '_partial_sell_symbols'):
-                        self._partial_sell_symbols = set()
-                    self._partial_sell_symbols.add(symbol)
-                    self.Debug(f"PARTIAL EXIT: {symbol.Value} | {fill_pct:.1%} exited")
-                
-                slip_log(self, symbol, event.Direction, event.FillPrice)
-            elif event.Status == OrderStatus.Filled:
-                self._pending_orders.pop(symbol, None)
-                self._submitted_orders.pop(symbol, None)
-                self._order_retries.pop(event.OrderId, None)
-                if event.Direction == OrderDirection.Buy:
-                    self.entry_prices[symbol] = event.FillPrice
-                    self.highest_prices[symbol] = event.FillPrice
-                    self.entry_times[symbol] = self.Time
-                    self.daily_trade_count += 1
+        on_order_event(self, event)
 
-                    crypto = self.crypto_data.get(symbol)
-                    if crypto and len(crypto['volume']) >= 1:
-                        self.entry_volumes[symbol] = crypto['volume'][-1]
-                    self.rsi_peaked_overbought.pop(symbol, None)
-                else:
-
-                    if symbol in self._partial_sell_symbols:
-                        self._partial_sell_symbols.discard(symbol)
-                    else:
-                        order = self.Transactions.GetOrderById(event.OrderId)
-                        exit_tag = order.Tag if order and order.Tag else "Unknown"
-                        entry = self.entry_prices.get(symbol, None)
-                        if entry is None:
-                            entry = event.FillPrice
-                            self.Debug(f"⚠️ WARNING: Missing entry price for {symbol.Value} sell, using fill price")
-                        pnl = (event.FillPrice - entry) / entry if entry > 0 else 0
-                        self._rolling_wins.append(1 if pnl > 0 else 0)
-                        self._recent_trade_outcomes.append(1 if pnl > 0 else 0)
-                        if pnl > 0:
-                            self._rolling_win_sizes.append(pnl)
-                            self.winning_trades += 1
-                            self.consecutive_losses = 0
-                        else:
-                            self._rolling_loss_sizes.append(abs(pnl))
-                            self.losing_trades += 1
-                            self.consecutive_losses += 1
-                        self.total_pnl += pnl
-                        if not hasattr(self, 'pnl_by_tag'):
-                            self.pnl_by_tag = {}
-                        if exit_tag not in self.pnl_by_tag:
-                            self.pnl_by_tag[exit_tag] = []
-                        self.pnl_by_tag[exit_tag].append(pnl)
-                        if len(self.pnl_by_tag[exit_tag]) > 200:
-                            self.pnl_by_tag[exit_tag] = self.pnl_by_tag[exit_tag][-200:]
-                        self.trade_log.append({
-                            'time': self.Time,
-                            'symbol': symbol.Value,
-                            'pnl_pct': pnl,
-                            'exit_reason': exit_tag,
-                        })
-
-                        if len(self._recent_trade_outcomes) >= 12:
-                            recent_wr = sum(self._recent_trade_outcomes) / len(self._recent_trade_outcomes)
-                            if recent_wr < 0.25:
-                                self._cash_mode_until = self.Time + timedelta(hours=2)
-                                self.Debug(f"⚠️ CASH MODE: WR={recent_wr:.0%} over {len(self._recent_trade_outcomes)} trades. Pausing 2h.")
-                        cleanup_position(self, symbol)
-                        self._failed_exit_attempts.pop(symbol, None)
-                        self._failed_exit_counts.pop(symbol, None)
-                slip_log(self, symbol, event.Direction, event.FillPrice)
-            elif event.Status == OrderStatus.Canceled:
-                self._pending_orders.pop(symbol, None)
-                self._submitted_orders.pop(symbol, None)
-                self._order_retries.pop(event.OrderId, None)
-                if event.Direction == OrderDirection.Sell and symbol not in self.entry_prices:
-                    if is_invested_not_dust(self, symbol):
-                        holding = self.Portfolio[symbol]
-                        self.entry_prices[symbol] = holding.AveragePrice
-                        self.highest_prices[symbol] = holding.AveragePrice
-                        self.entry_times[symbol] = self.Time
-                        self.Debug(f"RE-TRACKED after cancel: {symbol.Value}")
-            elif event.Status == OrderStatus.Invalid:
-                self._pending_orders.pop(symbol, None)
-                self._submitted_orders.pop(symbol, None)
-                self._order_retries.pop(event.OrderId, None)
-                if event.Direction == OrderDirection.Sell:
-                    price = self.Securities[symbol].Price if symbol in self.Securities else 0
-                    min_notional = get_min_notional_usd(self, symbol)
-
-                    if price > 0 and symbol in self.Portfolio and abs(self.Portfolio[symbol].Quantity) * price < min_notional:
-                        self.Debug(f"DUST CLEANUP on invalid sell: {symbol.Value} — releasing tracking")
-                        cleanup_position(self, symbol)
-                        self._failed_exit_counts.pop(symbol, None)
-                    else:
-
-                        fail_count = self._failed_exit_counts.get(symbol, 0) + 1
-                        self._failed_exit_counts[symbol] = fail_count
-                        self.Debug(f"Invalid sell #{fail_count}: {symbol.Value}")
-                        if fail_count >= 3:
-
-                            self.Debug(f"FORCE CLEANUP: {symbol.Value} after {fail_count} failed exits — releasing tracking")
-                            cleanup_position(self, symbol)
-                            self._failed_exit_counts.pop(symbol, None)
-                        elif symbol not in self.entry_prices:
-                            if is_invested_not_dust(self, symbol):
-                                holding = self.Portfolio[symbol]
-                                self.entry_prices[symbol] = holding.AveragePrice
-                                self.highest_prices[symbol] = holding.AveragePrice
-                                self.entry_times[symbol] = self.Time
-                                self.Debug(f"RE-TRACKED after invalid: {symbol.Value}")
-                self._session_blacklist.add(symbol.Value)
-        except Exception as e:
-            self.Debug(f"OnOrderEvent error: {e}")
-        if self.LiveMode:
-            persist_state(self)
-        
     def OnBrokerageMessage(self, message):
         try:
             txt = message.Message.lower()

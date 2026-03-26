@@ -31,7 +31,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
         self.SetEndDate(2026, 12, 1)
-        self.SetCash(250)
+        self.SetCash(5000)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
         self.entry_threshold = 0.50
@@ -48,17 +48,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.extended_time_stop_pnl_max = self._get_param("extended_time_stop_pnl_max", 0.015)
         self.stale_position_hours       = self._get_param("stale_position_hours",       6.0)
 
-        self.trailing_activation = self.trail_activation        
-        self.trailing_stop_pct   = self.trail_stop_pct
-        self.base_stop_loss      = self.tight_stop_loss
-        self.base_take_profit    = self.quick_take_profit
         self.atr_trail_mult      = 2.0
 
         self.position_size_pct  = 0.80
-        self.base_max_positions = 6
         self.max_positions      = 6
         self.min_notional       = 5.5
-        self.max_position_usd   = self._get_param("max_position_usd", 500.0)  # $500 cap prevents over-concentration at scale
+        self.max_position_usd   = self._get_param("max_position_usd", 1500.0)  # $1500 cap scales with $5k capital
         self.min_price_usd      = 0.001
         self.cash_reserve_pct   = 0.00
         self.min_notional_fee_buffer = 1.5
@@ -183,9 +178,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._daily_loss_limit = -0.05  # Stop trading if down 5% daily
         self._drawdown_limit = -0.20  # Stop for day if down 20%
         self._min_trade_capital = 300  # Minimum $300 per trade
-        self._max_concurrent_positions = 4  # Max 4 concurrent positions
+        self._max_concurrent_positions = 6  # Max 6 concurrent positions (matches max_positions)
         self._daily_start_equity = None
-        self.trade_log      = []
+        self.trade_log      = deque(maxlen=500)
         self.log_budget     = 0
         self.last_log_time  = None
 
@@ -1153,9 +1148,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 if crypto:
                     crypto['trail_stop'] = trail_level
                 if crypto and crypto['trail_stop'] is not None:
+                    # Cash account (Kraken) = long-only; only check long-side trail
                     if holding.Quantity > 0 and price <= crypto['trail_stop']:
-                        tag = "ATR Trail"
-                    elif holding.Quantity < 0 and price >= crypto['trail_stop']:
                         tag = "ATR Trail"
 
             if not tag and hours >= self.time_stop_hours and pnl < self.time_stop_pnl_min:
@@ -1299,6 +1293,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                         if exit_tag not in self.pnl_by_tag:
                             self.pnl_by_tag[exit_tag] = []
                         self.pnl_by_tag[exit_tag].append(pnl)
+                        if len(self.pnl_by_tag[exit_tag]) > 200:
+                            self.pnl_by_tag[exit_tag] = self.pnl_by_tag[exit_tag][-200:]
                         self.trade_log.append({
                             'time': self.Time,
                             'symbol': symbol.Value,

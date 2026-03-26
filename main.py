@@ -1,6 +1,7 @@
 # region imports
 from AlgorithmImports import *
 from execution import *
+from realistic_slippage import RealisticCryptoSlippage
 from scoring import MicroScalpEngine
 from collections import deque
 import numpy as np
@@ -183,7 +184,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._drawdown_limit = -0.20  # Stop for day if down 20%
         self._min_trade_capital = 300  # Minimum $300 per trade
         self._max_concurrent_positions = 4  # Max 4 concurrent positions
-        self._daily_start_equity = None.0
+        self._daily_start_equity = None
         self.trade_log      = []
         self.log_budget     = 0
         self.last_log_time  = None
@@ -386,7 +387,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             return
         
         # Check if in cash mode
-        if self._cash_mode_until > self.Time:
+        if self._cash_mode_until is not None and self._cash_mode_until > self.Time:
             return
         # === BTC reference data ===
         if self.btc_symbol and data.Bars.ContainsKey(self.btc_symbol):

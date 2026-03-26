@@ -480,15 +480,17 @@ def get_spread_pct(algo, symbol):
 def spread_ok(algo, symbol):
     sp = get_spread_pct(algo, symbol)
     if sp is None:
-        # Allow unknown spreads in both live and backtest — the spread cap
-        # check below will catch genuinely wide spreads once data arrives.
         if algo.LiveMode:
+            # Allow unknown spreads in live — spread cap check will catch them once data arrives.
             now = algo.Time
             last_warn = algo._spread_warning_times.get(symbol.Value)
             if last_warn is None or (now - last_warn).total_seconds() >= 3600:
                 debug_limited(algo, f"SPREAD UNKNOWN: {symbol.Value} — allowing (no bid/ask yet)")
                 algo._spread_warning_times[symbol.Value] = now
-        return True
+            return True
+        else:
+            # In backtest, block trades when spread is unknown to avoid zero-spread fills.
+            return False
     effective_spread_cap = algo.max_spread_pct
     if algo.LiveMode and (algo.volatility_regime == "high" or algo.market_regime == "sideways"):
         effective_spread_cap = min(effective_spread_cap, 0.025)
@@ -544,7 +546,7 @@ def sync_existing_positions(algo):
             continue
         if symbol not in algo.Securities:
             try:
-                algo.AddCrypto(ticker, Resolution.Minute, Market.Kraken)
+                algo.AddCrypto(ticker, Resolution.FiveMinute, Market.Kraken)
             except Exception as e:
                 algo.Debug(f"Error adding crypto {ticker}: {e}")
                 continue
@@ -557,9 +559,9 @@ def sync_existing_positions(algo):
         algo.Debug(f"SYNCED: {ticker} | Entry: ${holding.AveragePrice:.4f} | Now: ${current_price:.4f} | PnL: {pnl_pct:+.2%}")
         if current_price > holding.AveragePrice:
             algo.highest_prices[symbol] = current_price
-        if pnl_pct >= algo.base_take_profit:
+        if pnl_pct >= algo.quick_take_profit:
             positions_to_close.append((symbol, ticker, pnl_pct, "Sync TP"))
-        elif pnl_pct <= -algo.base_stop_loss:
+        elif pnl_pct <= -algo.tight_stop_loss:
             positions_to_close.append((symbol, ticker, pnl_pct, "Sync SL"))
     algo.Debug(f"Synced {synced_count} positions")
     algo.Debug(f"Cash: ${algo.Portfolio.Cash:.2f}")
@@ -763,14 +765,31 @@ def get_slippage_penalty(algo, symbol):
 
 def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry"):
     """
-    Place entry orders. In backtest: use market orders for realism.
+    Place entry orders. In backtest: use market orders for realism with
+    volatility-correlated non-fill simulation.
     In live: use limit orders with timeout to capture maker fees.
     Returns the ticket from the order placement.
     """
     try:
-        # BACKTEST: Always use market orders for realistic execution
+        # BACKTEST REALISM: volatility-correlated non-fill simulation
+        # Real non-fills are adversely selected — higher volatility = more non-fills
+        # because price moves away faster. NOT random.
         if not algo.LiveMode:
-            return algo.MarketOrder(symbol, quantity, tag=tag)
+            crypto = algo.crypto_data.get(symbol)
+            if crypto and len(crypto.get('volatility', [])) > 0:
+                recent_vol = float(crypto['volatility'][-1])
+                # Base non-fill rate 15%, scales up to 60% in high-vol environments
+                non_fill_prob = min(0.15 + recent_vol * 8.0, 0.60)
+            else:
+                recent_vol = None
+                non_fill_prob = 0.30  # conservative default
+            if random.random() < non_fill_prob:
+                vol_str = f"{recent_vol:.4f}" if recent_vol is not None else "unknown"
+                algo.Debug(f"BACKTEST NON-FILL: {symbol.Value} | vol={vol_str} | prob={non_fill_prob:.0%}")
+                return None
+            # In backtest, use market orders to force slippage model application
+            ticket = algo.MarketOrder(symbol, quantity, tag=tag)
+            return ticket
         
         # LIVE: Use limit orders to capture maker fees
         sec = algo.Securities[symbol]
@@ -957,7 +976,7 @@ def resync_holdings_full(algo):
         for symbol in missing:
             try:
                 if symbol not in algo.Securities:
-                    algo.AddCrypto(symbol.Value, Resolution.Minute, Market.Kraken)
+                    algo.AddCrypto(symbol.Value, Resolution.FiveMinute, Market.Kraken)
                 holding = algo.Portfolio[symbol]
                 entry = holding.AveragePrice
                 algo.entry_prices[symbol] = entry

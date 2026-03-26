@@ -73,12 +73,12 @@ KRAKEN_SELL_FEE_BUFFER = 0.006  # 0.6% (0.4% base fee + 0.2% safety margin)
 class RealisticCryptoSlippage:
     """Volume-aware slippage model for crypto.
     Calibrated against empirical Kraken fill data.
-    Altcoins under $1 routinely have 0.3-0.5% effective slippage."""
+    Altcoins under $1 routinely have 0.5-1.5% effective slippage."""
 
     def __init__(self):
-        self.base_slippage_pct = 0.002    # 0.2% base (was 0.1% — too optimistic)
-        self.volume_impact_factor = 0.15   # was 0.10
-        self.max_slippage_pct = 0.03       # 3% cap (was 2%)
+        self.base_slippage_pct = 0.003    # 0.3% base (increased from 0.2%)
+        self.volume_impact_factor = 0.20   # increased from 0.15 for more market impact
+        self.max_slippage_pct = 0.05       # 5% cap (increased from 3%)
 
     def get_slippage_approximation(self, asset, order):
         price = asset.Price
@@ -86,6 +86,15 @@ class RealisticCryptoSlippage:
             return 0
 
         slippage_pct = self.base_slippage_pct
+
+        # Add half-spread cost (you cross the spread on market orders)
+        bid = asset.BidPrice
+        ask = asset.AskPrice
+        if bid > 0 and ask > 0 and ask >= bid:
+            mid = 0.5 * (bid + ask)
+            if mid > 0:
+                spread_cost = (ask - bid) / (2 * mid)  # half-spread
+                slippage_pct += spread_cost
 
         volume = asset.Volume
         if volume > 0:
@@ -98,13 +107,15 @@ class RealisticCryptoSlippage:
 
         # Price tier penalties — low-price alts have wider spreads
         if price < 0.01:
-            slippage_pct *= 4.0    # was 3.0
+            slippage_pct *= 5.0    # micro-caps: 1.5%+ slippage typical
         elif price < 0.10:
-            slippage_pct *= 2.5    # was 2.0
+            slippage_pct *= 3.5    # low-price: 1.0%+ slippage
         elif price < 1.0:
-            slippage_pct *= 1.8    # was 1.5
+            slippage_pct *= 2.5    # sub-$1: 0.75%+ slippage
         elif price < 10.0:
-            slippage_pct *= 1.2    # NEW — mid-price alts still have wider spreads
+            slippage_pct *= 1.5    # mid-caps: 0.45%+ slippage
+        elif price < 100.0:
+            slippage_pct *= 1.2    # larger caps still have some spread
 
         slippage_pct = min(slippage_pct, self.max_slippage_pct)
 
@@ -750,11 +761,16 @@ def get_slippage_penalty(algo, symbol):
 
 def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry"):
     """
-    Place a limit order at mid-price with fallback to market order after timeout.
-    Uses LimitOrder in both live and backtest mode to capture Maker fees (0.25%).
+    Place entry orders. In backtest: use market orders for realism.
+    In live: use limit orders with timeout to capture maker fees.
     Returns the ticket from the order placement.
     """
     try:
+        # BACKTEST: Always use market orders for realistic execution
+        if not algo.LiveMode:
+            return algo.MarketOrder(symbol, quantity, tag=tag)
+        
+        # LIVE: Use limit orders to capture maker fees
         sec = algo.Securities[symbol]
         bid = sec.BidPrice
         ask = sec.AskPrice
@@ -770,11 +786,6 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 algo.Debug(f"Price unavailable for {symbol.Value}, using market order")
                 return algo.MarketOrder(symbol, quantity, tag=tag)
 
-        # BACKTEST REALISM: simulate ~25% of limit orders not filling
-        # (order sits in book, price moves away, times out)
-        if not algo.LiveMode and random.random() < 0.25:
-            return None
-
         # Place maker limit order
         limit_ticket = algo.LimitOrder(symbol, quantity, limit_price, tag=tag)
 
@@ -789,7 +800,6 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 'intent': 'entry'
             }
 
-        if algo.LiveMode:
             algo.Debug(f"MAKER LIMIT: {symbol.Value} | qty={quantity} | bid=${bid:.4f} | limit=${limit_price:.4f} | timeout={timeout_seconds}s")
         return limit_ticket
 

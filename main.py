@@ -1,5 +1,6 @@
 from AlgorithmImports import *
 from execution import *
+from realistic_slippage import RealisticCryptoSlippage
 from events import on_order_event
 from scoring import MicroScalpEngine
 from collections import deque
@@ -47,7 +48,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.extended_time_stop_pnl_max = self._get_param("extended_time_stop_pnl_max", 0.015)
         self.stale_position_hours       = self._get_param("stale_position_hours",       12.0)
 
-        self.atr_trail_mult      = 2.0
+        self.atr_trail_mult      = 3.0
 
         self.position_size_pct  = 0.80
         self.max_positions      = 6
@@ -80,7 +81,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.exit_cooldown_hours    = 1.0
         self.cancel_cooldown_minutes = 1
         self.max_symbol_trades_per_day = 3
-        self.min_hold_minutes       = 5
+        self.min_hold_minutes       = 15
 
         self.expected_round_trip_fees = 0.0035
         self.fee_slippage_buffer      = 0.001

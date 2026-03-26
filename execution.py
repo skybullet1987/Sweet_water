@@ -546,7 +546,7 @@ def sync_existing_positions(algo):
             continue
         if symbol not in algo.Securities:
             try:
-                algo.AddCrypto(ticker, Resolution.FiveMinute, Market.Kraken)
+                algo.AddCrypto(ticker, Resolution.Minute, Market.Kraken)
             except Exception as e:
                 algo.Debug(f"Error adding crypto {ticker}: {e}")
                 continue
@@ -976,7 +976,7 @@ def resync_holdings_full(algo):
         for symbol in missing:
             try:
                 if symbol not in algo.Securities:
-                    algo.AddCrypto(symbol.Value, Resolution.FiveMinute, Market.Kraken)
+                    algo.AddCrypto(symbol.Value, Resolution.Minute, Market.Kraken)
                 holding = algo.Portfolio[symbol]
                 entry = holding.AveragePrice
                 algo.entry_prices[symbol] = entry

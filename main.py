@@ -29,12 +29,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
+        self.SetEndDate(2026, 12, 1)
         self.SetCash(250)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
         self.entry_threshold = 0.50
         self.high_conviction_threshold = 0.60
-
         self.quick_take_profit = self._get_param("quick_take_profit", 0.150)
         self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.035)
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
@@ -72,11 +72,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.lookback           = 48
         self.sqrt_annualization = np.sqrt(60 * 24 * 365)
 
-        self.max_spread_pct         = 0.008
+        self.max_spread_pct         = 0.005  # Tighter: 0.5% max spread (was 0.8%)
         self.spread_median_window   = 12
-        self.spread_widen_mult      = 2.5
-        self.min_dollar_volume_usd  = 20000
-        self.min_volume_usd         = 10000
+        self.spread_widen_mult      = 2.0    # Tighter: 2x median (was 2.5x)
+        self.min_dollar_volume_usd  = 50000  # $50K min (was $20K)
+        self.min_volume_usd         = 25000  # $25K min (was $10K)
 
         self.skip_hours_utc         = []
         self.max_daily_trades       = 24000
@@ -176,12 +176,19 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.winning_trades = 0
         self.losing_trades  = 0
-        self.total_pnl      = 0.0
+        self.total_pnl = 0
+        
+        # Paper trading safety limits for $5k capital
+        self._daily_loss_limit = -0.05  # Stop trading if down 5% daily
+        self._drawdown_limit = -0.20  # Stop for day if down 20%
+        self._min_trade_capital = 300  # Minimum $300 per trade
+        self._max_concurrent_positions = 4  # Max 4 concurrent positions
+        self._daily_start_equity = None.0
         self.trade_log      = []
         self.log_budget     = 0
         self.last_log_time  = None
 
-        self.max_universe_size = 75
+        self.max_universe_size = 30  # Focus on top 30 liquid assets (was 75)
 
         self.kraken_status = "unknown"
         self._last_skip_reason = None
@@ -367,6 +374,20 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 del self.crypto_data[symbol]
 
     def OnData(self, data):
+        # Initialize daily equity tracker
+        if self._daily_start_equity is None:
+            self._daily_start_equity = self.Portfolio.TotalPortfolioValue
+        
+        # Check daily loss limit
+        current_equity = self.Portfolio.TotalPortfolioValue
+        daily_loss_pct = (current_equity - self._daily_start_equity) / self._daily_start_equity
+        if daily_loss_pct < self._daily_loss_limit:
+            self.Debug(f"⚠️ DAILY LOSS LIMIT: {daily_loss_pct:.2%} | Pausing trades")
+            return
+        
+        # Check if in cash mode
+        if self._cash_mode_until > self.Time:
+            return
         # === BTC reference data ===
         if self.btc_symbol and data.Bars.ContainsKey(self.btc_symbol):
             btc_bar = data.Bars[self.btc_symbol]
@@ -1209,11 +1230,31 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     self._pending_orders[symbol] -= abs(event.FillQuantity)
                     if self._pending_orders[symbol] <= 0:
                         self._pending_orders.pop(symbol, None)
+                
+                # FIX 1: Minimum fill threshold (20% of intended quantity)
+                intended_qty = abs(event.Quantity)
+                filled_qty = abs(event.FillQuantity)
+                fill_pct = filled_qty / intended_qty if intended_qty > 0 else 0
+                
+                if fill_pct < 0.20:
+                    self.Debug(f"⚠️ INSUFFICIENT FILL: {symbol.Value} | Filled {fill_pct:.1%} | Canceling")
+                    try:
+                        self.Transactions.CancelOrder(event.OrderId)
+                    except Exception as e:
+                        self.Debug(f"Error canceling: {e}")
+                
+                # FIX 2: Track SELL partial fills
                 if event.Direction == OrderDirection.Buy:
                     if symbol not in self.entry_prices:
                         self.entry_prices[symbol] = event.FillPrice
                         self.highest_prices[symbol] = event.FillPrice
                         self.entry_times[symbol] = self.Time
+                elif event.Direction == OrderDirection.Sell and fill_pct < 1.0:
+                    if not hasattr(self, '_partial_sell_symbols'):
+                        self._partial_sell_symbols = set()
+                    self._partial_sell_symbols.add(symbol)
+                    self.Debug(f"PARTIAL EXIT: {symbol.Value} | {fill_pct:.1%} exited")
+                
                 slip_log(self, symbol, event.Direction, event.FillPrice)
             elif event.Status == OrderStatus.Filled:
                 self._pending_orders.pop(symbol, None)

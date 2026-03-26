@@ -17,16 +17,9 @@ class RealisticCryptoSlippage(ISlippageModel):
     - Wide spreads: 0.50%+ total
     """
     
-    def __init__(self, base_slippage_pct=0.0010, max_slippage_pct=0.0050):
-        """
-        Args:
-            base_slippage_pct: float (default 0.10%)
-                Minimum slippage even in perfect conditions
-            max_slippage_pct: float (default 0.50%)
-                Cap on maximum slippage per order
-        """
-        self.base_slippage_pct = base_slippage_pct  # 0.10%
-        self.max_slippage_pct = max_slippage_pct    # 0.50%
+    def __init__(self):
+        self.base_slippage_pct = 0.0010  # 0.10%
+        self.max_slippage_pct = 0.0050   # 0.50%
     
     def GetSlippageApproximation(self, asset, order):
         """
@@ -77,14 +70,9 @@ class VolatilityAdjustedSlippage(ISlippageModel):
     Useful for crypto which has regime changes.
     """
     
-    def __init__(self, algorithm, lookback_bars=20):
-        """
-        Args:
-            algorithm: QCAlgorithm instance (for accessing indicator data)
-            lookback_bars: int, bars for volatility calculation
-        """
-        self.algo = algorithm
-        self.lookback_bars = lookback_bars
+    def __init__(self):
+        self.algo = None
+        self.lookback_bars = 20
     
     def GetSlippageApproximation(self, asset, order):
         """

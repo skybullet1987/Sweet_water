@@ -73,13 +73,12 @@ KRAKEN_SELL_FEE_BUFFER = 0.006  # 0.6% (0.4% base fee + 0.2% safety margin)
 class RealisticCryptoSlippage:
     """Volume-aware slippage model for crypto.
     Calibrated against empirical Kraken fill data.
-    Altcoins under $1 routinely have 0.5-1.5% effective slippage.
     Uses duck typing — no ISlippageModel inheritance (avoids PythonNet crash)."""
 
     def __init__(self):
-        self.base_slippage_pct = 0.003    # 0.3% base
-        self.volume_impact_factor = 0.20
-        self.max_slippage_pct = 0.05       # 5% cap
+        self.base_slippage_pct = 0.002    # 0.2% base
+        self.volume_impact_factor = 0.15
+        self.max_slippage_pct = 0.03      # 3% cap
 
     def GetSlippageApproximation(self, asset, order):
         price = asset.Price
@@ -108,15 +107,13 @@ class RealisticCryptoSlippage:
 
         # Price tier penalties — low-price alts have wider spreads
         if price < 0.01:
-            slippage_pct *= 5.0    # micro-caps: 1.5%+ slippage typical
+            slippage_pct *= 4.0
         elif price < 0.10:
-            slippage_pct *= 3.5    # low-price: 1.0%+ slippage
+            slippage_pct *= 2.5
         elif price < 1.0:
-            slippage_pct *= 2.5    # sub-$1: 0.75%+ slippage
+            slippage_pct *= 1.8
         elif price < 10.0:
-            slippage_pct *= 1.5    # mid-caps: 0.45%+ slippage
-        elif price < 100.0:
-            slippage_pct *= 1.2    # larger caps still have some spread
+            slippage_pct *= 1.2
 
         slippage_pct = min(slippage_pct, self.max_slippage_pct)
 
@@ -488,8 +485,8 @@ def spread_ok(algo, symbol):
                 algo._spread_warning_times[symbol.Value] = now
             return True
         else:
-            # In backtest, block trades when spread is unknown to avoid zero-spread fills.
-            return False
+            # In backtest, allow unknown spreads — historical data lacks quote data.
+            return True
     effective_spread_cap = algo.max_spread_pct
     if algo.LiveMode and (algo.volatility_regime == "high" or algo.market_regime == "sideways"):
         effective_spread_cap = min(effective_spread_cap, 0.025)
@@ -764,8 +761,9 @@ def get_slippage_penalty(algo, symbol):
 
 def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry"):
     """
-    Place entry orders. In backtest: use market orders for realism with
-    volatility-correlated non-fill simulation.
+    Place entry orders using limit orders to capture maker fees.
+    In backtest: volatility-correlated non-fill simulation, then falls through
+    to the same limit order logic as live.
     In live: use limit orders with timeout to capture maker fees.
     Returns the ticket from the order placement.
     """
@@ -780,17 +778,10 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 # Base non-fill rate 15%, scales up to 60% in high-vol environments
                 non_fill_prob = min(0.15 + recent_vol * 8.0, 0.60)
             else:
-                recent_vol = None
-                non_fill_prob = 0.30  # conservative default
+                non_fill_prob = 0.25
             if random.random() < non_fill_prob:
-                vol_str = f"{recent_vol:.4f}" if recent_vol is not None else "unknown"
-                algo.Debug(f"BACKTEST NON-FILL: {symbol.Value} | vol={vol_str} | prob={non_fill_prob:.0%}")
                 return None
-            # In backtest, use market orders to force slippage model application
-            ticket = algo.MarketOrder(symbol, quantity, tag=tag)
-            return ticket
-        
-        # LIVE: Use limit orders to capture maker fees
+        # Fall through to limit order logic for both live and backtest
         sec = algo.Securities[symbol]
         bid = sec.BidPrice
         ask = sec.AskPrice

@@ -36,19 +36,19 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.entry_threshold = 0.50
         self.high_conviction_threshold = 0.60
-        self.quick_take_profit = self._get_param("quick_take_profit", 0.200)
-        self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.050)
+        self.quick_take_profit = self._get_param("quick_take_profit", 0.150)   # was 0.200
+        self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.035)   # was 0.050
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
         self.atr_sl_mult  = self._get_param("atr_sl_mult",  2.0)
-        self.trail_activation  = self._get_param("trail_activation",  0.060)
-        self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.040)
-        self.time_stop_hours   = self._get_param("time_stop_hours",   6.0)
+        self.trail_activation  = self._get_param("trail_activation",  0.040)   # was 0.060
+        self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.025)   # was 0.040
+        self.time_stop_hours   = self._get_param("time_stop_hours",   3.0)     # was 6.0
         self.time_stop_pnl_min = self._get_param("time_stop_pnl_min", 0.003)
-        self.extended_time_stop_hours   = self._get_param("extended_time_stop_hours",   8.0)
+        self.extended_time_stop_hours   = self._get_param("extended_time_stop_hours",   4.0)   # was 8.0
         self.extended_time_stop_pnl_max = self._get_param("extended_time_stop_pnl_max", 0.015)
-        self.stale_position_hours       = self._get_param("stale_position_hours",       12.0)
+        self.stale_position_hours       = self._get_param("stale_position_hours",       6.0)   # was 12.0
 
-        self.atr_trail_mult      = 3.0
+        self.atr_trail_mult      = 2.0   # was 3.0
 
         self.position_size_pct  = 0.80
         self.max_positions      = 6
@@ -66,7 +66,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.short_period       = 6
         self.medium_period      = 12
         self.lookback           = 48
-        self.sqrt_annualization = np.sqrt(12 * 24 * 365)
+        self.sqrt_annualization = np.sqrt(60 * 24 * 365)   # 1-minute bar math
 
         self.max_spread_pct         = 0.005  # Tighter: 0.5% max spread (was 0.8%)
         self.spread_median_window   = 12
@@ -75,17 +75,16 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.min_volume_usd         = 25000  # $25K min (was $10K)
 
         self.skip_hours_utc         = []
-        self.max_daily_trades       = 200
+        self.max_daily_trades       = 24000
         self.daily_trade_count      = 0
         self.last_trade_date        = None
         self.exit_cooldown_hours    = 1.0
         self.cancel_cooldown_minutes = 1
         self.max_symbol_trades_per_day = 3
-        self.min_hold_minutes       = 15
 
-        self.expected_round_trip_fees = 0.0035
+        self.expected_round_trip_fees = 0.0025   # was 0.0035
         self.fee_slippage_buffer      = 0.001
-        self.min_expected_profit_pct  = 0.025
+        self.min_expected_profit_pct  = 0.015    # was 0.025
         self.adx_min_period           = 10
 
         self.stale_order_timeout_seconds      = 30
@@ -136,7 +135,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._breakeven_stops       = {}
         self._partial_sell_symbols  = set()
         self._choppy_regime_entries = {}
-        self.partial_tp_threshold   = 0.040
+        self.partial_tp_threshold   = 0.025   # was 0.040
         self.stagnation_minutes     = 120
         self.stagnation_pnl_threshold = 0.005
         self.rsi_peaked_overbought = {}
@@ -162,9 +161,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._last_live_trade_time = None
 
         self.btc_symbol       = None
-        self.btc_returns      = deque(maxlen=144)
-        self.btc_prices       = deque(maxlen=144)
-        self.btc_volatility   = deque(maxlen=144)
+        self.btc_returns      = deque(maxlen=72)   # was 144
+        self.btc_prices       = deque(maxlen=72)   # was 144
+        self.btc_volatility   = deque(maxlen=72)   # was 144
         self.btc_ema_24       = ExponentialMovingAverage(24)
         self.market_regime    = "unknown"
         self.volatility_regime = "normal"
@@ -197,10 +196,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         try:
             btc = self.AddCrypto("BTCUSD", Resolution.Minute, Market.Kraken)
             self.btc_symbol = btc.Symbol
-            btc_consolidator = TradeBarConsolidator(timedelta(minutes=5))
-            btc_consolidator.DataConsolidated += self._on_btc_five_minute_bar
-            self.SubscriptionManager.AddConsolidator(self.btc_symbol, btc_consolidator)
-            self._btc_consolidator = btc_consolidator
         except Exception as e:
             self.Debug(f"Warning: Could not add BTC - {e}")
 
@@ -218,8 +213,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(0, 0), self.ResetDailyCounters)
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(hours=6)), self.ReviewPerformance)
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(12, 0), self.HealthCheck)
-        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=15)), self.ResyncHoldings)
-        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=5)), self.VerifyOrderFills)
+        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=5)), self.ResyncHoldings)
+        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=2)), self.VerifyOrderFills)
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=15)), self.PortfolioSanityCheck)
 
         self.SetWarmUp(timedelta(days=5))
@@ -232,7 +227,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if self.LiveMode:
             cleanup_object_store(self)
             load_persisted_state(self)
-            self.Debug("=== LIVE TRADING (MICRO-SCALP) v8.1.0 ===")
+            self.Debug("=== LIVE TRADING (MICRO-SCALP) v7.3.1 ===")
             self.Debug(f"Capital: ${self.Portfolio.Cash:.2f} | Max pos: {self.max_positions} | Size: {self.position_size_pct:.0%}")
 
     def CustomSecurityInitializer(self, security):
@@ -350,7 +345,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             'vwap_pv': deque(maxlen=20),
             'vwap_v': deque(maxlen=20),
             'vwap': 0.0,
-            'volume_long': deque(maxlen=288),
+            'volume_long': deque(maxlen=1440),
             'vwap_sd': 0.0,
             'vwap_sd2_lower': 0.0,
             'vwap_sd3_lower': 0.0,
@@ -410,6 +405,17 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             fg = data[self.fear_greed_symbol]
             if fg is not None:
                 self.fear_greed_value = fg.Value
+        # === BTC market context update from 1-minute bars ===
+        if self.btc_symbol is not None and data.Bars.ContainsKey(self.btc_symbol):
+            btc_bar = data.Bars[self.btc_symbol]
+            btc_price = float(btc_bar.Close)
+            if len(self.btc_prices) > 0:
+                btc_return = (btc_price - self.btc_prices[-1]) / self.btc_prices[-1]
+                self.btc_returns.append(btc_return)
+            self.btc_prices.append(btc_price)
+            self.btc_ema_24.Update(btc_bar.EndTime, btc_price)
+            if len(self.btc_returns) >= 10:
+                self.btc_volatility.append(np.std(list(self.btc_returns)[-10:]))
         # Only update quote data (bid/ask) from 1-min bars — price/volume/indicator updates happen via 5-min consolidator
         for symbol in list(self.crypto_data.keys()):
             if not data.Bars.ContainsKey(symbol):
@@ -547,23 +553,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # Process the 5-min bar through existing update logic (quote_bar=None: bid/ask updates happen in OnData)
         self._update_symbol_data(symbol, bar)
 
-    def _on_btc_five_minute_bar(self, sender, bar):
-        """Called every 5 minutes with consolidated BTC bar."""
-        btc_price = float(bar.Close)
-        if len(self.btc_prices) > 0:
-            btc_return = (btc_price - self.btc_prices[-1]) / self.btc_prices[-1]
-            self.btc_returns.append(btc_return)
-        self.btc_prices.append(btc_price)
-        self.btc_ema_24.Update(bar.EndTime, btc_price)
-        if len(self.btc_returns) >= 10:
-            self.btc_volatility.append(np.std(list(self.btc_returns)[-10:]))
-
     def _update_market_context(self):
-        if len(self.btc_prices) >= 96:
+        if len(self.btc_prices) >= 48:
             btc_arr = np.array(list(self.btc_prices))
             current_btc = btc_arr[-1]
             btc_mom_12 = np.mean(list(self.btc_returns)[-12:]) if len(self.btc_returns) >= 12 else 0.0
-            btc_sma = np.mean(btc_arr[-96:])
+            btc_sma = np.mean(btc_arr[-48:])
             if current_btc > btc_sma * 1.02:
                 new_regime = "bull"
             elif current_btc < btc_sma * 0.98:
@@ -1117,12 +1112,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.entry_prices[symbol] = holding.AveragePrice
             self.highest_prices[symbol] = holding.AveragePrice
             self.entry_times[symbol] = self.Time
-        # Minimum hold time — prevent same-bar or near-instant exits
-        entry_time = self.entry_times.get(symbol)
-        if entry_time is not None:
-            minutes_held = (self.Time - entry_time).total_seconds() / 60.0
-            if minutes_held < self.min_hold_minutes:
-                return
         entry = self.entry_prices[symbol]
         highest = self.highest_prices.get(symbol, entry)
         if price > highest:

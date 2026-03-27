@@ -7,15 +7,14 @@ class RealisticCryptoSlippage:
     """
     Realistic crypto slippage model for backtesting.
     Volume-aware, calibrated against empirical Kraken fill data.
-    Altcoins under $1 routinely have 0.5-1.5% effective slippage.
     Uses duck typing — no ISlippageModel inheritance (avoids PythonNet crash).
     QuantConnect calls GetSlippageApproximation(asset, order) via duck typing.
     """
 
-    def __init__(self):
-        self.base_slippage_pct = 0.003     # 0.3% base
-        self.volume_impact_factor = 0.20   # market impact factor
-        self.max_slippage_pct = 0.05       # 5% cap
+    def __init__(self, base_slippage_pct=0.0010, max_slippage_pct=0.0050):
+        self.base_slippage_pct = base_slippage_pct   # 0.10% (was 0.3%)
+        self.volume_impact_factor = 0.15              # (was 0.20)
+        self.max_slippage_pct = max_slippage_pct      # 0.50% (was 5%)
 
     def GetSlippageApproximation(self, asset, order):
         try:
@@ -43,14 +42,12 @@ class RealisticCryptoSlippage:
                     slippage_pct += volume_impact
 
             if price < 0.01:
-                slippage_pct *= 5.0
+                slippage_pct *= 4.0
             elif price < 0.10:
-                slippage_pct *= 3.5
-            elif price < 1.0:
                 slippage_pct *= 2.5
+            elif price < 1.0:
+                slippage_pct *= 1.8
             elif price < 10.0:
-                slippage_pct *= 1.5
-            elif price < 100.0:
                 slippage_pct *= 1.2
 
             slippage_pct = min(slippage_pct, self.max_slippage_pct)

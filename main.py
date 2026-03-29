@@ -53,7 +53,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.position_size_pct  = 0.80
         self.max_positions      = 6
         self.min_notional       = 5.5
-        self.max_position_usd   = self._get_param("max_position_usd", 1500.0)  # $1500 cap scales with $5k capital
+        self.max_position_pct   = self._get_param("max_position_pct", 0.30)  # 30% of portfolio per position
         self.min_price_usd      = 0.001
         self.cash_reserve_pct   = 0.00
         self.min_notional_fee_buffer = 1.5
@@ -980,7 +980,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             val = reserved_cash * size
 
             val = max(val, self.min_notional)
-            val = min(val, self.max_position_usd)
+            val = min(val, self.Portfolio.TotalPortfolioValue * self.max_position_pct)
 
             qty = round_quantity(self, sym, val / price)
             if qty < min_qty:

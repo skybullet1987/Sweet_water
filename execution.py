@@ -1284,7 +1284,7 @@ def review_performance(algo):
     if algo.IsWarmingUp or len(algo.trade_log) < 10:
         return
     
-    recent_trades = algo.trade_log[-15:] if len(algo.trade_log) >= 15 else algo.trade_log
+    recent_trades = list(algo.trade_log)[-15:]
     if len(recent_trades) == 0:
         return
     

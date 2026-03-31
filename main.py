@@ -10,19 +10,58 @@ from QuantConnect.Securities import CashAmount
 # endregion
 
 
-class MakerTakerFeeModel(FeeModel):
-    """Blended crypto fee model: 40% taker fills for limit orders."""
+class KrakenTieredFeeModel(FeeModel):
+    """
+    Volume-tiered fee model matching Kraken Pro (Canada) schedule.
+    Tracks cumulative volume and applies the correct tier.
+    Limit orders: 75% maker / 25% taker blend.
+    """
 
-    LIMIT_TAKER_RATIO = 0.40
+    LIMIT_TAKER_RATIO = 0.25
+
+    # Kraken Pro Canada fee tiers: (min_volume_usd, maker_pct, taker_pct)
+    FEE_TIERS = [
+        (500_000, 0.0008, 0.0018),   # $500K+
+        (250_000, 0.0010, 0.0020),   # $250K+
+        (100_000, 0.0012, 0.0022),   # $100K+
+        (50_000,  0.0014, 0.0024),   # $50K+
+        (25_000,  0.0020, 0.0035),   # $25K+
+        (10_000,  0.0022, 0.0038),   # $10K+
+        (2_500,   0.0030, 0.0060),   # $2.5K+
+        (0,       0.0040, 0.0080),   # $0+
+    ]
+
+    def __init__(self):
+        self._cumulative_volume = 0.0
+        self._start_time = None
 
     def GetOrderFee(self, parameters):
         order = parameters.Order
+        price = parameters.Security.Price
+        trade_value = order.AbsoluteQuantity * price
+
+        # Track volume
+        self._cumulative_volume += trade_value
+        if self._start_time is None:
+            self._start_time = order.Time
+
+        # Approximate 30-day volume
+        elapsed_days = max((order.Time - self._start_time).days, 1)
+        monthly_volume = self._cumulative_volume * 30.0 / elapsed_days
+
+        # Find the correct tier
+        maker_rate, taker_rate = self.FEE_TIERS[-1][1], self.FEE_TIERS[-1][2]  # default highest fee tier ($0+)
+        for min_vol, maker, taker in self.FEE_TIERS:
+            if monthly_volume >= min_vol:
+                maker_rate, taker_rate = maker, taker
+                break
+
+        # Calculate blended fee
         if order.Type == OrderType.Limit:
-            # Blended: 60% maker + 40% taker
-            fee_pct = (1 - self.LIMIT_TAKER_RATIO) * 0.0025 + self.LIMIT_TAKER_RATIO * 0.0040
+            fee_pct = (1 - self.LIMIT_TAKER_RATIO) * maker_rate + self.LIMIT_TAKER_RATIO * taker_rate
         else:
-            fee_pct = 0.0040  # Market orders always taker
-        trade_value = order.AbsoluteQuantity * parameters.Security.Price
+            fee_pct = taker_rate  # Market orders always taker
+
         return OrderFee(CashAmount(trade_value * fee_pct, "USD"))
 
 
@@ -48,7 +87,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.extended_time_stop_pnl_max = self._get_param("extended_time_stop_pnl_max", 0.015)
         self.stale_position_hours       = self._get_param("stale_position_hours",       6.0)   # was 12.0
 
-        self.atr_trail_mult      = 2.0   # reverted from 2.5
+        self.atr_trail_mult      = 2.5
 
         self.position_size_pct  = 0.80
         self.max_positions      = 6
@@ -82,9 +121,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.cancel_cooldown_minutes = 1
         self.max_symbol_trades_per_day = 3
 
-        self.expected_round_trip_fees = 0.0025   # was 0.0035
-        self.fee_slippage_buffer      = 0.001
-        self.min_expected_profit_pct  = 0.015    # was 0.025
+        self.expected_round_trip_fees = 0.0060
+        self.fee_slippage_buffer      = 0.002
+        self.min_expected_profit_pct  = 0.020
         self.adx_min_period           = 10
 
         self.stale_order_timeout_seconds      = 30
@@ -135,7 +174,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._breakeven_stops       = {}
         self._partial_sell_symbols  = set()
         self._choppy_regime_entries = {}
-        self.partial_tp_threshold   = 0.025   # was 0.040
+        self.partial_tp_threshold   = 0.040
         self.stagnation_minutes     = 120
         self.stagnation_pnl_threshold = 0.005
         self.rsi_peaked_overbought = {}
@@ -241,7 +280,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
     def CustomSecurityInitializer(self, security):
         security.SetSlippageModel(RealisticCryptoSlippage())
-        security.SetFeeModel(MakerTakerFeeModel())
+        security.SetFeeModel(KrakenTieredFeeModel())
 
     def _get_param(self, name, default):
         try:

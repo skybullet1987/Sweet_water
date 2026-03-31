@@ -48,10 +48,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.extended_time_stop_pnl_max = self._get_param("extended_time_stop_pnl_max", 0.015)
         self.stale_position_hours       = self._get_param("stale_position_hours",       6.0)   # was 12.0
 
-        self.atr_trail_mult      = 2.0   # was 3.0
+        self.atr_trail_mult          = 2.5   # was 2.0 — widened to reduce premature exits
+        self.atr_trail_mult_volatile = 3.0   # wider trail for high-vol assets
+        self.atr_trail_mult_calm     = 2.0   # tighter trail for low-vol assets
 
         self.position_size_pct  = 0.80
-        self.max_positions      = 6
+        self.max_positions      = 4   # was 6 — reduces correlated drawdowns
         self.min_notional       = 5.5
         self.max_position_pct   = self._get_param("max_position_pct", 0.30)  # 30% of portfolio per position
         self.min_price_usd      = 0.001
@@ -136,8 +138,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._partial_sell_symbols  = set()
         self._choppy_regime_entries = {}
         self.partial_tp_threshold   = 0.025   # was 0.040
-        self.stagnation_minutes     = 120
-        self.stagnation_pnl_threshold = 0.005
+        self.stagnation_minutes     = 90    # was 120 — trigger earlier
+        self.stagnation_pnl_threshold = 0.003  # was 0.005 — tighter threshold
         self.rsi_peaked_overbought = {}
         self.trade_count      = 0
         self._pending_orders  = {}
@@ -178,12 +180,22 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._daily_loss_limit = -0.05  # Stop trading if down 5% daily
         self._drawdown_limit = -0.20  # Stop for day if down 20%
         self._min_trade_capital = 300  # Minimum $300 per trade
-        self._max_concurrent_positions = 6  # Max 6 concurrent positions (matches max_positions)
+        self._max_concurrent_positions = 4  # Max 4 concurrent positions (matches max_positions)
         self._daily_start_equity = None
         self.trade_log      = deque(maxlen=500)
         self.log_budget     = 0
         self.last_log_time  = None
         self.base_max_positions = self.max_positions  # Baseline for performance recovery logic
+
+        # Risk management parameters
+        self.max_participation_rate = 0.01   # Max 1% of daily dollar volume per position
+        self.max_portfolio_heat     = 0.85   # Max 85% of portfolio invested at any time
+        self.reentry_cooldown_minutes = 30   # Min 30 minutes before re-entering same symbol after any exit
+
+        # Per-symbol performance tracking
+        self._symbol_performance      = {}   # {symbol_value: deque of recent PnLs}
+        self.symbol_penalty_threshold = 3    # consecutive losses to trigger penalty
+        self.symbol_penalty_size_mult = 0.50 # halve position size on penalized symbols
 
         self.max_universe_size = 30  # Focus on top 30 liquid assets (was 75)
 
@@ -789,6 +801,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         count_above_thresh = 0
         scores = []
         threshold_now = self._get_threshold()
+        # Bear market trend filter: require higher conviction in downtrends
+        if self.market_regime == "bear":
+            bear_threshold = max(threshold_now, 0.70)
+        else:
+            bear_threshold = threshold_now
         for symbol in list(self.crypto_data.keys()):
             if symbol.Value in SYMBOL_BLACKLIST or symbol.Value in self._session_blacklist:
                 continue
@@ -814,7 +831,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
             crypto['recent_net_scores'].append(net_score)
 
-            if net_score >= threshold_now:
+            if net_score >= bear_threshold:
                 count_above_thresh += 1
                 scores.append({
                     'symbol': symbol,
@@ -886,6 +903,14 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             if self.daily_trade_count >= self._get_max_daily_trades():
                 break
             if get_actual_position_count(self) >= self.max_positions:
+                break
+            # Portfolio heat check — limit total invested exposure
+            invested_value = sum(
+                abs(self.Portfolio[s].Quantity) * self.Securities[s].Price
+                for s in self.entry_prices.keys()
+                if s in self.Securities and s in self.Portfolio
+            )
+            if invested_value > self.Portfolio.TotalPortfolioValue * self.max_portfolio_heat:
                 break
             sym = cand['symbol']
             net_score = cand.get('net_score', 0.5)
@@ -974,10 +999,39 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             if self.volatility_regime == "high":
                 size = min(size * 1.1, self.position_size_pct)
 
+            # Per-symbol performance penalty: halve size after consecutive losses
+            sym_val = sym.Value
+            if sym_val in self._symbol_performance:
+                recent_pnls = list(self._symbol_performance[sym_val])
+                if len(recent_pnls) >= self.symbol_penalty_threshold:
+                    recent_losses = sum(1 for p in recent_pnls[-self.symbol_penalty_threshold:] if p < 0)
+                    if recent_losses == self.symbol_penalty_threshold:
+                        size *= self.symbol_penalty_size_mult
+                        self.Debug(f"PENALTY: {sym_val} size halved ({self.symbol_penalty_threshold} consecutive losses)")
+
             slippage_penalty = get_slippage_penalty(self, sym)
             size *= slippage_penalty
 
+            # Spread-based sizing adjustment: apply linear penalty for spreads above 0.2%
+            current_spread = get_spread_pct(self, sym)
+            if current_spread is not None and current_spread > 0.002:  # > 0.2% spread
+                # Penalty: 1% penalty per 0.05% excess spread, floored at 50% of original size
+                spread_penalty = max(0.5, 1.0 - (current_spread - 0.002) * 20)
+                size *= spread_penalty
+
             val = reserved_cash * size
+
+            # Liquidity-based position cap: max 1% of estimated daily dollar volume
+            # 288 = number of 5-minute bars per day (60min/5min * 24h)
+            FIVE_MIN_BARS_PER_DAY = 288
+            if len(crypto['dollar_volume']) >= 3:
+                dv_window = min(len(crypto['dollar_volume']), 12)
+                recent_dv = np.mean(list(crypto['dollar_volume'])[-dv_window:])
+                estimated_daily_dv = recent_dv * FIVE_MIN_BARS_PER_DAY
+                liquidity_cap = estimated_daily_dv * self.max_participation_rate
+            else:
+                liquidity_cap = float('inf')
+            val = min(val, liquidity_cap)
 
             val = max(val, self.min_notional)
             val = min(val, self.Portfolio.TotalPortfolioValue * self.max_position_pct)
@@ -1155,8 +1209,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 and pnl >= self.partial_tp_threshold):
             if partial_smart_sell(self, symbol, 0.50, "Partial TP"):
                 self._partial_tp_taken[symbol] = True
-                self._breakeven_stops[symbol] = entry * 1.002
-                self.Debug(f"PARTIAL TP: {symbol.Value} | PnL:{pnl:+.2%} | SL→entry+0.2%")
+                self._breakeven_stops[symbol] = entry * 1.005
+                self.Debug(f"PARTIAL TP: {symbol.Value} | PnL:{pnl:+.2%} | SL→entry+0.5%")
                 return  # Don't trigger full exit this bar
 
         tag = ""
@@ -1184,7 +1238,19 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
 
             elif atr and entry > 0 and holding.Quantity != 0:
-                trail_offset = atr * self.atr_trail_mult
+                # Adaptive ATR trail multiplier based on asset volatility
+                effective_trail_mult = self.atr_trail_mult
+                if crypto and len(crypto.get('volatility', [])) > 0:
+                    recent_vol = crypto['volatility'][-1]
+                    if recent_vol > 0.02:    # High volatility threshold
+                        effective_trail_mult = self.atr_trail_mult_volatile
+                    elif recent_vol < 0.008:  # Low volatility threshold
+                        effective_trail_mult = self.atr_trail_mult_calm
+                # Tighter trail on remaining position after partial TP
+                if self._partial_tp_taken.get(symbol, False):
+                    trail_offset = atr * effective_trail_mult * 0.75
+                else:
+                    trail_offset = atr * effective_trail_mult
                 trail_level = highest - trail_offset  # anchor to highest price since entry
                 if crypto:
                     crypto['trail_stop'] = trail_level
@@ -1211,7 +1277,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._symbol_loss_cooldowns[symbol] = self.Time + timedelta(hours=1)
             sold = smart_liquidate(self, symbol, tag)
             if sold:
-                self._exit_cooldowns[symbol] = self.Time + timedelta(hours=self.exit_cooldown_hours)
+                # Universal re-entry cooldown after any exit (minimum reentry_cooldown_minutes)
+                cooldown_delta = timedelta(minutes=self.reentry_cooldown_minutes)
+                exit_cooldown_delta = timedelta(hours=self.exit_cooldown_hours)
+                self._exit_cooldowns[symbol] = self.Time + max(cooldown_delta, exit_cooldown_delta)
 
                 self.rsi_peaked_overbought.pop(symbol, None)
                 self.entry_volumes.pop(symbol, None)

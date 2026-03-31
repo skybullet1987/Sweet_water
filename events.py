@@ -1,6 +1,7 @@
 # region imports
 from AlgorithmImports import *
 from execution import *
+from collections import deque
 # endregion
 
 
@@ -89,6 +90,13 @@ def on_order_event(algo, event):
                         algo.losing_trades += 1
                         algo.consecutive_losses += 1
                     algo.total_pnl += pnl
+                    # Track per-symbol performance for penalty logic
+                    sym_val = symbol.Value
+                    if not hasattr(algo, '_symbol_performance'):
+                        algo._symbol_performance = {}
+                    if sym_val not in algo._symbol_performance:
+                        algo._symbol_performance[sym_val] = deque(maxlen=10)
+                    algo._symbol_performance[sym_val].append(pnl)
                     if not hasattr(algo, 'pnl_by_tag'):
                         algo.pnl_by_tag = {}
                     if exit_tag not in algo.pnl_by_tag:

@@ -22,6 +22,12 @@ SYMBOL_BLACKLIST = {
     "CPOOLUSD",
     "ARCUSD", "PAXGUSD",
     "PARTIUSD", "RAREUSD", "BANANAS31USD",
+    # Consistently-losing illiquid/volatile tokens based on backtest analysis
+    "XCNUSD",    # Catastrophic stop-loss losses (e.g. -$5,386 and -$1.9M single trades)
+    "KTAUSD",    # Immediate stop losses on first trades
+    "NANOUSD",   # Immediate stop losses on first trades
+    "FWOGUSD",   # Repeated breakeven stops and poor fills
+    "STRKUSD",   # Repeated breakeven stops and poor fills
     # Forex pairs
     "EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "JPYUSD", "CADUSD", "CHFUSD", "CNYUSD", "HKDUSD", "SGDUSD",
     "SEKUSD", "NOKUSD", "DKKUSD", "KRWUSD", "TRYUSD", "ZARUSD", "MXNUSD", "INRUSD", "BRLUSD",
@@ -315,10 +321,35 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
                 track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
                 return True
         else:
-            # Stop loss - always use market order
-            ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
-            track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
-            return True
+            # Stop loss - use limit order with 0.5% buffer to cap slippage on illiquid tokens
+            STOP_LOSS_LIMIT_BUFFER = 0.005   # 0.5% price buffer below current price
+            STOP_LOSS_LIMIT_TIMEOUT = 60     # seconds before market-order fallback
+            exit_price = algo.Securities[symbol].Price
+            if exit_price > 0:
+                # Place limit at buffer% worse than current price to accept some slippage but cap it
+                limit_price = exit_price * (1.0 - STOP_LOSS_LIMIT_BUFFER)
+                try:
+                    ticket = algo.LimitOrder(symbol, safe_qty * direction_mult, limit_price, tag=tag)
+                    track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
+                    # Track for quick market-order fallback if limit doesn't fill in time
+                    if hasattr(algo, '_submitted_orders'):
+                        algo._submitted_orders[symbol] = {
+                            'order_id': ticket.OrderId,
+                            'time': algo.Time,
+                            'quantity': safe_qty * direction_mult,
+                            'is_limit_exit': True,
+                            'intent': 'exit',
+                            'timeout_seconds': STOP_LOSS_LIMIT_TIMEOUT
+                        }
+                    return True
+                except Exception:
+                    ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
+                    track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
+                    return True
+            else:
+                ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
+                track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
+                return True
     else:
         algo.Debug(f"Warning: {symbol.Value} holding {holding_qty} rounds to 0")
         return False

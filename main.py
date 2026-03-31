@@ -87,12 +87,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.extended_time_stop_pnl_max = self._get_param("extended_time_stop_pnl_max", 0.015)
         self.stale_position_hours       = self._get_param("stale_position_hours",       6.0)   # was 12.0
 
-        self.atr_trail_mult      = 2.5
+        self.atr_trail_mult      = 3.5
+        self.min_trail_hold_minutes = 30
 
         self.position_size_pct  = 0.80
         self.max_positions      = 6
         self.min_notional       = 5.5
-        self.max_position_pct   = self._get_param("max_position_pct", 0.30)  # 30% of portfolio per position
+        self.max_position_pct   = self._get_param("max_position_pct", 0.15)  # 15% of portfolio per position
         self.min_price_usd      = 0.001
         self.cash_reserve_pct   = 0.00
         self.min_notional_fee_buffer = 1.5
@@ -145,6 +146,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.max_consecutive_losses = 5
         self._consecutive_loss_halve_remaining = 0
         self.circuit_breaker_expiry = None
+        self._circuit_breaker_trigger_count = 0
 
         self._positions_synced    = False
         self._session_blacklist   = set()
@@ -175,7 +177,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._partial_sell_symbols  = set()
         self._choppy_regime_entries = {}
         self.partial_tp_threshold   = 0.040
-        self.stagnation_minutes     = 120
+        self.stagnation_minutes     = 240
         self.stagnation_pnl_threshold = 0.005
         self.rsi_peaked_overbought = {}
         self.trade_count      = 0
@@ -810,15 +812,20 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.consecutive_losses = 0
             self._log_skip("consecutive loss cooldown (5 losses)")
             return
-        # Circuit breaker: halt new entries for 1h after 4 consecutive losses (reduced from 2h/3 losses)
+        # Circuit breaker: exponential backoff after 4 consecutive losses
         if self.consecutive_losses >= 4:
-            self.circuit_breaker_expiry = self.Time + timedelta(hours=1)
+            self._circuit_breaker_trigger_count += 1
+            backoff_hours = min(1 * (2 ** (self._circuit_breaker_trigger_count - 1)), 8)  # 1h, 2h, 4h, 8h max
+            self.circuit_breaker_expiry = self.Time + timedelta(hours=backoff_hours)
             self.consecutive_losses = 0
-            self._log_skip("circuit breaker triggered (4 consecutive losses)")
+            self._log_skip(f"circuit breaker triggered (4 losses, {backoff_hours}h cooldown #{self._circuit_breaker_trigger_count})")
             return
         if self.circuit_breaker_expiry is not None and self.Time < self.circuit_breaker_expiry:
             self._log_skip("circuit breaker active")
             return
+        elif self.circuit_breaker_expiry is not None and self.Time >= self.circuit_breaker_expiry:
+            self._circuit_breaker_trigger_count = max(0, self._circuit_breaker_trigger_count - 1)  # Decay, don't fully reset
+            self.circuit_breaker_expiry = None
         pos_count = get_actual_position_count(self)
         if pos_count >= self.max_positions:
             self._log_skip("at max positions")
@@ -837,6 +844,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         count_above_thresh = 0
         scores = []
         threshold_now = self._get_threshold()
+        # Regime-adaptive: require higher conviction in unfavorable conditions
+        if self.market_regime == "bear":
+            threshold_now = max(threshold_now, 0.60)
+        elif self.market_regime == "sideways":
+            threshold_now = max(threshold_now, 0.55)
         for symbol in list(self.crypto_data.keys()):
             if symbol.Value in SYMBOL_BLACKLIST or symbol.Value in self._session_blacklist:
                 continue
@@ -1212,11 +1224,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if tp < sl * 1.5:
             tp = sl * 1.5
 
+        tp_mult = 1.0
         if self._choppy_regime_entries.get(symbol, False):
-            tp = tp * 0.65
-
+            tp_mult = min(tp_mult, 0.65)
         if self.volatility_regime == "low":
-            tp = tp * 0.75
+            tp_mult = min(tp_mult, 0.75)
+        tp = tp * tp_mult
 
         trailing_activation = self.trail_activation
         trailing_stop_pct   = self.trail_stop_pct
@@ -1261,13 +1274,17 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
 
             elif atr and entry > 0 and holding.Quantity != 0:
-                trail_offset = atr * self.atr_trail_mult
+                # Use wider trail after partial TP to let remainder run
+                effective_trail_mult = self.atr_trail_mult
+                if self._partial_tp_taken.get(symbol, False):
+                    effective_trail_mult = self.atr_trail_mult * 1.5  # 50% wider after partial TP
+                trail_offset = atr * effective_trail_mult
                 trail_level = highest - trail_offset  # anchor to highest price since entry
                 if crypto:
                     crypto['trail_stop'] = trail_level
                 if crypto and crypto['trail_stop'] is not None:
-                    # Cash account (Kraken) = long-only; only check long-side trail
-                    if holding.Quantity > 0 and price <= crypto['trail_stop']:
+                    # Don't trigger ATR trail until minimum hold time elapsed
+                    if minutes >= self.min_trail_hold_minutes and holding.Quantity > 0 and price <= crypto['trail_stop']:
                         tag = "ATR Trail"
 
             if not tag and hours >= self.time_stop_hours and pnl < self.time_stop_pnl_min:

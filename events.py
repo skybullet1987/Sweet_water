@@ -78,7 +78,9 @@ def on_order_event(algo, event):
                     if entry is None:
                         entry = event.FillPrice
                         algo.Debug(f"⚠️ WARNING: Missing entry price for {symbol.Value} sell, using fill price")
-                    pnl = (event.FillPrice - entry) / entry if entry > 0 else 0
+                    # Deduct estimated round-trip fee so Kelly/circuit-breakers
+                    # operate on net-of-fee returns (same constant as execution.py).
+                    pnl = (event.FillPrice - entry) / entry - ESTIMATED_ROUND_TRIP_FEE if entry > 0 else 0
                     algo._rolling_wins.append(1 if pnl > 0 else 0)
                     algo._recent_trade_outcomes.append(1 if pnl > 0 else 0)
                     if pnl > 0:

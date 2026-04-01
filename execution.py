@@ -180,6 +180,22 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
                 algo.highest_prices[symbol] = algo.Portfolio[symbol].AveragePrice
                 algo.entry_times[symbol] = algo.Time
             return False
+    # BACKTEST REALISM: exit non-fill simulation (non-stop-loss exits only)
+    # Real exits on limit orders can miss — price moves away before fill.
+    # Lower rate than entry non-fills (5-25%) because exits are more urgent.
+    # Stop losses are excluded — they must always attempt to execute.
+    if not algo.LiveMode:
+        is_stop_loss = "Stop Loss" in tag or "Stop" in tag
+        if not is_stop_loss:
+            crypto = algo.crypto_data.get(symbol)
+            if crypto and len(crypto.get('volatility', [])) > 0:
+                recent_vol = float(crypto['volatility'][-1])
+                exit_non_fill_prob = min(0.05 + recent_vol * 4.0, 0.25)
+            else:
+                exit_non_fill_prob = 0.10
+            if random.random() < exit_non_fill_prob:
+                algo.Debug(f"BACKTEST NON-FILL (exit): {symbol.Value} — simulated limit miss")
+                return False
     algo.Transactions.CancelOpenOrders(symbol)
     # For exits: use MinimumOrderSize from the security (brokerage-enforced floor).
     # lot_size < MinimumOrderSize for some assets (e.g. ETHUSD: lot=0.001, min=0.002),
@@ -454,6 +470,51 @@ def get_spread_pct(algo, symbol):
     return None
 
 
+def _estimate_backtest_spread(algo, symbol):
+    """
+    Estimate bid-ask spread from dollar volume for backtest realism.
+    Uses empirical relationship: spread ≈ k / sqrt(dollar_volume).
+    Calibrated against typical Kraken altcoin spreads:
+      - $1M daily vol → ~0.20% spread
+      - $100K daily vol → ~0.63% spread
+      - $10K daily vol → ~2.0% spread
+    Only called in backtest when real quote data is unavailable.
+    """
+    crypto = algo.crypto_data.get(symbol)
+    if crypto is None:
+        return None
+
+    # Use recent dollar volume (sum of last 20 bars × bar_interval_to_daily_scalar)
+    dv_list = list(crypto.get('dollar_volume', []))
+    if len(dv_list) < 5:
+        return None
+
+    # Average dollar volume per bar, extrapolated to daily
+    avg_bar_dv = float(np.mean(dv_list[-20:]))
+    # Bars per day: 288 for 5-min bars, 1440 for 1-min bars
+    # The consolidator uses 5-min bars for indicator updates, but dollar_volume
+    # is appended per 5-min bar in _update_symbol_data
+    daily_dv = avg_bar_dv * 288  # 288 = 5-min bars per day (60min/5min × 24h)
+
+    if daily_dv <= 0:
+        return 0.05  # 5% default for zero-volume — will be rejected by spread cap
+
+    # Empirical constant calibrated to Kraken:
+    # k=2.0 gives spread=0.20% at $1M, 0.63% at $100K, 2.0% at $10K
+    k = 2.0
+    estimated_spread = k / (daily_dv ** 0.5)
+
+    # Floor: even the most liquid alts have >= 0.05% spread on Kraken
+    # Cap: don't estimate above 10% — if it's that wide, the filter will catch it
+    estimated_spread = max(estimated_spread, 0.0005)
+    estimated_spread = min(estimated_spread, 0.10)
+
+    # Add the estimated spread to the spreads deque for median tracking
+    crypto['spreads'].append(estimated_spread)
+
+    return estimated_spread
+
+
 def spread_ok(algo, symbol):
     sp = get_spread_pct(algo, symbol)
     if sp is None:
@@ -466,10 +527,13 @@ def spread_ok(algo, symbol):
                 algo._spread_warning_times[symbol.Value] = now
             return True
         else:
-            # In backtest, allow unknown spreads — historical data lacks quote data.
-            return True
+            # BACKTEST REALISM: estimate spread from dollar volume
+            sp = _estimate_backtest_spread(algo, symbol)
+            if sp is None:
+                return True  # no data at all, allow (conservative fallback)
+            # Fall through to normal spread checks below with estimated spread
     effective_spread_cap = algo.max_spread_pct
-    if algo.LiveMode and (algo.volatility_regime == "high" or algo.market_regime == "sideways"):
+    if algo.volatility_regime == "high" or algo.market_regime == "sideways":
         effective_spread_cap = min(effective_spread_cap, 0.025)
     if sp > effective_spread_cap:
         return False
@@ -478,6 +542,39 @@ def spread_ok(algo, symbol):
         median_sp = np.median(list(crypto['spreads']))
         if median_sp > 0 and sp > algo.spread_widen_mult * median_sp:
             return False
+    return True
+
+
+def intraday_volume_ok(algo, symbol, order_value):
+    """
+    Check that the recent intraday dollar volume is sufficient for the
+    proposed order. Rejects entries where recent bars show very thin
+    trading activity, even if the daily universe filter passed.
+
+    Returns True if volume is adequate, False otherwise.
+    """
+    crypto = algo.crypto_data.get(symbol)
+    if crypto is None:
+        return True  # no data, allow (conservative)
+
+    dv_list = list(crypto.get('dollar_volume', []))
+    if len(dv_list) < 5:
+        return True  # not enough history yet
+
+    # Average dollar volume over last 10 bars (50 minutes at 5-min resolution)
+    recent_avg_dv = float(np.mean(dv_list[-10:])) if len(dv_list) >= 10 else float(np.mean(dv_list))
+
+    # Require at least $500 avg dollar volume per bar (≈ $144K daily pace)
+    # This catches symbols in low-activity windows even if daily vol is high
+    if recent_avg_dv < 500:
+        return False
+
+    # Participation rate check: order should be < 2% of recent bar volume
+    if recent_avg_dv > 0 and order_value > 0:
+        implied_participation = order_value / recent_avg_dv
+        if implied_participation > algo.max_participation_rate:
+            return False
+
     return True
 
 

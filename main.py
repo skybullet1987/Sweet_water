@@ -1106,6 +1106,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             except Exception as e:
                 self.Debug(f"Warning: could not check min_order_size for {sym.Value}: {e}")
 
+            if not intraday_volume_ok(self, sym, val):
+                continue
+
             try:
                 ticket = place_limit_or_market(self, sym, qty, timeout_seconds=30, tag="Entry")
                 if ticket is not None:

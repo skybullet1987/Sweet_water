@@ -76,56 +76,6 @@ MIN_NOTIONAL_FALLBACK = {
 KRAKEN_SELL_FEE_BUFFER = 0.006  # 0.6% (0.4% base fee + 0.2% safety margin)
 
 
-class RealisticCryptoSlippage:
-    """Volume-aware slippage model for crypto.
-    Calibrated against empirical Kraken fill data.
-    Uses duck typing — no ISlippageModel inheritance (avoids PythonNet crash)."""
-
-    def __init__(self):
-        self.base_slippage_pct = 0.002    # 0.2% base
-        self.volume_impact_factor = 0.15
-        self.max_slippage_pct = 0.03      # 3% cap
-
-    def GetSlippageApproximation(self, asset, order):
-        price = asset.Price
-        if price <= 0:
-            return 0
-
-        slippage_pct = self.base_slippage_pct
-
-        # Add half-spread cost (you cross the spread on market orders)
-        bid = asset.BidPrice
-        ask = asset.AskPrice
-        if bid > 0 and ask > 0 and ask >= bid:
-            mid = 0.5 * (bid + ask)
-            if mid > 0:
-                spread_cost = (ask - bid) / (2 * mid)  # half-spread
-                slippage_pct += spread_cost
-
-        volume = asset.Volume
-        if volume > 0:
-            order_value = abs(order.Quantity) * price
-            volume_value = volume * price
-            if volume_value > 0:
-                participation_rate = order_value / volume_value
-                volume_impact = self.volume_impact_factor * (participation_rate ** 1.5)
-                slippage_pct += volume_impact
-
-        # Price tier penalties — low-price alts have wider spreads
-        if price < 0.01:
-            slippage_pct *= 4.0
-        elif price < 0.10:
-            slippage_pct *= 2.5
-        elif price < 1.0:
-            slippage_pct *= 1.8
-        elif price < 10.0:
-            slippage_pct *= 1.2
-
-        slippage_pct = min(slippage_pct, self.max_slippage_pct)
-
-        return price * slippage_pct
-
-
 def get_min_quantity(algo, symbol):
     ticker = symbol.Value if hasattr(symbol, 'Value') else str(symbol)
     try:

@@ -8,8 +8,18 @@ from collections import deque
 from datetime import timedelta
 # endregion
 
-# Constants from main_qa.py lines 31-68
-SYMBOL_BLACKLIST = {
+# Seed once at module load for deterministic, reproducible backtests.
+# Non-fill simulation is gated on `not algo.LiveMode`, so this is backtest-only.
+# QuantConnect runs each algorithm in an isolated process, so module-level seeding
+# is safe and ensures every run with the same parameters produces identical results.
+random.seed(42)
+
+# Conservative round-trip fee estimate for net-of-fee PnL tracking (Kelly/circuit-breakers).
+# Kraken maker 0.25% + taker 0.40% = 0.65%.  QC's portfolio model handles actual fees.
+ESTIMATED_ROUND_TRIP_FEE = 0.0065  # 0.65% round-trip
+
+# STRUCTURAL blacklist: a-priori structural exclusions (not look-ahead biased).
+SYMBOL_BLACKLIST_STRUCTURAL = {
     "BTCUSD",  # Reference symbol only — never trade (too expensive for small capital, always dust)
     "USDTUSD", "USDCUSD", "PYUSDUSD", "EURCUSD", "USTUSD",
     "DAIUSD", "TUSDUSD", "WETHUSD", "WBTCUSD", "WAXLUSD",
@@ -22,17 +32,38 @@ SYMBOL_BLACKLIST = {
     "CPOOLUSD",
     "ARCUSD", "PAXGUSD",
     "PARTIUSD", "RAREUSD", "BANANAS31USD",
-    # Consistently-losing illiquid/volatile tokens based on backtest analysis
-    "XCNUSD",    # Catastrophic stop-loss losses (e.g. -$5,386 and -$1.9M single trades)
-    "KTAUSD",    # Immediate stop losses on first trades
-    "NANOUSD",   # Immediate stop losses on first trades
-    "FWOGUSD",   # Repeated breakeven stops and poor fills
-    "STRKUSD",   # Repeated breakeven stops and poor fills
     # Forex pairs
     "EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "JPYUSD", "CADUSD", "CHFUSD", "CNYUSD", "HKDUSD", "SGDUSD",
     "SEKUSD", "NOKUSD", "DKKUSD", "KRWUSD", "TRYUSD", "ZARUSD", "MXNUSD", "INRUSD", "BRLUSD",
     "PLNUSD", "THBUSD",
 }
+
+# BACKTEST-DERIVED blacklist: excluded from observed backtest losses.
+# WARNING: including these in backtests is look-ahead bias — the live system
+# would not have known to avoid them before those losses occurred.
+# Set INCLUDE_BACKTEST_DERIVED_BLACKLIST = False for an unbiased backtest.
+SYMBOL_BLACKLIST_BACKTEST_DERIVED = {
+    "XCNUSD",    # Catastrophic stop-loss losses (e.g. -$5,386 and -$1.9M single trades)
+    "KTAUSD",    # Immediate stop losses on first trades
+    "NANOUSD",   # Immediate stop losses on first trades
+    "FWOGUSD",   # Repeated breakeven stops and poor fills
+    "STRKUSD",   # Repeated breakeven stops and poor fills
+}
+
+# Toggle: False = unbiased backtest (excludes look-ahead); True = default/optimistic.
+INCLUDE_BACKTEST_DERIVED_BLACKLIST = True
+
+# Combined blacklist.
+SYMBOL_BLACKLIST = (
+    SYMBOL_BLACKLIST_STRUCTURAL | SYMBOL_BLACKLIST_BACKTEST_DERIVED
+    if INCLUDE_BACKTEST_DERIVED_BLACKLIST
+    else SYMBOL_BLACKLIST_STRUCTURAL
+)
+
+# UTC hour thresholds for spread time-of-day multipliers (_estimate_backtest_spread).
+_TOD_ASIAN_END = 8; _TOD_EU_END = 13; _TOD_US_END = 21  # session boundaries
+# Backtest queue-priority: participation-rate rejection constants.
+_QUEUE_PARTICIPATION_THRESHOLD = 0.05; _QUEUE_REJECTION_SLOPE = 10.0; _QUEUE_MAX_REJECTION_PROB = 0.90
 
 # Known fiat currency codes used to filter forex pairs from the crypto universe
 KNOWN_FIAT_CURRENCIES = frozenset({
@@ -509,6 +540,22 @@ def _estimate_backtest_spread(algo, symbol):
     estimated_spread = max(estimated_spread, 0.0005)
     estimated_spread = min(estimated_spread, 0.10)
 
+    # Time-of-day multiplier: Kraken spreads widen outside US/EU hours.
+    # 00-08 UTC Asian (×1.5), 08-13 EU (×1.0), 13-21 US/EU (×0.85), 21-24 wind-down (×1.2).
+    h = algo.Time.hour
+    if h < _TOD_ASIAN_END:
+        tod_multiplier = 1.5
+    elif h < _TOD_EU_END:
+        tod_multiplier = 1.0
+    elif h < _TOD_US_END:
+        tod_multiplier = 0.85
+    else:
+        tod_multiplier = 1.2
+    estimated_spread *= tod_multiplier
+
+    # Re-apply cap after multiplier to avoid exceeding the hard ceiling
+    estimated_spread = min(estimated_spread, 0.10)
+
     # Add the estimated spread to the spreads deque for median tracking
     crypto['spreads'].append(estimated_spread)
 
@@ -869,11 +916,41 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             limit_price = bid * 1.0005  # 0.05% above bid – still below mid, still maker
             limit_price = min(limit_price, ask)  # never cross the spread
         else:
-            # No bid/ask data: use last price as limit price (fills immediately in backtest)
+            # No bid/ask data: use last price as limit price.
+            # In backtest this would fill immediately at the limit price,
+            # giving unrealistic instant maker fills without queue priority.
             limit_price = sec.Price
             if limit_price <= 0:
                 algo.Debug(f"Price unavailable for {symbol.Value}, using market order")
                 return algo.MarketOrder(symbol, quantity, tag=tag)
+
+            # BACKTEST: simulate queue-priority cost when no bid/ask data.
+            # Apply adverse offset + participation-rate rejection.
+            if not algo.LiveMode:
+                # Adverse offset: algo is not first in line at the limit level.
+                adverse_offset = 0.00075  # 0.075% queue-priority cost
+                if quantity > 0:
+                    limit_price *= (1 + adverse_offset)
+                else:
+                    limit_price *= (1 - adverse_offset)
+
+                # Probabilistic rejection based on participation rate (>5% threshold).
+                crypto = algo.crypto_data.get(symbol)
+                if crypto and len(crypto.get('volume', [])) > 0:
+                    bar_volume = float(crypto['volume'][-1])
+                    bar_dollar_volume = bar_volume * float(limit_price) if limit_price > 0 else 0
+                    order_notional = abs(quantity) * float(limit_price)
+                    if bar_dollar_volume > 0:
+                        participation_rate = order_notional / bar_dollar_volume
+                        if participation_rate > _QUEUE_PARTICIPATION_THRESHOLD:
+                            excess = participation_rate - _QUEUE_PARTICIPATION_THRESHOLD
+                            rejection_prob = min(excess * _QUEUE_REJECTION_SLOPE, _QUEUE_MAX_REJECTION_PROB)
+                            if random.random() < rejection_prob:
+                                algo.Debug(
+                                    f"BACKTEST QUEUE REJECT: {symbol.Value} "
+                                    f"part={participation_rate:.1%} rej={rejection_prob:.1%}"
+                                )
+                                return None
 
         # Place maker limit order
         limit_ticket = algo.LimitOrder(symbol, quantity, limit_price, tag=tag)
@@ -908,7 +985,8 @@ def record_exit_pnl(algo, symbol, entry_price, exit_price, exit_tag="Unknown"):
         algo.Debug(f"⚠️ Cannot record PnL for {symbol.Value}: invalid prices (entry=${entry_price:.4f}, exit=${exit_price:.4f})")
         return None
     
-    pnl = (exit_price - entry_price) / entry_price
+    # Fee is a direct percentage-point reduction (matches convention in events.py).
+    pnl = (exit_price - entry_price) / entry_price - ESTIMATED_ROUND_TRIP_FEE
     algo._rolling_wins.append(1 if pnl > 0 else 0)
     if pnl > 0:
         algo._rolling_win_sizes.append(pnl)
@@ -1005,19 +1083,12 @@ def health_check(algo):
 
 
 def resync_holdings_full(algo):
-    """
-    Live-only safety: backfills tracking for any holdings that exist in the brokerage
-    but were not registered via OnOrderEvent (e.g., missed fill events).
-    Implements Fix 2: Reverse resync to detect phantom positions.
-    """
-    if algo.IsWarmingUp:
-        return
-    if not algo.LiveMode:
+    """Live-only: backfills tracking for holdings missed via OnOrderEvent; detects phantom positions."""
+    if algo.IsWarmingUp or not algo.LiveMode:
         return
     
-    # Only log periodically to avoid spam (every 30 minutes)
     if not hasattr(algo, '_last_resync_log') or (algo.Time - algo._last_resync_log).total_seconds() > algo.resync_log_interval_seconds:
-        algo.Debug(f"RESYNC CHECK: Portfolio keys={len(list(algo.Portfolio.Keys))}, tracked={len(algo.entry_prices)}")
+        algo.Debug(f"RESYNC CHECK: keys={len(list(algo.Portfolio.Keys))} tracked={len(algo.entry_prices)}")
         algo._last_resync_log = algo.Time
     
     # Forward resync: find holdings we're not tracking
@@ -1025,22 +1096,18 @@ def resync_holdings_full(algo):
     for symbol in algo.Portfolio.Keys:
         if not is_invested_not_dust(algo, symbol):
             continue
-        holding = algo.Portfolio[symbol]
         if symbol in algo.entry_prices:
             continue
-        # Skip symbols being tracked by VerifyOrderFills to avoid conflicts
         if symbol in algo._submitted_orders:
             continue
         if symbol in algo._exit_cooldowns and algo.Time < algo._exit_cooldowns[symbol]:
             continue
-        # Check if there are non-stale open orders
-        # If all open orders are stale, we should resync anyway
         if has_non_stale_open_orders(algo, symbol):
             continue
         missing.append(symbol)
     
     if missing:
-        algo.Debug(f"RESYNC: detected {len(missing)} holdings without tracking; backfilling.")
+        algo.Debug(f"RESYNC: {len(missing)} untracked holdings; backfilling.")
         for symbol in missing:
             try:
                 if symbol not in algo.Securities:
@@ -1050,81 +1117,58 @@ def resync_holdings_full(algo):
                 algo.entry_prices[symbol] = entry
                 algo.highest_prices[symbol] = entry
                 algo.entry_times[symbol] = algo.Time
-                current_price = algo.Securities[symbol].Price if symbol in algo.Securities else holding.Price
-                pnl_pct = (current_price - entry) / entry if entry > 0 else 0
-                algo.Debug(f"RESYNCED: {symbol.Value} | Qty: {holding.Quantity} | Entry: ${entry:.4f} | Now: ${current_price:.4f} | PnL: {pnl_pct:+.2%}")
+                cur = algo.Securities[symbol].Price if symbol in algo.Securities else holding.Price
+                pnl_pct = (cur - entry) / entry if entry > 0 else 0
+                algo.Debug(f"RESYNCED: {symbol.Value} entry=${entry:.4f} now=${cur:.4f} {pnl_pct:+.2%}")
             except Exception as e:
                 algo.Debug(f"Resync error {symbol.Value}: {e}")
     
-    # Reverse resync: detect positions we're tracking but broker no longer holds
-    # Fix 2: Phantom position detection
+    # Reverse resync: detect phantom positions (tracked but broker has none)
     phantoms = []
     for symbol in list(algo.entry_prices.keys()):
-        # Skip if order still pending
         if symbol in algo._submitted_orders:
             continue
-        # Skip if in exit cooldown
         if symbol in algo._exit_cooldowns and algo.Time < algo._exit_cooldowns[symbol]:
             continue
-        
         holding = algo.Portfolio[symbol] if symbol in algo.Portfolio else None
         if holding is None or not holding.Invested or holding.Quantity == 0:
-            # We're tracking this position but broker says it's gone
-            # Check for open orders first
             open_orders = algo.Transactions.GetOpenOrders(symbol)
             if len(open_orders) > 0:
-                # Has open orders - check if all are stuck
-                all_stuck = True
-                for o in open_orders:
-                    order_time = normalize_order_time(o.Time)
-                    if (algo.Time - order_time).total_seconds() <= algo.live_stale_order_timeout_seconds:
-                        all_stuck = False
-                        break
-                
+                all_stuck = all(
+                    (algo.Time - normalize_order_time(o.Time)).total_seconds() > algo.live_stale_order_timeout_seconds
+                    for o in open_orders
+                )
                 if not all_stuck:
-                    continue  # Has non-stuck orders, wait
-                
-                # All orders are stuck - cancel them
+                    continue
                 for o in open_orders:
                     try:
                         algo.Transactions.CancelOrder(o.Id)
-                        algo.Debug(f"PHANTOM: Canceling stuck order {o.Id} for {symbol.Value}")
                     except Exception as e:
-                        algo.Debug(f"Error canceling stuck order for {symbol.Value}: {e}")
-            
+                        algo.Debug(f"Error canceling stuck order {symbol.Value}: {e}")
             phantoms.append(symbol)
     
     if phantoms:
-        algo.Debug(f"⚠️ REVERSE RESYNC: detected {len(phantoms)} phantom positions")
+        algo.Debug(f"⚠️ REVERSE RESYNC: {len(phantoms)} phantom positions")
         for symbol in phantoms:
-            algo.Debug(f"⚠️ PHANTOM POSITION DETECTED: {symbol.Value} — tracked but broker qty=0, cleaning up")
+            algo.Debug(f"⚠️ PHANTOM: {symbol.Value} tracked but qty=0, cleaning up")
             cleanup_position(algo, symbol, record_pnl=True)
-            # Fix 3: Set exit cooldown after phantom cleanup
             if hasattr(algo, 'exit_cooldown_hours') and hasattr(algo, '_exit_cooldowns'):
                 algo._exit_cooldowns[symbol] = algo.Time + timedelta(hours=algo.exit_cooldown_hours)
-        # Fix 4: Call persist_state after phantom cleanup
         persist_state(algo)
 
 
 def verify_order_fills(algo):
-    """
-    Verify submitted orders filled/timed out. Retry once before blacklisting.
-    Implements Fix 1: stuck "New" order detection.
-    Implements Fix 4: exit-intent order handling for phantom exits.
-    """
+    """Verify submitted orders filled/timed-out; retry once before blacklisting."""
     if algo.IsWarmingUp:
         return
     
     current_time = algo.Time
     symbols_to_remove = []
     
-    # Process pending retries first
     for symbol in list(algo._retry_pending.keys()):
         cancel_time = algo._retry_pending[symbol]
         if (current_time - cancel_time).total_seconds() >= algo.retry_pending_cooldown_seconds:
-            # Check if position exists now (cancel failed or order filled after cancel)
             if symbol in algo.Portfolio and algo.Portfolio[symbol].Invested:
-                # Position exists, don't retry - just track it
                 holding = algo.Portfolio[symbol]
                 if symbol not in algo.entry_prices:
                     algo.entry_prices[symbol] = holding.AveragePrice
@@ -1133,15 +1177,13 @@ def verify_order_fills(algo):
                     algo.Debug(f"RETRY SKIPPED (position exists): {symbol.Value}")
                 del algo._retry_pending[symbol]
             else:
-                # Safe to retry now
-                algo.Debug(f"RETRY NOW: {symbol.Value} - cancel confirmed")
+                algo.Debug(f"RETRY NOW: {symbol.Value}")
                 del algo._retry_pending[symbol]
     
     for symbol, order_info in list(algo._submitted_orders.items()):
         order_age_seconds = (current_time - order_info['time']).total_seconds()
         order_id = order_info['order_id']
         
-        # Determine timeout based on order type
         if order_info.get('is_limit_entry', False):
             timeout = order_info.get('timeout_seconds', 60)
         elif order_info.get('is_limit_exit', False):
@@ -1149,93 +1191,68 @@ def verify_order_fills(algo):
         else:
             timeout = algo.order_timeout_seconds
         
-        # Check for missed fills (order filled but event missed)
         if order_age_seconds > algo.order_fill_check_threshold_seconds:
             intent = order_info.get('intent', 'entry')
-            
-            # Check order status
             try:
                 order = algo.Transactions.GetOrderById(order_id)
                 if order is not None and order.Status == OrderStatus.Filled:
-                    # Order filled but we missed the event
                     if intent == 'exit':
-                        # Exit order filled - position should be gone
-                        # Fix 4: Handle exit-intent order properly
                         entry = algo.entry_prices.get(symbol, None)
                         if entry:
-                            # Calculate PnL using last known price
-                            current_price = algo.Securities[symbol].Price if symbol in algo.Securities else None
-                            if current_price is not None and current_price > 0:
-                                pnl = record_exit_pnl(algo, symbol, entry, current_price)
-                                if pnl is not None:
-                                    algo.Debug(f"⚠️ MISSED EXIT FILL: {symbol.Value} | PnL: {pnl:+.2%} | Entry: ${entry:.4f} | Exit: ${current_price:.4f}")
-                                else:
-                                    algo.Debug(f"⚠️ MISSED EXIT FILL: {symbol.Value} | Cannot calculate PnL (invalid price), cleaning up anyway")
+                            cur = algo.Securities[symbol].Price if symbol in algo.Securities else None
+                            if cur is not None and cur > 0:
+                                pnl = record_exit_pnl(algo, symbol, entry, cur)
+                                algo.Debug(f"⚠️ MISSED EXIT FILL: {symbol.Value} pnl={pnl:+.2%}" if pnl is not None else f"⚠️ MISSED EXIT FILL: {symbol.Value} invalid price")
                             else:
-                                algo.Debug(f"⚠️ MISSED EXIT FILL: {symbol.Value} | Cannot get current price, cleaning up without PnL")
+                                algo.Debug(f"⚠️ MISSED EXIT FILL: {symbol.Value} no price")
                             cleanup_position(algo, symbol)
                         symbols_to_remove.append(symbol)
                         algo._order_retries.pop(order_id, None)
                         continue
                     else:
-                        # Entry order filled
                         if symbol in algo.Portfolio and algo.Portfolio[symbol].Invested:
                             holding = algo.Portfolio[symbol]
                             entry_price = holding.AveragePrice
-                            current_price = algo.Securities[symbol].Price if symbol in algo.Securities else holding.Price
-                            
-                            # Only set tracking if not already tracked (avoid double increment)
+                            cur = algo.Securities[symbol].Price if symbol in algo.Securities else holding.Price
                             if symbol not in algo.entry_prices:
                                 algo.entry_prices[symbol] = entry_price
-                                algo.highest_prices[symbol] = max(current_price, entry_price)
+                                algo.highest_prices[symbol] = max(cur, entry_price)
                                 algo.entry_times[symbol] = order_info['time']
                                 algo.daily_trade_count += 1
-                                algo.Debug(f"FILL VERIFIED (missed event): {symbol.Value} | Entry: ${entry_price:.4f} | Qty: {holding.Quantity}")
-                            
+                                algo.Debug(f"FILL VERIFIED: {symbol.Value} entry=${entry_price:.4f}")
                             symbols_to_remove.append(symbol)
                             algo._order_retries.pop(order_id, None)
                             continue
             except Exception as e:
-                algo.Debug(f"Error checking order status for {symbol.Value}: {e}")
+                algo.Debug(f"Error checking order {symbol.Value}: {e}")
             
-            # Check for exit orders where position is now gone (fill event missed)
-            # Fix 1 & Fix 4: Detect phantom exits
             if intent == 'exit':
                 holding = algo.Portfolio[symbol] if symbol in algo.Portfolio else None
                 if holding is None or not holding.Invested or holding.Quantity == 0:
-                    # Position is gone - the exit filled but we missed the event
                     entry = algo.entry_prices.get(symbol, None)
                     if entry:
-                        # Calculate PnL using last known price
-                        current_price = algo.Securities[symbol].Price if symbol in algo.Securities else None
-                        if current_price is not None and current_price > 0:
-                            pnl = record_exit_pnl(algo, symbol, entry, current_price)
-                            if pnl is not None:
-                                algo.Debug(f"⚠️ PHANTOM EXIT DETECTED (position gone): {symbol.Value} | PnL: {pnl:+.2%} | Entry: ${entry:.4f} | Estimated Exit: ${current_price:.4f}")
-                            else:
-                                algo.Debug(f"⚠️ PHANTOM EXIT DETECTED (position gone): {symbol.Value} | Cannot calculate PnL (invalid price), cleaning up anyway")
+                        cur = algo.Securities[symbol].Price if symbol in algo.Securities else None
+                        if cur is not None and cur > 0:
+                            pnl = record_exit_pnl(algo, symbol, entry, cur)
+                            algo.Debug(f"⚠️ PHANTOM EXIT: {symbol.Value} pnl={pnl:+.2%}" if pnl is not None else f"⚠️ PHANTOM EXIT: {symbol.Value} invalid price")
                         else:
-                            algo.Debug(f"⚠️ PHANTOM EXIT DETECTED (position gone): {symbol.Value} | Cannot get current price, cleaning up without PnL")
+                            algo.Debug(f"⚠️ PHANTOM EXIT: {symbol.Value} no price")
                         cleanup_position(algo, symbol)
                     symbols_to_remove.append(symbol)
                     algo._order_retries.pop(order_id, None)
                     continue
         
-        # Handle timeout with retry logic
         if order_age_seconds > timeout:
             retry_count = algo._order_retries.get(order_id, 0)
-            
             if retry_count == 0:
                 try:
                     algo.Transactions.CancelOrder(order_id)
-                    algo.Debug(f"ORDER TIMEOUT (attempt 1): {symbol.Value} - cancel requested, will retry after cooldown")
-                    
-                    # Set cooldown flag - do NOT retry immediately
+                    algo.Debug(f"ORDER TIMEOUT attempt 1: {symbol.Value}")
                     algo._retry_pending[symbol] = current_time
                     algo._order_retries[order_id] = 1
                     symbols_to_remove.append(symbol)
                 except Exception as e:
-                    algo.Debug(f"Error canceling order for {symbol.Value}: {e}")
+                    algo.Debug(f"Error canceling {symbol.Value}: {e}")
                     symbols_to_remove.append(symbol)
                     algo._order_retries.pop(order_id, None)
             else:
@@ -1244,13 +1261,12 @@ def verify_order_fills(algo):
                     algo._session_blacklist.add(symbol.Value)
                     symbols_to_remove.append(symbol)
                     algo._order_retries.pop(order_id, None)
-                    algo.Debug(f"ORDER TIMEOUT (attempt 2): {symbol.Value} - blacklisted")
+                    algo.Debug(f"ORDER TIMEOUT attempt 2: {symbol.Value} blacklisted")
                 except Exception as e:
-                    algo.Debug(f"Error canceling order {order_id} on second timeout: {e}")
+                    algo.Debug(f"Error canceling {order_id}: {e}")
                     symbols_to_remove.append(symbol)
                     algo._order_retries.pop(order_id, None)
     
-    # Remove processed orders
     for symbol in symbols_to_remove:
         algo._submitted_orders.pop(symbol, None)
 
@@ -1274,86 +1290,28 @@ def portfolio_sanity_check(algo):
         usd_cash = algo.Portfolio.Cash
     
     tracked_value = 0.0
-    tracked_positions = {}
+    tracked_pos_count = 0
     
     for sym in list(algo.entry_prices.keys()):
         if sym in algo.Securities:
             price = algo.Securities[sym].Price
             if sym in algo.Portfolio:
                 qty = algo.Portfolio[sym].Quantity
-                value = abs(qty) * price
-                tracked_value += value
-                tracked_positions[sym.Value] = {'qty': qty, 'price': price, 'value': value}
+                tracked_value += abs(qty) * price
+                tracked_pos_count += 1
     
     expected = usd_cash + tracked_value
     
-    # Use both percentage and minimum absolute threshold to avoid spam on small portfolios
-    # Also add 1-hour cooldown between warnings
+    # Use both percentage and minimum absolute threshold to avoid spam; 1-hour cooldown.
     abs_diff = abs(total_qc - expected)
     if total_qc > 1.0:
         pct_diff = abs_diff / total_qc
         should_warn = pct_diff > algo.portfolio_mismatch_threshold and abs_diff > algo.portfolio_mismatch_min_dollars
         if should_warn:
             if algo._last_mismatch_warning is None or (algo.Time - algo._last_mismatch_warning).total_seconds() >= algo.portfolio_mismatch_cooldown_seconds:
-                algo.Debug(f"⚠️ PORTFOLIO MISMATCH: QC total=${total_qc:.2f} but usd_cash+tracked=${expected:.2f} (diff=${abs_diff:.2f}, {pct_diff:.2%})")
-                
-                # Log detailed breakdown
-                algo.Debug("=== PORTFOLIO BREAKDOWN ===")
-                algo.Debug(f"USD Cash: ${usd_cash:.2f}")
-                
-                # Show tracked positions
-                if tracked_positions:
-                    algo.Debug(f"Tracked Positions ({len(tracked_positions)}):")
-                    for ticker, info in tracked_positions.items():
-                        algo.Debug(f"  {ticker}: qty={info['qty']:.6f}, price=${info['price']:.4f}, value=${info['value']:.2f}")
-                else:
-                    algo.Debug("Tracked Positions: None")
-                
-                # Show untracked portfolio holdings
-                untracked = []
-                for symbol in algo.Portfolio.Keys:
-                    holding = algo.Portfolio[symbol]
-                    if holding.Invested and holding.Quantity != 0:
-                        if symbol not in algo.entry_prices:
-                            price = algo.Securities[symbol].Price if symbol in algo.Securities else holding.Price
-                            value = abs(holding.Quantity) * price
-                            untracked.append({'ticker': symbol.Value, 'qty': holding.Quantity, 'price': price, 'value': value})
-                
-                if untracked:
-                    algo.Debug(f"Untracked Portfolio Holdings ({len(untracked)}):")
-                    for info in untracked:
-                        algo.Debug(f"  {info['ticker']}: qty={info['qty']:.6f}, price=${info['price']:.4f}, value=${info['value']:.2f}")
-                else:
-                    algo.Debug("Untracked Portfolio Holdings: None")
-                
-                # Show crypto CashBook entries (non-USD currencies)
-                crypto_cash = []
-                try:
-                    for currency, cash in algo.Portfolio.CashBook.items():
-                        if currency != "USD" and cash.Amount != 0:
-                            crypto_cash.append({'currency': currency, 'amount': cash.Amount, 'value': cash.ValueInAccountCurrency})
-                except Exception:
-                    pass
-                
-                if crypto_cash:
-                    algo.Debug(f"Crypto CashBook Entries ({len(crypto_cash)}):")
-                    for info in crypto_cash:
-                        algo.Debug(f"  {info['currency']}: amount={info['amount']:.6f}, value=${info['value']:.2f}")
-                else:
-                    algo.Debug("Crypto CashBook Entries: None")
-                
-                # Show which side is higher
-                if total_qc > expected:
-                    algo.Debug(f"QC Portfolio is higher by ${abs_diff:.2f} ({pct_diff:.2%})")
-                else:
-                    algo.Debug(f"Tracked value is higher by ${abs_diff:.2f} ({pct_diff:.2%})")
-                
-                algo.Debug("=== END BREAKDOWN ===")
-                
-                # Trigger resync_holdings_full to attempt auto-fix
-                algo.Debug("Triggering resync_holdings_full to attempt auto-fix...")
+                algo.Debug(f"⚠️ PORTFOLIO MISMATCH: QC=${total_qc:.2f} tracked=${expected:.2f} diff=${abs_diff:.2f} ({pct_diff:.2%})")
+                algo.Debug(f"  cash=${usd_cash:.2f} tracked_pos={tracked_pos_count} val=${tracked_value:.2f}")
                 resync_holdings_full(algo)
-                
                 algo._last_mismatch_warning = algo.Time
 
 

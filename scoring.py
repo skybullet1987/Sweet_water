@@ -66,21 +66,24 @@ class MicroScalpEngine:
 
         try:
             # ----------------------------------------------------------
-            # Signal 1: Order Book Imbalance (OBI)
+            # Signal 1: Order Book Imbalance (OBI) — LIVE ONLY
             # OBI = (bid_size - ask_size) / (bid_size + ask_size)
             # Strong buy pressure when OBI > 0.6 (bid wall dominates).
             # Tightened from 0.5 → 0.6 to reduce false signals.
+            # Skipped in backtest: no real L2 order book depth in
+            # QuantConnect's Kraken historical feed (zeros / synthetic noise).
             # ----------------------------------------------------------
-            bid_size = crypto.get('bid_size', 0.0)
-            ask_size = crypto.get('ask_size', 0.0)
-            total_size = bid_size + ask_size
-            if total_size > 0:
-                obi = (bid_size - ask_size) / total_size
-                if obi > self.OBI_STRONG_THRESHOLD:
-                    components['obi'] = 0.20
-                elif obi > self.OBI_PARTIAL_THRESHOLD:
-                    # Partial credit for meaningful buy-side imbalance
-                    components['obi'] = 0.10
+            if self.algo.LiveMode:
+                bid_size = crypto.get('bid_size', 0.0)
+                ask_size = crypto.get('ask_size', 0.0)
+                total_size = bid_size + ask_size
+                if total_size > 0:
+                    obi = (bid_size - ask_size) / total_size
+                    if obi > self.OBI_STRONG_THRESHOLD:
+                        components['obi'] = 0.20
+                    elif obi > self.OBI_PARTIAL_THRESHOLD:
+                        # Partial credit for meaningful buy-side imbalance
+                        components['obi'] = 0.10
 
             # ----------------------------------------------------------
             # Signal 2: Volume Ignition
@@ -219,16 +222,19 @@ class MicroScalpEngine:
                     components['vwap_signal'] = 0.15
 
             # ----------------------------------------------------------
-            # Signal 6: CVD Divergence (Absorption)
+            # Signal 6: CVD Divergence (Absorption) — LIVE ONLY
             # Price at or below VWAP -2SD lower band AND CVD trending up
             # over last 5 bars → limit buyers absorbing sellers at support.
+            # Skipped in backtest: OHLCV-approximated CVD is not real order
+            # flow and produces unreliable signals historically.
             # ----------------------------------------------------------
-            cvd = crypto.get('cvd')
-            if (vwap_sd2_lower > 0 and len(crypto['prices']) >= 1
-                    and cvd is not None and len(cvd) >= 5):
-                price = crypto['prices'][-1]
-                if price <= vwap_sd2_lower and cvd[-1] > cvd[-5]:
-                    components['cvd_absorption'] = 0.25
+            if self.algo.LiveMode:
+                cvd = crypto.get('cvd')
+                if (vwap_sd2_lower > 0 and len(crypto['prices']) >= 1
+                        and cvd is not None and len(cvd) >= 5):
+                    price = crypto['prices'][-1]
+                    if price <= vwap_sd2_lower and cvd[-1] > cvd[-5]:
+                        components['cvd_absorption'] = 0.25
 
             # ----------------------------------------------------------
             # Signal 7: Kalman Mean Reversion
@@ -248,11 +254,18 @@ class MicroScalpEngine:
 
         score = sum(components.values())
 
-        # Graduated microstructure gate: smoothly raises the score ceiling
-        # based on real order-flow presence (OBI + vol_ignition strength).
-        microstructure_strength = components.get('obi', 0) + components.get('vol_ignition', 0)
-        gate_cap = 0.50 + min(microstructure_strength / 0.20, 1.0) * 0.50
-        score = min(score, gate_cap)
+        # Microstructure gate — different logic for live vs backtest
+        if self.algo.LiveMode:
+            # Live: require real order-flow confirmation (OBI + volume)
+            microstructure_strength = components.get('obi', 0) + components.get('vol_ignition', 0)
+            gate_cap = 0.50 + min(microstructure_strength / 0.20, 1.0) * 0.50
+            score = min(score, gate_cap)
+        else:
+            # Backtest: no OBI/CVD data — gate on volume only, with a slightly
+            # higher floor to compensate for the missing signal weight.
+            vol_strength = components.get('vol_ignition', 0)
+            gate_cap = 0.55 + min(vol_strength / 0.20, 1.0) * 0.45
+            score = min(score, gate_cap)
 
         return min(score, 1.0), components
 

@@ -3,18 +3,19 @@ from AlgorithmImports import *
 # endregion
 
 
-class RealisticCryptoSlippage:
+class RealisticCryptoSlippage(ISlippageModel):
     """
     Realistic crypto slippage model for backtesting.
     Volume-aware, calibrated against empirical Kraken fill data.
-    Uses duck typing — no ISlippageModel inheritance (avoids PythonNet crash).
-    QuantConnect calls GetSlippageApproximation(asset, order) via duck typing.
+
+    NOTE: __init__ takes only self (no extra params) — required by PythonNet
+    when inheriting from C# interfaces like ISlippageModel.
     """
 
-    def __init__(self, base_slippage_pct=0.0010, max_slippage_pct=0.0050):
-        self.base_slippage_pct = base_slippage_pct   # 0.10% (was 0.3%)
-        self.volume_impact_factor = 0.15              # (was 0.20)
-        self.max_slippage_pct = max_slippage_pct      # 0.50% (was 5%)
+    def __init__(self):
+        self.base_slippage_pct = 0.0010      # 0.10%
+        self.volume_impact_factor = 0.15
+        self.max_slippage_pct = 0.0050       # 0.50% cap
 
     def GetSlippageApproximation(self, asset, order):
         try:

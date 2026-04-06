@@ -916,7 +916,6 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
         if bid > 0 and ask > 0:
             # Place limit order just above best bid – still maker, improves fill odds
             limit_price = bid * 1.0005  # 0.05% above bid – still below mid, still maker
-            limit_price = min(limit_price, ask)  # never cross the spread
 
             # BACKTEST: simulate queue-priority cost when bid/ask data IS available.
             # Slightly smaller offset (0.05%) than the no-data path (0.075%) because
@@ -947,6 +946,8 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                                     f"part={participation_rate:.1%} rej={rejection_prob:.1%}"
                                 )
                                 return None
+            else:
+                limit_price = min(limit_price, ask)  # live: never cross the spread
         else:
             # No bid/ask data: use last price as limit price.
             # In backtest this would fill immediately at the limit price,

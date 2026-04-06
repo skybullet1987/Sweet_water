@@ -50,8 +50,10 @@ SYMBOL_BLACKLIST_BACKTEST_DERIVED = {
     "STRKUSD",   # Repeated breakeven stops and poor fills
 }
 
-# Toggle: False = unbiased backtest (excludes look-ahead); True = default/optimistic.
-INCLUDE_BACKTEST_DERIVED_BLACKLIST = True
+# Toggle: False = unbiased/honest backtest (default); True = optimistic/look-ahead-biased mode.
+# The backtest-derived blacklist was built from observed losses — enabling it removes those
+# trades retroactively, which is look-ahead bias. Keep False for honest backtesting.
+INCLUDE_BACKTEST_DERIVED_BLACKLIST = False
 
 # Combined blacklist.
 SYMBOL_BLACKLIST = (
@@ -914,7 +916,38 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
         if bid > 0 and ask > 0:
             # Place limit order just above best bid – still maker, improves fill odds
             limit_price = bid * 1.0005  # 0.05% above bid – still below mid, still maker
-            limit_price = min(limit_price, ask)  # never cross the spread
+
+            # BACKTEST: simulate queue-priority cost when bid/ask data IS available.
+            # Slightly smaller offset (0.05%) than the no-data path (0.075%) because
+            # real quote data means better price discovery, but queue position is still unknown.
+            if not algo.LiveMode:
+                adverse_offset = 0.0005  # 0.05% queue-priority cost
+                if quantity > 0:
+                    limit_price *= (1 + adverse_offset)
+                    limit_price = min(limit_price, ask)  # buy: never cross the ask
+                else:
+                    limit_price *= (1 - adverse_offset)
+                    limit_price = max(limit_price, bid)  # sell: never go below the bid
+
+                # Probabilistic rejection based on participation rate (>5% threshold).
+                crypto = algo.crypto_data.get(symbol)
+                if crypto and len(crypto.get('volume', [])) > 0:
+                    bar_volume = float(crypto['volume'][-1])
+                    bar_dollar_volume = bar_volume * float(limit_price) if limit_price > 0 else 0
+                    order_notional = abs(quantity) * float(limit_price)
+                    if bar_dollar_volume > 0:
+                        participation_rate = order_notional / bar_dollar_volume
+                        if participation_rate > _QUEUE_PARTICIPATION_THRESHOLD:
+                            excess = participation_rate - _QUEUE_PARTICIPATION_THRESHOLD
+                            rejection_prob = min(excess * _QUEUE_REJECTION_SLOPE, _QUEUE_MAX_REJECTION_PROB)
+                            if random.random() < rejection_prob:
+                                algo.Debug(
+                                    f"BACKTEST QUEUE REJECT (bid/ask): {symbol.Value} "
+                                    f"part={participation_rate:.1%} rej={rejection_prob:.1%}"
+                                )
+                                return None
+            else:
+                limit_price = min(limit_price, ask)  # live: never cross the spread
         else:
             # No bid/ask data: use last price as limit price.
             # In backtest this would fill immediately at the limit price,

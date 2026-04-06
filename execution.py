@@ -835,7 +835,16 @@ def live_safety_checks(algo):
 
 
 def kelly_fraction(algo):
-    """Kelly criterion-based position sizing from main_opus."""
+    """
+    Half-Kelly position sizing multiplier, normalized so 1.0 = neutral.
+
+    Normalization: divide by 0.25, the expected half-Kelly for a typical strategy
+    with full-Kelly ≈ 0.50. This means:
+      half_kelly=0.25 → returns 1.0  (neutral sizing)
+      half_kelly=0.375 → returns 1.5 (max boost, capped)
+      half_kelly=0.125 → returns 0.5 (min floor)
+    Result is clamped to [0.5, 1.5] to prevent extreme under/over-sizing.
+    """
     if len(algo._rolling_wins) < 10:
         return 1.0
     win_rate = sum(algo._rolling_wins) / len(algo._rolling_wins)
@@ -848,7 +857,7 @@ def kelly_fraction(algo):
     b = avg_win / avg_loss
     kelly = (win_rate * b - (1 - win_rate)) / b
     half_kelly = kelly * 0.5
-    return max(0.5, min(1.5, half_kelly / 0.5))
+    return max(0.5, min(1.5, half_kelly / 0.25))
 
 
 def get_slippage_penalty(algo, symbol):
@@ -902,12 +911,12 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             crypto = algo.crypto_data.get(symbol)
             if crypto and len(crypto.get('volatility', [])) > 0:
                 recent_vol = float(crypto['volatility'][-1])
-                # Base non-fill rate 30%, scales up to 75% in high-vol environments.
-                # Real limit order fill rates on Kraken altcoins at the bid are 30-50%
-                # within a 5-minute bar; the 30% base reflects this more accurately.
-                non_fill_prob = min(0.30 + recent_vol * 6.0, 0.75)
+                # Base non-fill rate 20%, scales up to 60% in high-vol environments.
+                # Real limit order fill rates on Kraken altcoins at bid+0.05% are 40-70%
+                # within a 5-minute bar; the 20% base reflects a realistic rejection rate.
+                non_fill_prob = min(0.20 + recent_vol * 5.0, 0.60)
             else:
-                non_fill_prob = 0.40
+                non_fill_prob = 0.30
             if random.random() < non_fill_prob:
                 return None
         # Fall through to limit order logic for both live and backtest

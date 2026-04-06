@@ -36,8 +36,8 @@ class MicroScalpEngine:
     ADX_MODERATE_THRESHOLD  = 13     # moderate directional trend
     VWAP_BUFFER             = 1.0005  # 0.05% above VWAP for confirmed reclaim
     # Ranging-market mean reversion thresholds (used when ADX < ADX_MODERATE_THRESHOLD)
-    RSI_OVERSOLD_THRESHOLD        = 35   # RSI < 35 → oversold, mean reversion buy signal
-    RSI_MILDLY_OVERSOLD_THRESHOLD = 40   # RSI < 40 → mildly oversold, partial credit
+    RSI_OVERSOLD_THRESHOLD        = 45   # RSI < 45 → ranging-market entry (mean reversion in sideways/choppy markets)
+    RSI_MILDLY_OVERSOLD_THRESHOLD = 50   # RSI < 50 → mild ranging-market entry, partial credit
     BB_NEAR_LOWER_PCT             = 0.03  # within 3% of lower Bollinger Band = near support
 
     def __init__(self, algorithm):
@@ -264,7 +264,7 @@ class MicroScalpEngine:
             # Backtest: no OBI/CVD data — gate on volume only. Floor is stricter than
             # live (0.45 vs 0.50) because backtest cannot verify with real order flow.
             vol_strength = components.get('vol_ignition', 0)
-            gate_cap = 0.45 + min(vol_strength / 0.20, 1.0) * 0.45
+            gate_cap = 0.55 + min(vol_strength / 0.20, 1.0) * 0.45
             score = min(score, gate_cap)
 
         return min(score, 1.0), components
@@ -286,15 +286,15 @@ class MicroScalpEngine:
         """
         if score >= 0.80:
             # 4+ signals firing – high conviction
-            size = 0.30
+            size = 0.50
         elif score >= self.algo.high_conviction_threshold:
             # 3+ signals: good conviction
-            size = 0.25
+            size = 0.40
         elif score >= threshold:
             # Entry threshold met: moderate sizing
-            size = 0.20
+            size = 0.35
         else:
-            size = 0.15
+            size = 0.25
 
         # Vol-targeting: scale down for volatile assets, keep size for calmer ones
         if asset_vol_ann is not None and asset_vol_ann > 0:
@@ -303,5 +303,4 @@ class MicroScalpEngine:
             size *= max(vol_scalar, 0.5)  # Never reduce below 50% of base size
 
         kelly = self.algo._kelly_fraction()
-        kelly = min(kelly, 1.2)  # Cap Kelly multiplier to prevent oversizing
         return size * kelly

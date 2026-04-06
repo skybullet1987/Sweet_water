@@ -114,14 +114,19 @@ class RollingMaxDrawdown:
         """Return max drawdown as decimal (e.g., -0.05 for -5%)."""
         if len(self.equity_history) < 2:
             return 0
-        
-        peak = max(self.equity_history)
-        trough = min(self.equity_history)
-        
-        if peak == 0:
-            return 0
-        
-        return (trough - peak) / peak
+
+        running_peak = self.equity_history[0]
+        max_dd = 0
+
+        for equity in self.equity_history:
+            if equity > running_peak:
+                running_peak = equity
+            if running_peak > 0:
+                dd = (equity - running_peak) / running_peak
+                if dd < max_dd:
+                    max_dd = dd
+
+        return max_dd
     
     def get_max_drawdown_pct(self):
         """Return max drawdown as percentage string."""

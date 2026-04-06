@@ -1,22 +1,29 @@
 # region imports
 from AlgorithmImports import *
-from QuantConnect.Orders.Slippage import ISlippageModel
 # endregion
 
 
-class RealisticCryptoSlippage(ISlippageModel):
+class RealisticCryptoSlippage:
     """
     Realistic crypto slippage model for backtesting.
     Volume-aware, calibrated against empirical Kraken fill data.
 
+    LEAN Python uses duck typing for slippage models — implementing
+    GetSlippageApproximation(asset, order) is sufficient. Do NOT inherit
+    from ISlippageModel; pythonnet raises "interface takes exactly one
+    argument" when constructing the instance.
+
     Backtest realism additions:
-    - max_slippage_pct raised to 2.0% (was 0.5%) for realistic altcoin costs.
+    - base_slippage_pct 0.20% calibrated to real Kraken altcoin fills at $500-800 notional.
+    - volume_impact_factor 0.40 reflects real market impact at 1% participation (0.3-0.5%).
+    - max_slippage_pct raised to 2.0% for realistic altcoin costs.
+    - Synthetic spread floors doubled vs prior values to match real Kraken spreads.
     - Synthetic spread floor applied when bid/ask unavailable (typical in backtest).
     """
 
     def __init__(self):
-        self.base_slippage_pct = 0.0010      # 0.10%
-        self.volume_impact_factor = 0.15
+        self.base_slippage_pct = 0.0020      # 0.20% (calibrated to real Kraken altcoin fills)
+        self.volume_impact_factor = 0.40     # Real market impact at 1% participation on Kraken
         self.max_slippage_pct = 0.0200       # 2.00% cap
 
     def GetSlippageApproximation(self, asset, order):
@@ -38,19 +45,20 @@ class RealisticCryptoSlippage(ISlippageModel):
                     spread_cost = (ask - bid) / (2 * mid)
                     slippage_pct += spread_cost
             else:
-                # Synthetic spread floor (backtest realism)
+                # Synthetic spread floor (backtest realism — doubled vs prior values to
+                # match real Kraken spreads which are roughly 2× the old floors)
                 if price < 0.01:
-                    slippage_pct += 0.0100
+                    slippage_pct += 0.0200
                 elif price < 0.10:
-                    slippage_pct += 0.0050
+                    slippage_pct += 0.0100
                 elif price < 1.0:
-                    slippage_pct += 0.0025
+                    slippage_pct += 0.0050
                 elif price < 10.0:
-                    slippage_pct += 0.0015
+                    slippage_pct += 0.0030
                 elif price < 100.0:
-                    slippage_pct += 0.0008
+                    slippage_pct += 0.0016
                 else:
-                    slippage_pct += 0.0005
+                    slippage_pct += 0.0010
 
             # Volume impact
             volume = getattr(asset, 'Volume', 0)

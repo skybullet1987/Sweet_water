@@ -65,7 +65,7 @@ SYMBOL_BLACKLIST = (
 # UTC hour thresholds for spread time-of-day multipliers (_estimate_backtest_spread).
 _TOD_ASIAN_END = 8; _TOD_EU_END = 13; _TOD_US_END = 21  # session boundaries
 # Backtest queue-priority: participation-rate rejection constants.
-_QUEUE_PARTICIPATION_THRESHOLD = 0.05; _QUEUE_REJECTION_SLOPE = 10.0; _QUEUE_MAX_REJECTION_PROB = 0.90
+_QUEUE_PARTICIPATION_THRESHOLD = 0.02; _QUEUE_REJECTION_SLOPE = 10.0; _QUEUE_MAX_REJECTION_PROB = 0.90
 
 # Known fiat currency codes used to filter forex pairs from the crypto universe
 KNOWN_FIAT_CURRENCIES = frozenset({
@@ -215,7 +215,7 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
             return False
     # BACKTEST REALISM: exit non-fill simulation (non-stop-loss exits only)
     # Real exits on limit orders can miss — price moves away before fill.
-    # Lower rate than entry non-fills (5-25%) because exits are more urgent.
+    # Lower rate than entry non-fills (10-35%) because exits are more urgent.
     # Stop losses are excluded — they must always attempt to execute.
     if not algo.LiveMode:
         is_stop_loss = "Stop Loss" in tag or "Stop" in tag
@@ -223,9 +223,9 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
             crypto = algo.crypto_data.get(symbol)
             if crypto and len(crypto.get('volatility', [])) > 0:
                 recent_vol = float(crypto['volatility'][-1])
-                exit_non_fill_prob = min(0.05 + recent_vol * 4.0, 0.25)
+                exit_non_fill_prob = min(0.10 + recent_vol * 5.0, 0.35)
             else:
-                exit_non_fill_prob = 0.10
+                exit_non_fill_prob = 0.15
             if random.random() < exit_non_fill_prob:
                 algo.Debug(f"BACKTEST NON-FILL (exit): {symbol.Value} — simulated limit miss")
                 return False
@@ -902,10 +902,12 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             crypto = algo.crypto_data.get(symbol)
             if crypto and len(crypto.get('volatility', [])) > 0:
                 recent_vol = float(crypto['volatility'][-1])
-                # Base non-fill rate 15%, scales up to 60% in high-vol environments
-                non_fill_prob = min(0.15 + recent_vol * 8.0, 0.60)
+                # Base non-fill rate 30%, scales up to 75% in high-vol environments.
+                # Real limit order fill rates on Kraken altcoins at the bid are 30-50%
+                # within a 5-minute bar; the 30% base reflects this more accurately.
+                non_fill_prob = min(0.30 + recent_vol * 6.0, 0.75)
             else:
-                non_fill_prob = 0.25
+                non_fill_prob = 0.40
             if random.random() < non_fill_prob:
                 return None
         # Fall through to limit order logic for both live and backtest
@@ -918,10 +920,9 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             limit_price = bid * 1.0005  # 0.05% above bid – still below mid, still maker
 
             # BACKTEST: simulate queue-priority cost when bid/ask data IS available.
-            # Slightly smaller offset (0.05%) than the no-data path (0.075%) because
-            # real quote data means better price discovery, but queue position is still unknown.
+            # Offset (0.12%) reflects real queue priority cost on Kraken altcoins (0.10-0.20%).
             if not algo.LiveMode:
-                adverse_offset = 0.0005  # 0.05% queue-priority cost
+                adverse_offset = 0.0012  # 0.12% queue-priority cost
                 if quantity > 0:
                     limit_price *= (1 + adverse_offset)
                     limit_price = min(limit_price, ask)  # buy: never cross the ask
@@ -961,7 +962,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             # Apply adverse offset + participation-rate rejection.
             if not algo.LiveMode:
                 # Adverse offset: algo is not first in line at the limit level.
-                adverse_offset = 0.00075  # 0.075% queue-priority cost
+                adverse_offset = 0.0018  # 0.18% queue-priority cost (real Kraken altcoin cost 0.10-0.20%)
                 if quantity > 0:
                     limit_price *= (1 + adverse_offset)
                 else:

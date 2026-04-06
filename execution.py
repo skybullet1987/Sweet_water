@@ -213,22 +213,6 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
                 algo.highest_prices[symbol] = algo.Portfolio[symbol].AveragePrice
                 algo.entry_times[symbol] = algo.Time
             return False
-    # BACKTEST REALISM: exit non-fill simulation (non-stop-loss exits only)
-    # Real exits on limit orders can miss — price moves away before fill.
-    # Lower rate than entry non-fills (10-35%) because exits are more urgent.
-    # Stop losses are excluded — they must always attempt to execute.
-    if not algo.LiveMode:
-        is_stop_loss = "Stop Loss" in tag or "Stop" in tag
-        if not is_stop_loss:
-            crypto = algo.crypto_data.get(symbol)
-            if crypto and len(crypto.get('volatility', [])) > 0:
-                recent_vol = float(crypto['volatility'][-1])
-                exit_non_fill_prob = min(0.10 + recent_vol * 5.0, 0.35)
-            else:
-                exit_non_fill_prob = 0.15
-            if random.random() < exit_non_fill_prob:
-                algo.Debug(f"BACKTEST NON-FILL (exit): {symbol.Value} — simulated limit miss")
-                return False
     algo.Transactions.CancelOpenOrders(symbol)
     # For exits: use MinimumOrderSize from the security (brokerage-enforced floor).
     # lot_size < MinimumOrderSize for some assets (e.g. ETHUSD: lot=0.001, min=0.002),
@@ -911,12 +895,12 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             crypto = algo.crypto_data.get(symbol)
             if crypto and len(crypto.get('volatility', [])) > 0:
                 recent_vol = float(crypto['volatility'][-1])
-                # Base non-fill rate 20%, scales up to 60% in high-vol environments.
-                # Real limit order fill rates on Kraken altcoins at bid+0.05% are 40-70%
-                # within a 5-minute bar; the 20% base reflects a realistic rejection rate.
-                non_fill_prob = min(0.20 + recent_vol * 5.0, 0.60)
+                # Base non-fill rate 8%, scales up to 30% in high-vol environments.
+                # Real limit order fill rates on Kraken altcoins at bid+0.05% are 70-92%
+                # within a 5-minute bar; the 8% base reflects a realistic rejection rate.
+                non_fill_prob = min(0.08 + recent_vol * 3.0, 0.30)
             else:
-                non_fill_prob = 0.30
+                non_fill_prob = 0.15
             if random.random() < non_fill_prob:
                 return None
         # Fall through to limit order logic for both live and backtest
@@ -971,7 +955,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             # Apply adverse offset + participation-rate rejection.
             if not algo.LiveMode:
                 # Adverse offset: algo is not first in line at the limit level.
-                adverse_offset = 0.0018  # 0.18% queue-priority cost (real Kraken altcoin cost 0.10-0.20%)
+                adverse_offset = 0.0010  # 0.10% queue-priority cost (slippage model handles the rest)
                 if quantity > 0:
                     limit_price *= (1 + adverse_offset)
                 else:

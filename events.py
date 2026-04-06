@@ -112,11 +112,11 @@ def on_order_event(algo, event):
                         'pnl_pct': pnl,
                         'exit_reason': exit_tag,
                     })
-                    if len(algo._recent_trade_outcomes) >= 12:
+                    if len(algo._recent_trade_outcomes) >= 16:
                         recent_wr = sum(algo._recent_trade_outcomes) / len(algo._recent_trade_outcomes)
-                        if recent_wr < 0.25:
-                            algo._cash_mode_until = algo.Time + timedelta(hours=2)
-                            algo.Debug(f"⚠️ CASH MODE: WR={recent_wr:.0%} over {len(algo._recent_trade_outcomes)} trades. Pausing 2h.")
+                        if recent_wr < 0.15:
+                            algo._cash_mode_until = algo.Time + timedelta(minutes=45)
+                            algo.Debug(f"⚠️ CASH MODE: WR={recent_wr:.0%} over {len(algo._recent_trade_outcomes)} trades. Pausing 45min.")
                     cleanup_position(algo, symbol)
                     algo._failed_exit_attempts.pop(symbol, None)
                     algo._failed_exit_counts.pop(symbol, None)

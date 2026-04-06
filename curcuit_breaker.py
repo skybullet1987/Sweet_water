@@ -20,16 +20,16 @@ class DrawdownCircuitBreaker:
             algorithm.Liquidate()  # Close all positions
     """
     
-    def __init__(self, max_drawdown_pct=-0.10, recovery_pct=0.05):
+    def __init__(self, max_drawdown_pct=-0.10, recovery_pct=0.02):
         """
         Args:
             max_drawdown_pct: float, negative (e.g., -0.10 for -10%)
                 When portfolio equity drops this much from peak, breaker triggers
-            recovery_pct: float, positive (e.g., 0.05 for +5%)
+            recovery_pct: float, positive (e.g., 0.02 for +2%)
                 After breach, breaker resets only if equity recovers this much
         """
         self.max_drawdown_pct = max_drawdown_pct  # -0.10
-        self.recovery_pct = recovery_pct  # 0.05
+        self.recovery_pct = recovery_pct  # 0.02
         
         self.peak_equity = 0
         self.breaker_triggered = False

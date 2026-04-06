@@ -1,9 +1,10 @@
 # region imports
 from AlgorithmImports import *
+from QuantConnect.Orders.Slippage import ISlippageModel
 # endregion
 
 
-class RealisticCryptoSlippage:
+class RealisticCryptoSlippage(ISlippageModel):
     """
     Realistic crypto slippage model for backtesting.
     Volume-aware, calibrated against empirical Kraken fill data.

@@ -176,7 +176,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._breakeven_stops       = {}
         self._partial_sell_symbols  = set()
         self._choppy_regime_entries = {}
-        self.partial_tp_threshold   = 0.040
+        self.partial_tp_threshold   = 0.060
         self.stagnation_minutes     = 240
         self.stagnation_pnl_threshold = 0.005
         self.rsi_peaked_overbought = {}
@@ -1229,9 +1229,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         tp_mult = 1.0
         if self._choppy_regime_entries.get(symbol, False):
-            tp_mult = min(tp_mult, 0.65)
+            tp_mult *= 0.75
         if self.volatility_regime == "low":
-            tp_mult = min(tp_mult, 0.75)
+            tp_mult *= 0.85
+        tp_mult = max(tp_mult, 0.55)  # Floor: TP never crushed below 55% of ATR-TP
         tp = tp * tp_mult
 
         trailing_activation = self.trail_activation

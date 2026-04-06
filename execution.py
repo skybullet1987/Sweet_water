@@ -925,9 +925,10 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 adverse_offset = 0.0005  # 0.05% queue-priority cost
                 if quantity > 0:
                     limit_price *= (1 + adverse_offset)
+                    limit_price = min(limit_price, ask)  # buy: never cross the ask
                 else:
                     limit_price *= (1 - adverse_offset)
-                limit_price = min(limit_price, ask)  # re-clamp after offset
+                    limit_price = max(limit_price, bid)  # sell: never go below the bid
 
                 # Probabilistic rejection based on participation rate (>5% threshold).
                 crypto = algo.crypto_data.get(symbol)

@@ -73,27 +73,27 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.SetCash(250)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
-        self.entry_threshold = 0.50
-        self.high_conviction_threshold = 0.60
-        self.quick_take_profit = self._get_param("quick_take_profit", 0.150)   # was 0.200
-        self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.035)   # was 0.050
+        self.entry_threshold = 0.40
+        self.high_conviction_threshold = 0.50
+        self.quick_take_profit = self._get_param("quick_take_profit", 0.100)   # was 0.150
+        self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.050)   # was 0.035
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
         self.atr_sl_mult  = self._get_param("atr_sl_mult",  2.0)
-        self.trail_activation  = self._get_param("trail_activation",  0.040)   # was 0.060
-        self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.025)   # was 0.040
-        self.time_stop_hours   = self._get_param("time_stop_hours",   3.0)     # was 6.0
-        self.time_stop_pnl_min = self._get_param("time_stop_pnl_min", 0.003)
-        self.extended_time_stop_hours   = self._get_param("extended_time_stop_hours",   4.0)   # was 8.0
+        self.trail_activation  = self._get_param("trail_activation",  0.030)   # was 0.040
+        self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.020)   # was 0.025
+        self.time_stop_hours   = self._get_param("time_stop_hours",   5.0)     # was 3.0
+        self.time_stop_pnl_min = self._get_param("time_stop_pnl_min", 0.005)
+        self.extended_time_stop_hours   = self._get_param("extended_time_stop_hours",   7.0)   # was 4.0
         self.extended_time_stop_pnl_max = self._get_param("extended_time_stop_pnl_max", 0.015)
-        self.stale_position_hours       = self._get_param("stale_position_hours",       6.0)   # was 12.0
+        self.stale_position_hours       = self._get_param("stale_position_hours",       10.0)  # was 6.0
 
         self.atr_trail_mult      = 3.5
         self.min_trail_hold_minutes = 30
 
-        self.position_size_pct  = 0.80
-        self.max_positions      = 6
+        self.position_size_pct  = 0.90
+        self.max_positions      = 8
         self.min_notional       = 5.5
-        self.max_position_pct   = self._get_param("max_position_pct", 0.15)  # 15% of portfolio per position
+        self.max_position_pct   = self._get_param("max_position_pct", 0.20)  # 20% of portfolio per position
         self.min_price_usd      = 0.001
         self.cash_reserve_pct   = 0.00
         self.min_notional_fee_buffer = 1.5
@@ -118,13 +118,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.max_daily_trades       = 24000
         self.daily_trade_count      = 0
         self.last_trade_date        = None
-        self.exit_cooldown_hours    = 1.0
+        self.exit_cooldown_hours    = 0.5
         self.cancel_cooldown_minutes = 1
-        self.max_symbol_trades_per_day = 3
+        self.max_symbol_trades_per_day = 5
 
         self.expected_round_trip_fees = 0.0060
         self.fee_slippage_buffer      = 0.002
-        self.min_expected_profit_pct  = 0.020
+        self.min_expected_profit_pct  = 0.012
         self.adx_min_period           = 10
 
         self.stale_order_timeout_seconds      = 30
@@ -143,7 +143,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.max_drawdown_limit    = 0.25
         self.cooldown_hours        = 6
         self.consecutive_losses    = 0
-        self.max_consecutive_losses = 5
+        self.max_consecutive_losses = 8
         self._consecutive_loss_halve_remaining = 0
         self.circuit_breaker_expiry = None
         self._circuit_breaker_trigger_count = 0
@@ -176,9 +176,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._breakeven_stops       = {}
         self._partial_sell_symbols  = set()
         self._choppy_regime_entries = {}
-        self.partial_tp_threshold   = 0.060
-        self.stagnation_minutes     = 240
-        self.stagnation_pnl_threshold = 0.005
+        self.partial_tp_threshold   = 0.045
+        self.stagnation_minutes     = 360
+        self.stagnation_pnl_threshold = 0.003
         self.rsi_peaked_overbought = {}
         self.trade_count      = 0
         self._pending_orders  = {}
@@ -219,7 +219,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._daily_loss_limit = -0.05  # Stop trading if down 5% daily
         self._drawdown_limit = -0.20  # Stop for day if down 20%
         self._min_trade_capital = 300  # Minimum $300 per trade
-        self._max_concurrent_positions = 6  # Max 6 concurrent positions (matches max_positions)
+        self._max_concurrent_positions = 8  # Max 8 concurrent positions (matches max_positions)
         self._daily_start_equity = None
         self.trade_log      = deque(maxlen=500)
         self.log_budget     = 0
@@ -228,7 +228,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         # Risk management parameters
         self.max_participation_rate = 0.02   # Max 2% of daily dollar volume per position
-        self.reentry_cooldown_minutes = 10   # Min 10 minutes (reverted from 30) before re-entering same symbol after any exit
+        self.reentry_cooldown_minutes = 5   # Min 5 minutes before re-entering same symbol after any exit
 
         # Per-symbol performance tracking
         self._symbol_performance      = {}   # {symbol_value: deque of recent PnLs}
@@ -741,14 +741,14 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         return True
 
     def _daily_loss_exceeded(self):
-        """Returns True if the portfolio has dropped >= 3% from today's open value."""
+        """Returns True if the portfolio has dropped >= 5% from today's open value."""
         if self._daily_open_value is None or self._daily_open_value <= 0:
             return False
         current = self.Portfolio.TotalPortfolioValue
         if current <= 0:
             return True
         drop = (self._daily_open_value - current) / self._daily_open_value
-        return drop >= 0.03
+        return drop >= 0.05
 
     def _log_skip(self, reason):
         if self.LiveMode:
@@ -766,7 +766,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self._log_skip("max daily loss exceeded")
             return
 
-        if len(self.btc_returns) >= 5 and sum(list(self.btc_returns)[-5:]) < -0.01:
+        if len(self.btc_returns) >= 5 and sum(list(self.btc_returns)[-5:]) < -0.02:
             self._log_skip("BTC dumping")
             return
         
@@ -812,13 +812,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.consecutive_losses = 0
             self._log_skip("consecutive loss cooldown (5 losses)")
             return
-        # Circuit breaker: exponential backoff after 4 consecutive losses
-        if self.consecutive_losses >= 4:
+        # Circuit breaker: exponential backoff after 6 consecutive losses
+        if self.consecutive_losses >= 6:
             self._circuit_breaker_trigger_count += 1
             backoff_hours = min(1 * (2 ** (self._circuit_breaker_trigger_count - 1)), 8)  # 1h, 2h, 4h, 8h max
             self.circuit_breaker_expiry = self.Time + timedelta(hours=backoff_hours)
             self.consecutive_losses = 0
-            self._log_skip(f"circuit breaker triggered (4 losses, {backoff_hours}h cooldown #{self._circuit_breaker_trigger_count})")
+            self._log_skip(f"circuit breaker triggered (6 losses, {backoff_hours}h cooldown #{self._circuit_breaker_trigger_count})")
             return
         if self.circuit_breaker_expiry is not None and self.Time < self.circuit_breaker_expiry:
             self._log_skip("circuit breaker active")
@@ -1224,8 +1224,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             sl = self.tight_stop_loss
             tp = self.quick_take_profit
 
-        if tp < sl * 1.5:
-            tp = sl * 1.5
+        if tp < sl * 1.2:
+            tp = sl * 1.2
 
         tp_mult = 1.0
         if self._choppy_regime_entries.get(symbol, False):

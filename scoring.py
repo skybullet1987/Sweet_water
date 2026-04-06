@@ -32,8 +32,8 @@ class MicroScalpEngine:
     OBI_PARTIAL_THRESHOLD   = 0.20   # partial bid-side imbalance
     VOL_SURGE_STRONG        = 4.0    # 4× average volume = strong ignition
     VOL_SURGE_PARTIAL       = 2.5    # 2.5× volume = moderate spike
-    ADX_STRONG_THRESHOLD    = 18     # strong directional trend
-    ADX_MODERATE_THRESHOLD  = 13     # moderate directional trend
+    ADX_STRONG_THRESHOLD    = 14     # strong directional trend
+    ADX_MODERATE_THRESHOLD  = 10     # moderate directional trend
     VWAP_BUFFER             = 1.0005  # 0.05% above VWAP for confirmed reclaim
     # Ranging-market mean reversion thresholds (used when ADX < ADX_MODERATE_THRESHOLD)
     RSI_OVERSOLD_THRESHOLD        = 45   # RSI < 45 → ranging-market entry (mean reversion in sideways/choppy markets)
@@ -107,7 +107,7 @@ class MicroScalpEngine:
                 is_choppy = (adx_indicator is not None and adx_indicator.IsReady
                              and adx_indicator.Current.Value < 25)
                 vol_strong  = 1.8 if is_choppy else self.VOL_SURGE_STRONG
-                vol_partial = 1.2 if is_choppy else self.VOL_SURGE_PARTIAL
+                vol_partial = 1.0 if is_choppy else self.VOL_SURGE_PARTIAL
                 if vol_baseline > 0:
                     ratio = current_vol / vol_baseline
                     if ratio >= vol_strong:
@@ -261,10 +261,10 @@ class MicroScalpEngine:
             gate_cap = 0.50 + min(microstructure_strength / 0.20, 1.0) * 0.50
             score = min(score, gate_cap)
         else:
-            # Backtest: no OBI/CVD data — gate on volume only. Floor is stricter than
-            # live (0.45 vs 0.50) because backtest cannot verify with real order flow.
+            # Backtest: no OBI/CVD data — gate on volume only. Raised floor (0.70)
+            # compensates for missing live-only signals (OBI, CVD always zero in backtest).
             vol_strength = components.get('vol_ignition', 0)
-            gate_cap = 0.55 + min(vol_strength / 0.20, 1.0) * 0.45
+            gate_cap = 0.70 + min(vol_strength / 0.20, 1.0) * 0.30
             score = min(score, gate_cap)
 
         return min(score, 1.0), components
@@ -286,21 +286,21 @@ class MicroScalpEngine:
         """
         if score >= 0.80:
             # 4+ signals firing – high conviction
-            size = 0.50
+            size = 0.60
         elif score >= self.algo.high_conviction_threshold:
             # 3+ signals: good conviction
-            size = 0.40
+            size = 0.50
         elif score >= threshold:
             # Entry threshold met: moderate sizing
-            size = 0.35
+            size = 0.40
         else:
-            size = 0.25
+            size = 0.30
 
         # Vol-targeting: scale down for volatile assets, keep size for calmer ones
         if asset_vol_ann is not None and asset_vol_ann > 0:
             target_vol = self.algo.target_position_ann_vol  # 0.35
             vol_scalar = min(target_vol / asset_vol_ann, 1.0)
-            size *= max(vol_scalar, 0.5)  # Never reduce below 50% of base size
+            size *= max(vol_scalar, 0.6)  # Never reduce below 60% of base size
 
         kelly = self.algo._kelly_fraction()
         return size * kelly

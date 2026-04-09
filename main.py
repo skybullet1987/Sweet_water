@@ -50,7 +50,7 @@ class KrakenTieredFeeModel(FeeModel):
         monthly_volume = self._cumulative_volume * 30.0 / elapsed_days
 
         # Find the correct tier
-        maker_rate, taker_rate = self.FEE_TIERS[-1][1], self.FEE_TIERS[-1][2]  # default highest fee tier ($0+)
+        maker_rate, taker_rate = self.FEE_TIERS[-1][1], self.FEE_TIERS[-1][2]  # default: $0+ tier
         for min_vol, maker, taker in self.FEE_TIERS:
             if monthly_volume >= min_vol:
                 maker_rate, taker_rate = maker, taker
@@ -83,9 +83,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.020)   # was 0.025
         self.time_stop_hours   = self._get_param("time_stop_hours",   5.0)     # was 3.0
         self.time_stop_pnl_min = self._get_param("time_stop_pnl_min", 0.005)
-        self.extended_time_stop_hours   = self._get_param("extended_time_stop_hours",   7.0)   # was 4.0
+        self.extended_time_stop_hours   = self._get_param("extended_time_stop_hours",   7.0)
         self.extended_time_stop_pnl_max = self._get_param("extended_time_stop_pnl_max", 0.015)
-        self.stale_position_hours       = self._get_param("stale_position_hours",       10.0)  # was 6.0
+        self.stale_position_hours       = self._get_param("stale_position_hours",       10.0)
 
         self.atr_trail_mult             = 6.0
         self.post_partial_tp_trail_mult = 3.5
@@ -94,7 +94,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.position_size_pct  = 0.90
         self.max_positions      = 4
         self.min_notional       = 5.5
-        self.max_position_pct   = self._get_param("max_position_pct", 0.40)  # 40% of portfolio per position
+        self.max_position_pct   = self._get_param("max_position_pct", 0.40)  # 40% max per position
         self.min_price_usd      = 0.001
         self.cash_reserve_pct   = 0.00
         self.min_notional_fee_buffer = 1.5
@@ -181,7 +181,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.partial_tp_tier1_threshold = 0.025  # First partial TP at 2.5%
         self.partial_tp_tier2_threshold = 0.045  # Second partial TP at 4.5%
         self.partial_tp_tier1_pct   = 0.33        # Sell 33% at tier 1
-        self.partial_tp_tier2_pct   = 0.50        # Sell 50% of remainder at tier 2 (~33.5% of original)
+        self.partial_tp_tier2_pct   = 0.50        # 50% of remainder at tier 2 (~33.5% of original)
         self.stagnation_minutes     = 360
         self.stagnation_pnl_threshold = 0.003
         self.rsi_peaked_overbought = {}
@@ -223,8 +223,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # Paper trading safety limits for $50 capital
         self._daily_loss_limit = -0.05  # Stop trading if down 5% daily
         self._drawdown_limit = -0.20  # Stop for day if down 20%
-        self._min_trade_capital = 5  # Minimum $5 per trade (matches Kraken minimum notional)
-        self._max_concurrent_positions = 4  # Max 4 concurrent positions (matches max_positions)
+        self._min_trade_capital = 5  # Minimum $5 per trade
+        self._max_concurrent_positions = 4  # Max 4 concurrent positions
         self._daily_start_equity = None
         self.trade_log      = deque(maxlen=500)
         self.log_budget     = 0
@@ -233,8 +233,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         # Risk management parameters
         self.max_participation_rate = 0.02   # Max 2% of daily dollar volume per position
-        self.reentry_cooldown_minutes = 5   # Min 5 minutes before re-entering same symbol after any exit
-        self._btc_dump_size_mult = 1.0       # Position size multiplier during BTC weakness; reset to 1.0 at start of each Rebalance()
+        self.reentry_cooldown_minutes = 5   # Min 5 min re-entry cooldown
+        self._btc_dump_size_mult = 1.0       # Position size multiplier during BTC weakness
 
         # Per-symbol performance tracking
         self._symbol_performance      = {}   # {symbol_value: deque of recent PnLs}
@@ -357,7 +357,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 continue
             if not ticker.endswith("USD"):
                 continue
-            # Filter out forex pairs by checking that the base currency is not a known fiat
+            # Filter forex pairs (base not in known fiat currencies)
             base = ticker[:-3]  # remove "USD" suffix
             if base in KNOWN_FIAT_CURRENCIES:
                 continue
@@ -435,9 +435,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     self.Debug(f"Warning: Could not remove consolidator for {symbol.Value} - {e}")
             if not self.IsWarmingUp and is_invested_not_dust(self, symbol):
                 smart_liquidate(self, symbol, "Removed from universe")
-                # Don't cleanup here — let OnOrderEvent handle it on fill
                 self.Debug(f"FORCED EXIT: {symbol.Value} - removed from universe")
-            # Only delete crypto_data if not invested (otherwise OnOrderEvent needs it)
             if symbol in self.crypto_data and not is_invested_not_dust(self, symbol):
                 del self.crypto_data[symbol]
 
@@ -472,7 +470,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.btc_ema_24.Update(btc_bar.EndTime, btc_price)
             if len(self.btc_returns) >= 10:
                 self.btc_volatility.append(np.std(list(self.btc_returns)[-10:]))
-        # Only update quote data (bid/ask) from 1-min bars — price/volume/indicator updates happen via 5-min consolidator
+        # Update quote data (bid/ask) from 1-min bars; indicator updates use the 5-min consolidator.
         for symbol in list(self.crypto_data.keys()):
             if not data.Bars.ContainsKey(symbol):
                 continue
@@ -498,7 +496,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             sync_existing_positions(self)
             self._positions_synced = True
             self._first_post_warmup = False
-            # Fallback: if status never set, assume online after warmup
+            # Assume online if status never set after warmup
             if self.kraken_status == "unknown":
                 self.kraken_status = "online"
                 self.Debug("Fallback: kraken_status set to online after warmup")
@@ -606,7 +604,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         symbol = bar.Symbol
         if symbol not in self.crypto_data:
             return
-        # Process the 5-min bar through existing update logic (quote_bar=None: bid/ask updates happen in OnData)
+        # Process the 5-min bar; bid/ask updates happen separately in OnData.
         self._update_symbol_data(symbol, bar)
 
     def _update_market_context(self):
@@ -621,7 +619,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 new_regime = "bear"
             else:
                 new_regime = "sideways"
-            # Keep momentum confirmation but make it more sensitive
             if new_regime == "sideways" and len(self.btc_returns) >= 12:
                 if btc_mom_12 > 0.0001:
                     new_regime = "bull"
@@ -772,8 +769,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self._log_skip("max daily loss exceeded")
             return
 
-        # BTC weakness: reduce position sizes instead of blocking entirely
-        # Only hard-block on severe BTC crashes (>4% drop in 5 bars)
+        # BTC weakness: reduce position sizes; only hard-block on severe crashes (>4% drop in 5 bars)
         self._btc_dump_size_mult = 1.0
         if len(self.btc_returns) >= 5:
             btc_5bar_return = sum(list(self.btc_returns)[-5:])
@@ -837,7 +833,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self._log_skip("circuit breaker active")
             return
         elif self.circuit_breaker_expiry is not None and self.Time >= self.circuit_breaker_expiry:
-            self._circuit_breaker_trigger_count = max(0, self._circuit_breaker_trigger_count - 1)  # Decay, don't fully reset
+            self._circuit_breaker_trigger_count = max(0, self._circuit_breaker_trigger_count - 1)  # decay
             self.circuit_breaker_expiry = None
         pos_count = get_actual_position_count(self)
         if pos_count >= self.max_positions:
@@ -857,8 +853,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         count_above_thresh = 0
         scores = []
         threshold_now = self._get_threshold()
-        # Regime-adaptive: slightly higher conviction in unfavorable conditions
-        # but NOT so high that mean-reversion signals get blocked
+        # Regime-adaptive threshold: slightly higher conviction needed in unfavorable conditions.
         if self.market_regime == "bear":
             threshold_now = max(threshold_now, 0.50)
         elif self.market_regime == "sideways":
@@ -888,13 +883,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
             crypto['recent_net_scores'].append(net_score)
 
-            # RS override: in bear/sideways regime, altcoins showing relative
-            # strength vs BTC can enter at the base threshold instead of the elevated one
+            # RS override: altcoins showing relative strength vs BTC enter at base threshold.
             effective_threshold = threshold_now
             if self.market_regime in ("bear", "sideways") and len(crypto.get('rs_vs_btc', [])) >= 3:
                 recent_rs = sum(list(crypto['rs_vs_btc'])[-3:])
-                if recent_rs > 0.005:  # 0.5% cumulative outperformance vs BTC over 3 periods = meaningful relative strength
-                    effective_threshold = self.entry_threshold  # Use base 0.40 instead of elevated
+                if recent_rs > 0.005:  # 0.5% cumulative RS outperformance vs BTC
+                    effective_threshold = self.entry_threshold  # base 0.40 instead of elevated
 
             if net_score >= effective_threshold:
                 count_above_thresh += 1
@@ -1056,7 +1050,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             if self.volatility_regime == "high":
                 size = min(size * 1.1, self.position_size_pct)
 
-            # Per-symbol performance penalty: halve size after consecutive losses
+            # Per-symbol penalty: halve size after consecutive losses
             sym_val = sym.Value
             if sym_val in self._symbol_performance:
                 recent_pnls = list(self._symbol_performance[sym_val])
@@ -1072,17 +1066,16 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             # Apply BTC weakness size reduction
             size *= self._btc_dump_size_mult
 
-            # Spread-based sizing adjustment: apply linear penalty for spreads above 0.2%
+            # Spread penalty: linear reduction for spreads above 0.2%
             current_spread = get_spread_pct(self, sym)
             if current_spread is not None and current_spread > 0.002:  # > 0.2% spread
-                # Penalty: 1% penalty per 0.05% excess spread, floored at 50% of original size
+                # 1% penalty per 0.05% excess spread, floored at 50%
                 spread_penalty = max(0.5, 1.0 - (current_spread - 0.002) * 20)
                 size *= spread_penalty
 
             val = reserved_cash * size
 
-            # Liquidity-based position cap: max 1% of estimated daily dollar volume
-            # 288 = number of 5-minute bars per day (60min/5min * 24h)
+            # Liquidity cap: max 1% of estimated daily dollar volume (288 5-min bars/day)
             FIVE_MIN_BARS_PER_DAY = 288
             if len(crypto['dollar_volume']) >= 3:
                 dv_window = min(len(crypto['dollar_volume']), 12)
@@ -1121,7 +1114,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     post_fee_qty = qty * (1.0 - KRAKEN_SELL_FEE_BUFFER)
                     if post_fee_qty < min_order_size:
                         required_qty = round_quantity(self, sym, min_order_size / (1.0 - KRAKEN_SELL_FEE_BUFFER))
-                        if required_qty * price <= available_cash * 0.99:  # 1% cash safety margin
+                        if required_qty * price <= available_cash * 0.99:  # 1% safety margin
                             qty = required_qty
                             val = qty * price
                         else:
@@ -1179,7 +1172,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._failed_exit_counts.pop(kvp.Key, None)
                 continue
 
-            # Orphan detection: invested but crypto_data missing — force liquidate
+            # Orphan: invested but no crypto_data — force liquidate
             if self.crypto_data.get(kvp.Key) is None:
                 self.Debug(f"ORPHAN DETECTED: {kvp.Key.Value} has no crypto_data — force liquidating")
                 smart_liquidate(self, kvp.Key, "Orphan Position")
@@ -1318,7 +1311,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 if crypto:
                     crypto['trail_stop'] = trail_level
                 if crypto and crypto['trail_stop'] is not None:
-                    # Don't trigger ATR trail until minimum hold time elapsed
+                    # Don't trigger ATR trail until min hold time elapsed
                     if minutes >= self.min_trail_hold_minutes and holding.Quantity > 0 and price <= crypto['trail_stop']:
                         tag = "ATR Trail"
 
@@ -1340,7 +1333,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._symbol_loss_cooldowns[symbol] = self.Time + timedelta(minutes=30)
             sold = smart_liquidate(self, symbol, tag)
             if sold:
-                # Universal re-entry cooldown after any exit (minimum reentry_cooldown_minutes)
+                # Re-entry cooldown after exit
                 cooldown_delta = timedelta(minutes=self.reentry_cooldown_minutes)
                 exit_cooldown_delta = timedelta(hours=self.exit_cooldown_hours)
                 self._exit_cooldowns[symbol] = self.Time + max(cooldown_delta, exit_cooldown_delta)

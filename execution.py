@@ -8,14 +8,10 @@ from collections import deque
 from datetime import timedelta
 # endregion
 
-# Seed once at module load for deterministic, reproducible backtests.
-# Non-fill simulation is gated on `not algo.LiveMode`, so this is backtest-only.
-# QuantConnect runs each algorithm in an isolated process, so module-level seeding
-# is safe and ensures every run with the same parameters produces identical results.
+# Seed once at module load for deterministic backtests (backtest-only; non-fill simulation gated on not algo.LiveMode).
 random.seed(42)
 
-# Conservative round-trip fee estimate for net-of-fee PnL tracking (Kelly/circuit-breakers).
-# Kraken maker 0.25% + taker 0.40% = 0.65%.  QC's portfolio model handles actual fees.
+# Round-trip fee estimate for PnL tracking (Kelly/circuit-breakers). Kraken 0.25% maker + 0.40% taker = 0.65%.
 ESTIMATED_ROUND_TRIP_FEE = 0.0065  # 0.65% round-trip
 
 # STRUCTURAL blacklist: a-priori structural exclusions (not look-ahead biased).
@@ -38,10 +34,7 @@ SYMBOL_BLACKLIST_STRUCTURAL = {
     "PLNUSD", "THBUSD",
 }
 
-# BACKTEST-DERIVED blacklist: excluded from observed backtest losses.
-# WARNING: including these in backtests is look-ahead bias — the live system
-# would not have known to avoid them before those losses occurred.
-# Set INCLUDE_BACKTEST_DERIVED_BLACKLIST = False for an unbiased backtest.
+# BACKTEST-DERIVED blacklist: look-ahead bias — excluded from observed backtest losses. Keep False for honest runs.
 SYMBOL_BLACKLIST_BACKTEST_DERIVED = {
     "XCNUSD",    # Catastrophic stop-loss losses (e.g. -$5,386 and -$1.9M single trades)
     "KTAUSD",    # Immediate stop losses on first trades
@@ -50,9 +43,7 @@ SYMBOL_BLACKLIST_BACKTEST_DERIVED = {
     "STRKUSD",   # Repeated breakeven stops and poor fills
 }
 
-# Toggle: False = unbiased/honest backtest (default); True = optimistic/look-ahead-biased mode.
-# The backtest-derived blacklist was built from observed losses — enabling it removes those
-# trades retroactively, which is look-ahead bias. Keep False for honest backtesting.
+# Toggle: False = honest backtest (default). True = look-ahead-biased mode (removes observed losses retroactively).
 INCLUDE_BACKTEST_DERIVED_BLACKLIST = False
 
 # Combined blacklist.
@@ -73,14 +64,10 @@ KNOWN_FIAT_CURRENCIES = frozenset({
     "SEK", "NOK", "DKK", "KRW", "TRY", "ZAR", "MXN", "INR", "BRL", "PLN", "THB",
 })
 
-# Fractional haircut applied before re-rounding a sell quantity that exceeds the actual
-# portfolio holding.  The 0.9999 factor (0.01% reduction) is enough to push floating-point
-# values below the lot_size boundary while keeping the sell amount virtually identical.
+# Haircut before re-rounding sell qty: prevents floating-point overshoot above lot_size boundary.
 QUANTITY_HAIRCUT_FACTOR = 0.9999
 
-# Tolerance multiplier used when comparing a rounded quantity to the actual holding.
-# A tiny IEEE 754 overshoot (e.g. 0.09440399000000001 vs 0.09440399) is far smaller
-# than 0.01%, so this threshold distinguishes real overshoots from floating-point noise.
+# Tolerance for IEEE 754 floating-point overshoot when comparing rounded qty to actual holding.
 QUANTITY_OVERSHOOT_TOLERANCE = 1.0001
 
 KRAKEN_MIN_QTY_FALLBACK = {
@@ -104,8 +91,7 @@ MIN_NOTIONAL_FALLBACK = {
     'UNIUSD': 0.5, 'LSKUSD': 3.0, 'BCHUSD': 1.0,
 }
 
-# Fee buffer applied when computing sell quantity to prevent overselling due to
-# Kraken deducting fees from the base asset after a buy (Cash Modeling discrepancy).
+# Fee buffer: prevents overselling when Kraken deducts fees from base asset at buy time.
 KRAKEN_SELL_FEE_BUFFER = 0.006  # 0.6% (0.4% base fee + 0.2% safety margin)
 
 
@@ -214,9 +200,7 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
                 algo.entry_times[symbol] = algo.Time
             return False
     algo.Transactions.CancelOpenOrders(symbol)
-    # For exits: use MinimumOrderSize from the security (brokerage-enforced floor).
-    # lot_size < MinimumOrderSize for some assets (e.g. ETHUSD: lot=0.001, min=0.002),
-    # so using lot_size alone allows placing orders the brokerage will reject.
+    # Use MinimumOrderSize (not lot_size) for exits — lot_size can be < MinimumOrderSize on some assets.
     try:
         sec = algo.Securities[symbol]
         min_order_size = sec.SymbolProperties.MinimumOrderSize
@@ -229,18 +213,13 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
         exit_min_qty = min_qty
     if abs(holding_qty) < exit_min_qty:
         return False
-    # The portfolio already reflects the post-fee quantity (Kraken deducts fees from
-    # the base asset at buy time), so no fee buffer is needed on the sell side.
+    # No sell-side fee buffer needed: portfolio already reflects post-fee quantity.
     safe_qty = round_quantity(algo, symbol, abs(holding_qty))
-    # Ensure we never attempt to sell more than the actual portfolio quantity.
-    # round_quantity can round UP due to floating-point, causing "insufficient buying power"
-    # errors on Kraken Cash Modeling (e.g. post-fee BTC holdings are slightly less than
-    # the ordered quantity).  Apply a haircut before re-rounding to guarantee floor division
-    # stays at or below actual_qty.
+    # Apply haircut before re-rounding to prevent floating-point overshoot on Kraken Cash Modeling.
     actual_qty = abs(algo.Portfolio[symbol].Quantity)
     if safe_qty > actual_qty * QUANTITY_OVERSHOOT_TOLERANCE:  # tolerance for floating-point
         safe_qty = round_quantity(algo, symbol, actual_qty)
-    # Final hard cap — never exceed actual holding regardless of floating-point rounding
+    # Hard cap: never exceed actual holding.
     safe_qty = min(safe_qty, actual_qty)
     if safe_qty < exit_min_qty:
         # Position rounded down below MinimumOrderSize — treat as dust, cannot sell
@@ -501,23 +480,18 @@ def _estimate_backtest_spread(algo, symbol):
     if crypto is None:
         return None
 
-    # Use recent dollar volume (sum of last 20 bars × bar_interval_to_daily_scalar)
     dv_list = list(crypto.get('dollar_volume', []))
     if len(dv_list) < 5:
         return None
 
-    # Average dollar volume per bar, extrapolated to daily
+    # Average dollar volume per bar, extrapolated to daily (288 5-min bars/day)
     avg_bar_dv = float(np.mean(dv_list[-20:]))
-    # Bars per day: 288 for 5-min bars, 1440 for 1-min bars
-    # The consolidator uses 5-min bars for indicator updates, but dollar_volume
-    # is appended per 5-min bar in _update_symbol_data
     daily_dv = avg_bar_dv * 288  # 288 = 5-min bars per day (60min/5min × 24h)
 
     if daily_dv <= 0:
         return 0.05  # 5% default for zero-volume — will be rejected by spread cap
 
-    # Empirical constant calibrated to Kraken:
-    # k=2.0 gives spread=0.20% at $1M, 0.63% at $100K, 2.0% at $10K
+    # Empirical constant: k=2.0 → 0.20% at $1M, 0.63% at $100K, 2.0% at $10K
     k = 2.0
     estimated_spread = k / (daily_dv ** 0.5)
 
@@ -526,8 +500,7 @@ def _estimate_backtest_spread(algo, symbol):
     estimated_spread = max(estimated_spread, 0.0005)
     estimated_spread = min(estimated_spread, 0.10)
 
-    # Time-of-day multiplier: Kraken spreads widen outside US/EU hours.
-    # 00-08 UTC Asian (×1.5), 08-13 EU (×1.0), 13-21 US/EU (×0.85), 21-24 wind-down (×1.2).
+    # Time-of-day: 00-08 UTC Asian (×1.5), 08-13 EU (×1.0), 13-21 US (×0.85), 21+ (×1.2).
     h = algo.Time.hour
     if h < _TOD_ASIAN_END:
         tod_multiplier = 1.5
@@ -539,10 +512,8 @@ def _estimate_backtest_spread(algo, symbol):
         tod_multiplier = 1.2
     estimated_spread *= tod_multiplier
 
-    # Re-apply cap after multiplier to avoid exceeding the hard ceiling
     estimated_spread = min(estimated_spread, 0.10)
 
-    # Add the estimated spread to the spreads deque for median tracking
     crypto['spreads'].append(estimated_spread)
 
     return estimated_spread
@@ -579,13 +550,7 @@ def spread_ok(algo, symbol):
 
 
 def intraday_volume_ok(algo, symbol, order_value):
-    """
-    Check that the recent intraday dollar volume is sufficient for the
-    proposed order. Rejects entries where recent bars show very thin
-    trading activity, even if the daily universe filter passed.
-
-    Returns True if volume is adequate, False otherwise.
-    """
+    """Returns True if recent intraday dollar volume is sufficient for the order."""
     crypto = algo.crypto_data.get(symbol)
     if crypto is None:
         return True  # no data, allow (conservative)
@@ -594,15 +559,11 @@ def intraday_volume_ok(algo, symbol, order_value):
     if len(dv_list) < 5:
         return True  # not enough history yet
 
-    # Average dollar volume over last 10 bars (50 minutes at 5-min resolution)
+    # Min $500 avg dollar volume per bar; rejects low-activity windows
     recent_avg_dv = float(np.mean(dv_list[-10:])) if len(dv_list) >= 10 else float(np.mean(dv_list))
-
-    # Require at least $500 avg dollar volume per bar (≈ $144K daily pace)
-    # This catches symbols in low-activity windows even if daily vol is high
     if recent_avg_dv < 500:
         return False
 
-    # Participation rate check: order should be < 2% of recent bar volume
     if recent_avg_dv > 0 and order_value > 0:
         implied_participation = order_value / recent_avg_dv
         if implied_participation > algo.max_participation_rate:

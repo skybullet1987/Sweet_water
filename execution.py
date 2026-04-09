@@ -598,6 +598,8 @@ def cleanup_position(algo, symbol, record_pnl=False, exit_price=None):
         algo._partial_tp_taken.pop(symbol, None)
     if hasattr(algo, '_partial_tp_tier'):
         algo._partial_tp_tier.pop(symbol, None)
+    if hasattr(algo, '_entry_signal_combos'):
+        algo._entry_signal_combos.pop(symbol, None)
 
 
 def sync_existing_positions(algo):
@@ -1007,6 +1009,15 @@ def record_exit_pnl(algo, symbol, entry_price, exit_price, exit_tag="Unknown"):
         algo.pnl_by_vol_regime[vol_regime] = []
     algo.pnl_by_vol_regime[vol_regime].append(pnl)
 
+    # Signal-combination attribution
+    if hasattr(algo, '_entry_signal_combos') and symbol in algo._entry_signal_combos:
+        signal_combo = algo._entry_signal_combos.pop(symbol)
+        if not hasattr(algo, 'pnl_by_signal_combo'):
+            algo.pnl_by_signal_combo = {}
+        if signal_combo not in algo.pnl_by_signal_combo:
+            algo.pnl_by_signal_combo[signal_combo] = []
+        algo.pnl_by_signal_combo[signal_combo].append(pnl)
+
     return pnl
 
 
@@ -1377,6 +1388,26 @@ def daily_report(algo):
             avg = np.mean(pnls) if pnls else 0
             wr = sum(1 for p in pnls if p > 0) / len(pnls) if pnls else 0
             algo.Debug(f"  {vol_regime}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%}")
+    # Exit-tag performance summary
+    if hasattr(algo, 'pnl_by_tag') and algo.pnl_by_tag:
+        algo.Debug("  --- PnL by exit tag ---")
+        for tag, pnls in sorted(algo.pnl_by_tag.items()):
+            if len(pnls) == 0:
+                continue
+            avg = sum(pnls) / len(pnls)
+            wr = sum(1 for p in pnls if p > 0) / len(pnls)
+            total = sum(pnls)
+            algo.Debug(f"  {tag}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
+    # Signal-combination performance summary
+    if hasattr(algo, 'pnl_by_signal_combo') and algo.pnl_by_signal_combo:
+        algo.Debug("  --- PnL by signal combo ---")
+        for combo, pnls in sorted(algo.pnl_by_signal_combo.items()):
+            if len(pnls) == 0:
+                continue
+            avg = sum(pnls) / len(pnls)
+            wr = sum(1 for p in pnls if p > 0) / len(pnls)
+            total = sum(pnls)
+            algo.Debug(f"  {combo}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
     persist_state(algo)
 
 

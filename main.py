@@ -162,6 +162,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._failed_exit_counts   = {}
         self._daily_open_value     = None
         self.pnl_by_tag            = {}
+        self._entry_signal_combos  = {}   # {symbol: "vol+mean_rev+vwap" etc.}
+        self.pnl_by_signal_combo   = {}   # {"vol+mean_rev": [pnl1, pnl2, ...]}
 
         self.peak_value       = None
         self.drawdown_cooldown = 0
@@ -1127,6 +1129,16 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                                f"mean_rev={components.get('mean_reversion', 0):.2f} "
                                f"vwap={components.get('vwap_signal', 0):.2f}")
                     self.Debug(f"SCALP ENTRY: {sym.Value} | score={net_score:.2f} | ${val:.2f} | {sig_str}")
+                    # Track signal combination for attribution
+                    combo_parts = []
+                    if components.get('vol_ignition', 0) >= 0.10:
+                        combo_parts.append('vol')
+                    if components.get('mean_reversion', 0) >= 0.10:
+                        combo_parts.append('mean_rev')
+                    if components.get('vwap_signal', 0) >= 0.10:
+                        combo_parts.append('vwap')
+                    signal_combo = '+'.join(combo_parts) if combo_parts else 'none'
+                    self._entry_signal_combos[sym] = signal_combo
                     success_count += 1
                     self.trade_count += 1
                     crypto['trade_count_today'] = crypto.get('trade_count_today', 0) + 1
@@ -1358,6 +1370,26 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 avg = np.mean(pnls) if pnls else 0
                 wr = sum(1 for p in pnls if p > 0) / len(pnls) if pnls else 0
                 self.Debug(f"  {vol_regime}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%}")
+        # Exit-tag performance summary
+        if hasattr(self, 'pnl_by_tag') and self.pnl_by_tag:
+            self.Debug("=== PnL BY EXIT TAG ===")
+            for tag, pnls in sorted(self.pnl_by_tag.items()):
+                if len(pnls) == 0:
+                    continue
+                avg = sum(pnls) / len(pnls)
+                wr = sum(1 for p in pnls if p > 0) / len(pnls)
+                total = sum(pnls)
+                self.Debug(f"  {tag}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
+        # Signal-combination performance summary
+        if hasattr(self, 'pnl_by_signal_combo') and self.pnl_by_signal_combo:
+            self.Debug("=== PnL BY SIGNAL COMBO ===")
+            for combo, pnls in sorted(self.pnl_by_signal_combo.items()):
+                if len(pnls) == 0:
+                    continue
+                avg = sum(pnls) / len(pnls)
+                wr = sum(1 for p in pnls if p > 0) / len(pnls)
+                total = sum(pnls)
+                self.Debug(f"  {combo}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
 
     def DailyReport(self):
         if self.IsWarmingUp: return

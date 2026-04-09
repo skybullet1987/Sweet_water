@@ -222,6 +222,29 @@ class MicroScalpEngine:
                     components['vwap_signal'] = 0.15
 
             # ----------------------------------------------------------
+            # Signal: Bollinger Band Squeeze (Choppy Market Edge)
+            # When BB width compresses to bottom quartile of recent history
+            # AND volume is picking up → volatility expansion imminent.
+            # Only fires in sideways/bear regimes where squeeze setups
+            # are the dominant profitable pattern.
+            # ----------------------------------------------------------
+            if (self.algo.market_regime in ("sideways", "bear")
+                    and len(crypto.get('bb_width', [])) >= 8):
+                bb_widths = list(crypto['bb_width'])
+                current_width = bb_widths[-1]
+                # Bottom 25th percentile of recent BB width = compression
+                width_threshold = float(np.percentile(bb_widths, 25))
+                if current_width <= width_threshold and current_width > 0:
+                    # Squeeze detected — check for volume confirmation
+                    vol_component = components.get('vol_ignition', 0)
+                    if vol_component >= 0.10:
+                        # Squeeze + volume = high conviction entry
+                        components['bb_squeeze'] = 0.15
+                    elif len(crypto['prices']) >= 2 and crypto['prices'][-1] > crypto['prices'][-2]:
+                        # Squeeze + price uptick = moderate conviction
+                        components['bb_squeeze'] = 0.10
+
+            # ----------------------------------------------------------
             # Signal 6: CVD Divergence (Absorption) — LIVE ONLY
             # Price at or below VWAP -2SD lower band AND CVD trending up
             # over last 5 bars → limit buyers absorbing sellers at support.

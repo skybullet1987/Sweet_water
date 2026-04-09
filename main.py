@@ -234,6 +234,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # Risk management parameters
         self.max_participation_rate = 0.02   # Max 2% of daily dollar volume per position
         self.reentry_cooldown_minutes = 5   # Min 5 minutes before re-entering same symbol after any exit
+        self._btc_dump_size_mult = 1.0       # Position size multiplier during BTC weakness; reset to 1.0 at start of each Rebalance()
 
         # Per-symbol performance tracking
         self._symbol_performance      = {}   # {symbol_value: deque of recent PnLs}
@@ -771,9 +772,16 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self._log_skip("max daily loss exceeded")
             return
 
-        if len(self.btc_returns) >= 5 and sum(list(self.btc_returns)[-5:]) < -0.02:
-            self._log_skip("BTC dumping")
-            return
+        # BTC weakness: reduce position sizes instead of blocking entirely
+        # Only hard-block on severe BTC crashes (>4% drop in 5 bars)
+        self._btc_dump_size_mult = 1.0
+        if len(self.btc_returns) >= 5:
+            btc_5bar_return = sum(list(self.btc_returns)[-5:])
+            if btc_5bar_return < -0.04:
+                self._log_skip("BTC crashing")
+                return
+            elif btc_5bar_return < -0.02:
+                self._btc_dump_size_mult = 0.50  # Half size during BTC weakness
         
         if self._cash_mode_until is not None and self.Time < self._cash_mode_until:
             self._log_skip("cash mode - poor recent performance")
@@ -849,11 +857,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         count_above_thresh = 0
         scores = []
         threshold_now = self._get_threshold()
-        # Regime-adaptive: require higher conviction in unfavorable conditions
+        # Regime-adaptive: slightly higher conviction in unfavorable conditions
+        # but NOT so high that mean-reversion signals get blocked
         if self.market_regime == "bear":
-            threshold_now = max(threshold_now, 0.60)
+            threshold_now = max(threshold_now, 0.50)
         elif self.market_regime == "sideways":
-            threshold_now = max(threshold_now, 0.55)
+            threshold_now = max(threshold_now, 0.45)
         for symbol in list(self.crypto_data.keys()):
             if symbol.Value in SYMBOL_BLACKLIST or symbol.Value in self._session_blacklist:
                 continue
@@ -879,7 +888,15 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
             crypto['recent_net_scores'].append(net_score)
 
-            if net_score >= threshold_now:
+            # RS override: in bear/sideways regime, altcoins showing relative
+            # strength vs BTC can enter at the base threshold instead of the elevated one
+            effective_threshold = threshold_now
+            if self.market_regime in ("bear", "sideways") and len(crypto.get('rs_vs_btc', [])) >= 3:
+                recent_rs = sum(list(crypto['rs_vs_btc'])[-3:])
+                if recent_rs > 0.005:  # 0.5% cumulative outperformance vs BTC over 3 periods = meaningful relative strength
+                    effective_threshold = self.entry_threshold  # Use base 0.40 instead of elevated
+
+            if net_score >= effective_threshold:
                 count_above_thresh += 1
                 scores.append({
                     'symbol': symbol,
@@ -1051,6 +1068,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
             slippage_penalty = get_slippage_penalty(self, sym)
             size *= slippage_penalty
+
+            # Apply BTC weakness size reduction
+            size *= self._btc_dump_size_mult
 
             # Spread-based sizing adjustment: apply linear penalty for spreads above 0.2%
             current_spread = get_spread_pct(self, sym)
@@ -1320,7 +1340,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             if price * abs(holding.Quantity) < min_notional_usd * 0.9:
                 return
             if pnl < 0:
-                self._symbol_loss_cooldowns[symbol] = self.Time + timedelta(hours=1)
+                self._symbol_loss_cooldowns[symbol] = self.Time + timedelta(minutes=30)
             sold = smart_liquidate(self, symbol, tag)
             if sold:
                 # Universal re-entry cooldown after any exit (minimum reentry_cooldown_minutes)

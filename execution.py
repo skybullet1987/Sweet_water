@@ -635,6 +635,8 @@ def cleanup_position(algo, symbol, record_pnl=False, exit_price=None):
         algo._spike_entries.pop(symbol, None)
     if hasattr(algo, '_partial_tp_taken'):
         algo._partial_tp_taken.pop(symbol, None)
+    if hasattr(algo, '_partial_tp_tier'):
+        algo._partial_tp_tier.pop(symbol, None)
     if hasattr(algo, '_breakeven_stops'):
         algo._breakeven_stops.pop(symbol, None)
 

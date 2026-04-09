@@ -87,8 +87,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.extended_time_stop_pnl_max = self._get_param("extended_time_stop_pnl_max", 0.015)
         self.stale_position_hours       = self._get_param("stale_position_hours",       10.0)  # was 6.0
 
-        self.atr_trail_mult      = 3.5
-        self.min_trail_hold_minutes = 30
+        self.atr_trail_mult      = 4.5
+        self.min_trail_hold_minutes = 45
+        self.post_partial_tp_trail_mult = 2.5  # Trail multiplier after partial TP (wider to let remainder run)
 
         self.position_size_pct  = 0.90
         self.max_positions      = 4
@@ -229,6 +230,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # Risk management parameters
         self.max_participation_rate = 0.02   # Max 2% of daily dollar volume per position
         self.reentry_cooldown_minutes = 5   # Min 5 minutes before re-entering same symbol after any exit
+        self.loss_exit_cooldown_minutes = 45  # Longer cooldown after a losing exit to avoid revenge trading
 
         # Per-symbol performance tracking
         self._symbol_performance      = {}   # {symbol_value: deque of recent PnLs}
@@ -1281,7 +1283,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 # Use wider trail after partial TP to let remainder run
                 effective_trail_mult = self.atr_trail_mult
                 if self._partial_tp_taken.get(symbol, False):
-                    effective_trail_mult = self.atr_trail_mult * 1.5  # 50% wider after partial TP
+                    effective_trail_mult = self.atr_trail_mult * self.post_partial_tp_trail_mult  # wider after partial TP
                 trail_offset = atr * effective_trail_mult
                 trail_level = highest - trail_offset  # anchor to highest price since entry
                 if crypto:
@@ -1309,10 +1311,15 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._symbol_loss_cooldowns[symbol] = self.Time + timedelta(hours=1)
             sold = smart_liquidate(self, symbol, tag)
             if sold:
-                # Universal re-entry cooldown after any exit (minimum reentry_cooldown_minutes)
-                cooldown_delta = timedelta(minutes=self.reentry_cooldown_minutes)
-                exit_cooldown_delta = timedelta(hours=self.exit_cooldown_hours)
-                self._exit_cooldowns[symbol] = self.Time + max(cooldown_delta, exit_cooldown_delta)
+                if pnl < 0:
+                    # Longer cooldown after a losing exit to avoid revenge trading
+                    loss_cooldown = timedelta(minutes=self.loss_exit_cooldown_minutes)
+                    self._exit_cooldowns[symbol] = self.Time + loss_cooldown
+                else:
+                    # Normal cooldown for winning exits
+                    cooldown_delta = timedelta(minutes=self.reentry_cooldown_minutes)
+                    exit_cooldown_delta = timedelta(hours=self.exit_cooldown_hours)
+                    self._exit_cooldowns[symbol] = self.Time + max(cooldown_delta, exit_cooldown_delta)
 
                 self.rsi_peaked_overbought.pop(symbol, None)
                 self.entry_volumes.pop(symbol, None)

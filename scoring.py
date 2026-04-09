@@ -100,6 +100,10 @@ class MicroScalpEngine:
             # If ADX > 25 AND DI- > DI+ × 1.2 → mean reversion will fail, skip.
             # Not additive to score — filter only.
             # ----------------------------------------------------------
+            # SIGNAL: Mean Reversion
+            # RSI oversold + price near lower BB when ADX is low (ranging/choppy).
+            # Max contribution: 0.20 (strong), 0.15 (moderate), 0.10 (mild).
+            # ----------------------------------------------------------
             adx_indicator = crypto.get('adx')
             if adx_indicator is not None and adx_indicator.IsReady:
                 adx_val = adx_indicator.Current.Value
@@ -108,15 +112,6 @@ class MicroScalpEngine:
                 if adx_val > 25 and di_minus > di_plus * 1.2:
                     # Strong bearish trend — mean reversion will fail, skip
                     return 0.0, components
-
-            # ----------------------------------------------------------
-            # SIGNAL: Mean Reversion
-            # RSI oversold + price near lower BB when ADX is low (ranging/choppy).
-            # Max contribution: 0.20 (strong), 0.15 (moderate), 0.10 (mild).
-            # ----------------------------------------------------------
-            adx_indicator = crypto.get('adx')
-            if adx_indicator is not None and adx_indicator.IsReady:
-                adx_val = adx_indicator.Current.Value
                 if adx_val <= self.ADX_STRONG_THRESHOLD:
                     rsi_ind = crypto.get('rsi')
                     bb_lower_data = crypto.get('bb_lower', [])

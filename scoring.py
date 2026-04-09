@@ -25,8 +25,6 @@ class MicroScalpEngine:
     """
 
     # Tunable signal thresholds (easy to adjust for backtesting)
-    OBI_STRONG_THRESHOLD    = 0.35   # strong bid-side imbalance (kept for potential live re-add)
-    OBI_PARTIAL_THRESHOLD   = 0.20   # partial bid-side imbalance (kept for potential live re-add)
     VOL_SURGE_STRONG        = 4.0    # 4× average volume = strong ignition
     VOL_SURGE_PARTIAL       = 2.5    # 2.5× volume = moderate spike
     ADX_STRONG_THRESHOLD    = 14     # (kept for mean reversion gating)

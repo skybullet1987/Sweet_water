@@ -114,12 +114,25 @@ def on_order_event(algo, event):
                     if signal_combo not in algo.pnl_by_signal_combo:
                         algo.pnl_by_signal_combo[signal_combo] = []
                     algo.pnl_by_signal_combo[signal_combo].append(pnl)
+                    # Hold-time attribution
+                    entry_time = algo.entry_times.get(symbol)
+                    if entry_time is not None:
+                        hold_hours = (algo.Time - entry_time).total_seconds() / 3600
+                        hold_bucket = get_hold_bucket(hold_hours)
+                    else:
+                        hold_bucket = 'unknown'
+                    if not hasattr(algo, 'pnl_by_hold_time'):
+                        algo.pnl_by_hold_time = {}
+                    if hold_bucket not in algo.pnl_by_hold_time:
+                        algo.pnl_by_hold_time[hold_bucket] = []
+                    algo.pnl_by_hold_time[hold_bucket].append(pnl)
                     algo.trade_log.append({
                         'time': algo.Time,
                         'symbol': symbol.Value,
                         'pnl_pct': pnl,
                         'exit_reason': exit_tag,
                         'signal_combo': signal_combo,
+                        'hold_bucket': hold_bucket,
                     })
                     if len(algo._recent_trade_outcomes) >= 16:
                         recent_wr = sum(algo._recent_trade_outcomes) / len(algo._recent_trade_outcomes)

@@ -164,6 +164,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.pnl_by_tag            = {}
         self._entry_signal_combos  = {}   # {symbol: "vol+mean_rev+vwap" etc.}
         self.pnl_by_signal_combo   = {}   # {"vol+mean_rev": [pnl1, pnl2, ...]}
+        self.pnl_by_hold_time      = {}   # {"<30min": [pnl1, ...], "30min-2h": [...], ...}
 
         self.peak_value       = None
         self.drawdown_cooldown = 0
@@ -377,7 +378,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             'volatility': deque(maxlen=self.medium_period),
             'rsi': RelativeStrengthIndex(7),
             'rs_vs_btc': deque(maxlen=self.medium_period),
-            'zscore': deque(maxlen=self.short_period),
             'last_price': 0,
             'recent_net_scores': deque(maxlen=3),
             'spreads': deque(maxlen=self.spread_median_window),
@@ -398,10 +398,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             'vwap_sd': 0.0,
             'vwap_sd2_lower': 0.0,
             'vwap_sd3_lower': 0.0,
-            'cvd': deque(maxlen=self.lookback),
-            'ker': deque(maxlen=self.short_period),
-            'kalman_estimate': 0.0,
-            'kalman_error_cov': 1.0,
             'consolidator': None,
         }
         # Create 5-minute consolidator for this symbol
@@ -550,33 +546,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             std = np.std(prices_arr)
             mean = np.mean(prices_arr)
             if std > 0:
-                crypto['zscore'].append((price - mean) / std)
                 crypto['bb_upper'].append(mean + 2 * std)
                 crypto['bb_lower'].append(mean - 2 * std)
                 crypto['bb_width'].append(4 * std / mean if mean > 0 else 0)
-        high_low = high - low
-        if high_low > 0:
-            bar_delta = volume * ((price - low) - (high - price)) / high_low
-        else:
-            bar_delta = 0.0
-        prev_cvd = crypto['cvd'][-1] if len(crypto['cvd']) > 0 else 0.0
-        crypto['cvd'].append(prev_cvd + bar_delta)
-        if len(crypto['prices']) >= 15:
-            price_change = abs(crypto['prices'][-1] - crypto['prices'][-15])
-            volatility_sum = sum(abs(crypto['prices'][i] - crypto['prices'][i-1]) for i in range(-14, 0))
-            if volatility_sum > 0:
-                crypto['ker'].append(price_change / volatility_sum)
-            else:
-                crypto['ker'].append(0.0)
-        Q = 1e-5
-        R = 0.01
-        if crypto['kalman_estimate'] == 0.0:
-            crypto['kalman_estimate'] = price
-        estimate_pred = crypto['kalman_estimate']
-        error_cov_pred = crypto['kalman_error_cov'] + Q
-        kalman_gain = error_cov_pred / (error_cov_pred + R)
-        crypto['kalman_estimate'] = estimate_pred + kalman_gain * (price - estimate_pred)
-        crypto['kalman_error_cov'] = (1 - kalman_gain) * error_cov_pred
         sp = get_spread_pct(self, symbol)
         if sp is not None:
             crypto['spreads'].append(sp)
@@ -1390,6 +1362,17 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 wr = sum(1 for p in pnls if p > 0) / len(pnls)
                 total = sum(pnls)
                 self.Debug(f"  {combo}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
+        # Hold-time performance summary
+        if hasattr(self, 'pnl_by_hold_time') and self.pnl_by_hold_time:
+            self.Debug("=== PnL BY HOLD TIME ===")
+            for bucket in ['<30min', '30min-2h', '2h-6h', '6h+', 'unknown']:
+                pnls = self.pnl_by_hold_time.get(bucket)
+                if not pnls:
+                    continue
+                avg = sum(pnls) / len(pnls)
+                wr = sum(1 for p in pnls if p > 0) / len(pnls)
+                total = sum(pnls)
+                self.Debug(f"  {bucket}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
 
     def DailyReport(self):
         if self.IsWarmingUp: return

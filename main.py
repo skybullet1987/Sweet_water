@@ -1139,10 +1139,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 if ticket is not None:
                     self._recent_tickets.append(ticket)
                     components = cand.get('factors', {})
-                    sig_str = (f"obi={components.get('obi', 0):.2f} "
-                               f"vol={components.get('vol_ignition', 0):.2f} "
-                               f"trend={components.get('micro_trend', 0):.2f} "
-                               f"adx={components.get('adx_trend', 0):.2f} "
+                    sig_str = (f"vol={components.get('vol_ignition', 0):.2f} "
                                f"mean_rev={components.get('mean_reversion', 0):.2f} "
                                f"vwap={components.get('vwap_signal', 0):.2f}")
                     self.Debug(f"SCALP ENTRY: {sym.Value} | score={net_score:.2f} | ${val:.2f} | {sig_str}")

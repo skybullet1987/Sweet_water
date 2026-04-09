@@ -70,7 +70,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
         self.SetEndDate(2026, 12, 1)
-        self.SetCash(250)
+        self.SetCash(50)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
         self.entry_threshold = 0.40
@@ -91,9 +91,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.min_trail_hold_minutes = 30
 
         self.position_size_pct  = 0.90
-        self.max_positions      = 8
+        self.max_positions      = 4
         self.min_notional       = 5.5
-        self.max_position_pct   = self._get_param("max_position_pct", 0.20)  # 20% of portfolio per position
+        self.max_position_pct   = self._get_param("max_position_pct", 0.40)  # 40% of portfolio per position
         self.min_price_usd      = 0.001
         self.cash_reserve_pct   = 0.00
         self.min_notional_fee_buffer = 1.5
@@ -215,11 +215,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.losing_trades  = 0
         self.total_pnl = 0
         
-        # Paper trading safety limits for $5k capital
+        # Paper trading safety limits for $50 capital
         self._daily_loss_limit = -0.05  # Stop trading if down 5% daily
         self._drawdown_limit = -0.20  # Stop for day if down 20%
-        self._min_trade_capital = 300  # Minimum $300 per trade
-        self._max_concurrent_positions = 8  # Max 8 concurrent positions (matches max_positions)
+        self._min_trade_capital = 5  # Minimum $5 per trade (matches Kraken minimum notional)
+        self._max_concurrent_positions = 4  # Max 4 concurrent positions (matches max_positions)
         self._daily_start_equity = None
         self.trade_log      = deque(maxlen=500)
         self.log_budget     = 0

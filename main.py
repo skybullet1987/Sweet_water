@@ -87,8 +87,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.extended_time_stop_pnl_max = self._get_param("extended_time_stop_pnl_max", 0.015)
         self.stale_position_hours       = self._get_param("stale_position_hours",       10.0)  # was 6.0
 
-        self.atr_trail_mult      = 3.5
-        self.min_trail_hold_minutes = 30
+        self.atr_trail_mult             = 6.0
+        self.post_partial_tp_trail_mult = 3.5
+        self.min_trail_hold_minutes     = 60
 
         self.position_size_pct  = 0.90
         self.max_positions      = 4
@@ -173,10 +174,14 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.entry_times      = {}
         self.entry_volumes    = {}   # for volume dry-up exit
         self._partial_tp_taken      = {}
+        self._partial_tp_tier       = {}   # 0 = none, 1 = tier1 taken, 2 = tier2 taken
         self._breakeven_stops       = {}
         self._partial_sell_symbols  = set()
         self._choppy_regime_entries = {}
-        self.partial_tp_threshold   = 0.045
+        self.partial_tp_tier1_threshold = 0.025  # First partial TP at 2.5%
+        self.partial_tp_tier2_threshold = 0.045  # Second partial TP at 4.5%
+        self.partial_tp_tier1_pct   = 0.33        # Sell 33% at tier 1
+        self.partial_tp_tier2_pct   = 0.50        # Sell 50% of remainder at tier 2 (~33.5% of original)
         self.stagnation_minutes     = 360
         self.stagnation_pnl_threshold = 0.003
         self.rsi_peaked_overbought = {}
@@ -1245,12 +1250,21 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self.rsi_peaked_overbought[symbol] = True
 
 
-        if (not self._partial_tp_taken.get(symbol, False)
-                and pnl >= self.partial_tp_threshold):
-            if partial_smart_sell(self, symbol, 0.50, "Partial TP"):
+        tier = self._partial_tp_tier.get(symbol, 0)
+
+        if tier == 0 and pnl >= self.partial_tp_tier1_threshold:
+            if partial_smart_sell(self, symbol, self.partial_tp_tier1_pct, "Partial TP T1"):
+                self._partial_tp_tier[symbol]  = 1
                 self._partial_tp_taken[symbol] = True
-                self._breakeven_stops[symbol] = entry * 1.005
-                self.Debug(f"PARTIAL TP: {symbol.Value} | PnL:{pnl:+.2%} | SL→entry+0.5%")
+                self._breakeven_stops[symbol]  = entry * 1.003
+                self.Debug(f"PARTIAL TP T1: {symbol.Value} | PnL:{pnl:+.2%} | SL→entry+0.3%")
+                return  # Don't trigger full exit this bar
+
+        elif tier == 1 and pnl >= self.partial_tp_tier2_threshold:
+            if partial_smart_sell(self, symbol, self.partial_tp_tier2_pct, "Partial TP T2"):
+                self._partial_tp_tier[symbol]  = 2
+                self._breakeven_stops[symbol]  = entry * 1.005
+                self.Debug(f"PARTIAL TP T2: {symbol.Value} | PnL:{pnl:+.2%} | SL→entry+0.5%")
                 return  # Don't trigger full exit this bar
 
         tag = ""
@@ -1281,7 +1295,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 # Use wider trail after partial TP to let remainder run
                 effective_trail_mult = self.atr_trail_mult
                 if self._partial_tp_taken.get(symbol, False):
-                    effective_trail_mult = self.atr_trail_mult * 1.5  # 50% wider after partial TP
+                    effective_trail_mult = self.post_partial_tp_trail_mult
                 trail_offset = atr * effective_trail_mult
                 trail_level = highest - trail_offset  # anchor to highest price since entry
                 if crypto:

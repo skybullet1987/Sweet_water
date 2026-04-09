@@ -67,7 +67,6 @@ def on_order_event(algo, event):
                 crypto = algo.crypto_data.get(symbol)
                 if crypto and len(crypto['volume']) >= 1:
                     algo.entry_volumes[symbol] = crypto['volume'][-1]
-                algo.rsi_peaked_overbought.pop(symbol, None)
             else:
                 if symbol in algo._partial_sell_symbols:
                     algo._partial_sell_symbols.discard(symbol)
@@ -106,11 +105,21 @@ def on_order_event(algo, event):
                     algo.pnl_by_tag[exit_tag].append(pnl)
                     if len(algo.pnl_by_tag[exit_tag]) > 200:
                         algo.pnl_by_tag[exit_tag] = algo.pnl_by_tag[exit_tag][-200:]
+                    # Signal-combination attribution
+                    signal_combo = 'unknown'
+                    if hasattr(algo, '_entry_signal_combos'):
+                        signal_combo = algo._entry_signal_combos.pop(symbol, 'unknown')
+                    if not hasattr(algo, 'pnl_by_signal_combo'):
+                        algo.pnl_by_signal_combo = {}
+                    if signal_combo not in algo.pnl_by_signal_combo:
+                        algo.pnl_by_signal_combo[signal_combo] = []
+                    algo.pnl_by_signal_combo[signal_combo].append(pnl)
                     algo.trade_log.append({
                         'time': algo.Time,
                         'symbol': symbol.Value,
                         'pnl_pct': pnl,
                         'exit_reason': exit_tag,
+                        'signal_combo': signal_combo,
                     })
                     if len(algo._recent_trade_outcomes) >= 16:
                         recent_wr = sum(algo._recent_trade_outcomes) / len(algo._recent_trade_outcomes)

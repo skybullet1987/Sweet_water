@@ -180,11 +180,7 @@ class MicroScalpEngine:
     def calculate_position_size(self, score, threshold, asset_vol_ann):
         """
         Simplified position sizing: fixed fraction with vol-targeting.
-
-        No score-based tiers — research shows the score difference between
-        0.45 and 0.65 doesn't reliably predict trade outcome at this
-        signal resolution. Use a single base size, scaled by vol-targeting
-        and Kelly.
+        Kelly removed — noisy at this sample size and signal quality.
         """
         # Fixed base size — same for all entries that pass threshold
         size = 0.50
@@ -195,5 +191,4 @@ class MicroScalpEngine:
             vol_scalar = min(target_vol / asset_vol_ann, 1.0)
             size *= max(vol_scalar, 0.6)  # Never reduce below 60% of base size
 
-        kelly = self.algo._kelly_fraction()
-        return size * kelly
+        return size

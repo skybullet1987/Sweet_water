@@ -969,6 +969,18 @@ def normalize_order_time(order_time):
     return order_time.replace(tzinfo=None) if order_time.tzinfo is not None else order_time
 
 
+def get_hold_bucket(hold_hours):
+    """Return a string bucket label based on hold duration in hours."""
+    if hold_hours < 0.5:
+        return '<30min'
+    elif hold_hours < 2.0:
+        return '30min-2h'
+    elif hold_hours < 6.0:
+        return '2h-6h'
+    else:
+        return '6h+'
+
+
 def record_exit_pnl(algo, symbol, entry_price, exit_price, exit_tag="Unknown"):
     """Helper to record PnL from an exit trade. Returns None if prices are invalid."""
     if entry_price <= 0 or exit_price <= 0:
@@ -1017,6 +1029,19 @@ def record_exit_pnl(algo, symbol, entry_price, exit_price, exit_tag="Unknown"):
         if signal_combo not in algo.pnl_by_signal_combo:
             algo.pnl_by_signal_combo[signal_combo] = []
         algo.pnl_by_signal_combo[signal_combo].append(pnl)
+
+    # Hold-time attribution
+    entry_time = algo.entry_times.get(symbol) if hasattr(algo, 'entry_times') else None
+    if entry_time is not None:
+        hold_hours = (algo.Time - entry_time).total_seconds() / 3600
+        hold_bucket = get_hold_bucket(hold_hours)
+    else:
+        hold_bucket = 'unknown'
+    if not hasattr(algo, 'pnl_by_hold_time'):
+        algo.pnl_by_hold_time = {}
+    if hold_bucket not in algo.pnl_by_hold_time:
+        algo.pnl_by_hold_time[hold_bucket] = []
+    algo.pnl_by_hold_time[hold_bucket].append(pnl)
 
     return pnl
 
@@ -1408,6 +1433,17 @@ def daily_report(algo):
             wr = sum(1 for p in pnls if p > 0) / len(pnls)
             total = sum(pnls)
             algo.Debug(f"  {combo}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
+    # Hold-time PnL summary
+    if hasattr(algo, 'pnl_by_hold_time') and algo.pnl_by_hold_time:
+        algo.Debug("  --- PnL by hold time ---")
+        for bucket in ['<30min', '30min-2h', '2h-6h', '6h+', 'unknown']:
+            pnls = algo.pnl_by_hold_time.get(bucket)
+            if not pnls:
+                continue
+            avg = sum(pnls) / len(pnls)
+            wr = sum(1 for p in pnls if p > 0) / len(pnls)
+            total = sum(pnls)
+            algo.Debug(f"  {bucket}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
     persist_state(algo)
 
 

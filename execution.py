@@ -538,7 +538,7 @@ def spread_ok(algo, symbol):
             # Fall through to normal spread checks below with estimated spread
     effective_spread_cap = algo.max_spread_pct
     if algo.volatility_regime == "high" or algo.market_regime == "sideways":
-        effective_spread_cap = min(effective_spread_cap, 0.025)
+        effective_spread_cap = min(effective_spread_cap, 0.003)
     if sp > effective_spread_cap:
         return False
     crypto = algo.crypto_data.get(symbol)
@@ -598,8 +598,6 @@ def cleanup_position(algo, symbol, record_pnl=False, exit_price=None):
         algo._partial_tp_taken.pop(symbol, None)
     if hasattr(algo, '_partial_tp_tier'):
         algo._partial_tp_tier.pop(symbol, None)
-    if hasattr(algo, '_breakeven_stops'):
-        algo._breakeven_stops.pop(symbol, None)
 
 
 def sync_existing_positions(algo):
@@ -992,6 +990,23 @@ def record_exit_pnl(algo, symbol, entry_price, exit_price, exit_tag="Unknown"):
     if exit_tag not in algo.pnl_by_tag:
         algo.pnl_by_tag[exit_tag] = []
     algo.pnl_by_tag[exit_tag].append(pnl)
+
+    # Regime-level PnL tracking
+    if not hasattr(algo, 'pnl_by_regime'):
+        algo.pnl_by_regime = {}
+    regime = getattr(algo, 'market_regime', 'unknown')
+    if regime not in algo.pnl_by_regime:
+        algo.pnl_by_regime[regime] = []
+    algo.pnl_by_regime[regime].append(pnl)
+
+    # Volatility regime PnL tracking
+    if not hasattr(algo, 'pnl_by_vol_regime'):
+        algo.pnl_by_vol_regime = {}
+    vol_regime = getattr(algo, 'volatility_regime', 'normal')
+    if vol_regime not in algo.pnl_by_vol_regime:
+        algo.pnl_by_vol_regime[vol_regime] = []
+    algo.pnl_by_vol_regime[vol_regime].append(pnl)
+
     return pnl
 
 
@@ -1349,6 +1364,19 @@ def daily_report(algo):
             cur = algo.Securities[s].Price if s in algo.Securities else kvp.Value.Price
             pnl = (cur - entry) / entry if entry > 0 else 0
             algo.Debug(f"  {s.Value}: ${entry:.4f}→${cur:.4f} ({pnl:+.2%})")
+    # Regime PnL summary
+    if hasattr(algo, 'pnl_by_regime') and algo.pnl_by_regime:
+        algo.Debug("  --- PnL by regime ---")
+        for regime, pnls in algo.pnl_by_regime.items():
+            avg = np.mean(pnls) if pnls else 0
+            wr = sum(1 for p in pnls if p > 0) / len(pnls) if pnls else 0
+            algo.Debug(f"  {regime}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%}")
+    if hasattr(algo, 'pnl_by_vol_regime') and algo.pnl_by_vol_regime:
+        algo.Debug("  --- PnL by vol regime ---")
+        for vol_regime, pnls in algo.pnl_by_vol_regime.items():
+            avg = np.mean(pnls) if pnls else 0
+            wr = sum(1 for p in pnls if p > 0) / len(pnls) if pnls else 0
+            algo.Debug(f"  {vol_regime}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%}")
     persist_state(algo)
 
 

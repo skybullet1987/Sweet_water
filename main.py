@@ -83,9 +83,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.020)   # was 0.025
         self.time_stop_hours   = self._get_param("time_stop_hours",   5.0)     # was 3.0
         self.time_stop_pnl_min = self._get_param("time_stop_pnl_min", 0.005)
-        self.extended_time_stop_hours   = self._get_param("extended_time_stop_hours",   7.0)
-        self.extended_time_stop_pnl_max = self._get_param("extended_time_stop_pnl_max", 0.015)
-        self.stale_position_hours       = self._get_param("stale_position_hours",       10.0)
 
         self.atr_trail_mult             = 6.0
         self.post_partial_tp_trail_mult = 3.5
@@ -174,17 +171,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.entry_times      = {}
         self.entry_volumes    = {}   # for volume dry-up exit
         self._partial_tp_taken      = {}
-        self._partial_tp_tier       = {}   # 0 = none, 1 = tier1 taken, 2 = tier2 taken
-        self._breakeven_stops       = {}
+        self._partial_tp_tier       = {}   # 0 = none, 1 = tier1 taken
         self._partial_sell_symbols  = set()
         self._choppy_regime_entries = {}
         self.partial_tp_tier1_threshold = 0.025  # First partial TP at 2.5%
-        self.partial_tp_tier2_threshold = 0.045  # Second partial TP at 4.5%
         self.partial_tp_tier1_pct   = 0.33        # Sell 33% at tier 1
-        self.partial_tp_tier2_pct   = 0.50        # 50% of remainder at tier 2 (~33.5% of original)
-        self.stagnation_minutes     = 360
-        self.stagnation_pnl_threshold = 0.003
-        self.rsi_peaked_overbought = {}
         self.trade_count      = 0
         self._pending_orders  = {}
         self._cancel_cooldowns = {}
@@ -1230,7 +1221,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         hours = (self.Time - self.entry_times.get(symbol, self.Time)).total_seconds() / 3600
         minutes = hours * 60
 
-
         atr = crypto['atr'].Current.Value if crypto and crypto['atr'].IsReady else None
         if atr and entry > 0:
             sl = max((atr * self.atr_sl_mult) / entry, self.tight_stop_loss)
@@ -1247,84 +1237,51 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             tp_mult *= 0.75
         if self.volatility_regime == "low":
             tp_mult *= 0.85
-        tp_mult = max(tp_mult, 0.55)  # Floor: TP never crushed below 55% of ATR-TP
+        tp_mult = max(tp_mult, 0.55)
         tp = tp * tp_mult
 
         trailing_activation = self.trail_activation
-        trailing_stop_pct   = self.trail_stop_pct
+        trailing_stop_pct = self.trail_stop_pct
 
-
-        if crypto and crypto['rsi'].IsReady:
-            rsi_now = crypto['rsi'].Current.Value
-            if rsi_now > 85:
-                self.rsi_peaked_overbought[symbol] = True
-
-
+        # --- Partial TP (single tier) ---
         tier = self._partial_tp_tier.get(symbol, 0)
-
         if tier == 0 and pnl >= self.partial_tp_tier1_threshold:
-            if partial_smart_sell(self, symbol, self.partial_tp_tier1_pct, "Partial TP T1"):
-                self._partial_tp_tier[symbol]  = 1
+            if partial_smart_sell(self, symbol, self.partial_tp_tier1_pct, "Partial TP"):
+                self._partial_tp_tier[symbol] = 1
                 self._partial_tp_taken[symbol] = True
-                self._breakeven_stops[symbol]  = entry * 1.003
-                self.Debug(f"PARTIAL TP T1: {symbol.Value} | PnL:{pnl:+.2%} | SL→entry+0.3%")
-                return  # Don't trigger full exit this bar
+                self.Debug(f"PARTIAL TP: {symbol.Value} | PnL:{pnl:+.2%}")
+                return
 
-        elif tier == 1 and pnl >= self.partial_tp_tier2_threshold:
-            if partial_smart_sell(self, symbol, self.partial_tp_tier2_pct, "Partial TP T2"):
-                self._partial_tp_tier[symbol]  = 2
-                self._breakeven_stops[symbol]  = entry * 1.005
-                self.Debug(f"PARTIAL TP T2: {symbol.Value} | PnL:{pnl:+.2%} | SL→entry+0.5%")
-                return  # Don't trigger full exit this bar
-
+        # --- Exit tag determination ---
         tag = ""
 
-        if self._partial_tp_taken.get(symbol, False):
-            be_price = self._breakeven_stops.get(symbol, entry)
-            if price <= be_price:
-                tag = "Breakeven Stop"
-        elif pnl <= -sl:
+        # 1. Stop Loss
+        if pnl <= -sl:
             tag = "Stop Loss"
 
+        # 2. Take Profit (only if no partial TP taken)
+        if not tag and not self._partial_tp_taken.get(symbol, False) and pnl >= tp:
+            tag = "Take Profit"
 
-        if not tag and minutes > self.stagnation_minutes and pnl < self.stagnation_pnl_threshold:
-            tag = "Stagnation Exit"
+        # 3. Trailing Stop
+        if not tag and pnl > trailing_activation and dd >= trailing_stop_pct:
+            tag = "Trailing Stop"
 
+        # 4. ATR Trail
+        if not tag and atr and entry > 0 and holding.Quantity > 0:
+            effective_trail_mult = self.atr_trail_mult
+            if self._partial_tp_taken.get(symbol, False):
+                effective_trail_mult = self.post_partial_tp_trail_mult
+            trail_offset = atr * effective_trail_mult
+            trail_level = highest - trail_offset
+            if crypto:
+                crypto['trail_stop'] = trail_level
+            if minutes >= self.min_trail_hold_minutes and price <= trail_level:
+                tag = "ATR Trail"
 
-        elif not tag:
-
-            if not self._partial_tp_taken.get(symbol, False) and pnl >= tp:
-                tag = "Take Profit"
-
-
-            elif pnl > trailing_activation and dd >= trailing_stop_pct:
-                tag = "Trailing Stop"
-
-
-            elif atr and entry > 0 and holding.Quantity != 0:
-                # Use wider trail after partial TP to let remainder run
-                effective_trail_mult = self.atr_trail_mult
-                if self._partial_tp_taken.get(symbol, False):
-                    effective_trail_mult = self.post_partial_tp_trail_mult
-                trail_offset = atr * effective_trail_mult
-                trail_level = highest - trail_offset  # anchor to highest price since entry
-                if crypto:
-                    crypto['trail_stop'] = trail_level
-                if crypto and crypto['trail_stop'] is not None:
-                    # Don't trigger ATR trail until min hold time elapsed
-                    if minutes >= self.min_trail_hold_minutes and holding.Quantity > 0 and price <= crypto['trail_stop']:
-                        tag = "ATR Trail"
-
-            if not tag and hours >= self.time_stop_hours and pnl < self.time_stop_pnl_min:
-                tag = "Time Stop"
-
-
-            if not tag and hours >= self.extended_time_stop_hours and pnl < self.extended_time_stop_pnl_max:
-                tag = "Extended Time Stop"
-
-
-            if not tag and hours >= self.stale_position_hours:
-                tag = "Stale Position Exit"
+        # 5. Time Stop
+        if not tag and hours >= self.time_stop_hours and pnl < self.time_stop_pnl_min:
+            tag = "Time Stop"
 
         if tag:
             if price * abs(holding.Quantity) < min_notional_usd * 0.9:
@@ -1333,12 +1290,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._symbol_loss_cooldowns[symbol] = self.Time + timedelta(minutes=30)
             sold = smart_liquidate(self, symbol, tag)
             if sold:
-                # Re-entry cooldown after exit
                 cooldown_delta = timedelta(minutes=self.reentry_cooldown_minutes)
                 exit_cooldown_delta = timedelta(hours=self.exit_cooldown_hours)
                 self._exit_cooldowns[symbol] = self.Time + max(cooldown_delta, exit_cooldown_delta)
-
-                self.rsi_peaked_overbought.pop(symbol, None)
                 self.entry_volumes.pop(symbol, None)
                 self._choppy_regime_entries.pop(symbol, None)
                 self.Debug(f"{tag}: {symbol.Value} | PnL:{pnl:+.2%} | Held:{hours:.1f}h")
@@ -1347,7 +1301,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._failed_exit_counts[symbol] = fail_count
                 self.Debug(f"⚠️ EXIT FAILED ({tag}) #{fail_count}: {symbol.Value} | PnL:{pnl:+.2%} | Held:{hours:.1f}h")
                 if fail_count >= 3:
-                    self.Debug(f" FATAL EXIT FAILURE: {symbol.Value} — {fail_count} attempts failed, escalating to market order")
+                    self.Debug(f"FATAL EXIT FAILURE: {symbol.Value} — {fail_count} attempts failed, escalating to market order")
                     try:
                         holding = self.Portfolio[symbol]
                         qty = abs(holding.Quantity)
@@ -1356,7 +1310,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     except Exception as e:
                         self.Debug(f"Force market exit error for {symbol.Value}: {e}")
                     self._failed_exit_counts.pop(symbol, None)
-                    self.rsi_peaked_overbought.pop(symbol, None)
                     self.entry_volumes.pop(symbol, None)
                     self._choppy_regime_entries.pop(symbol, None)
 
@@ -1393,6 +1346,18 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.Debug(f"Final: ${self.Portfolio.TotalPortfolioValue:.2f}")
         self.Debug(f"PnL: {self.total_pnl:+.2%}")
         persist_state(self)
+        if hasattr(self, 'pnl_by_regime') and self.pnl_by_regime:
+            self.Debug("=== PnL BY REGIME ===")
+            for regime, pnls in self.pnl_by_regime.items():
+                avg = np.mean(pnls) if pnls else 0
+                wr = sum(1 for p in pnls if p > 0) / len(pnls) if pnls else 0
+                self.Debug(f"  {regime}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%}")
+        if hasattr(self, 'pnl_by_vol_regime') and self.pnl_by_vol_regime:
+            self.Debug("=== PnL BY VOL REGIME ===")
+            for vol_regime, pnls in self.pnl_by_vol_regime.items():
+                avg = np.mean(pnls) if pnls else 0
+                wr = sum(1 for p in pnls if p > 0) / len(pnls) if pnls else 0
+                self.Debug(f"  {vol_regime}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%}")
 
     def DailyReport(self):
         if self.IsWarmingUp: return

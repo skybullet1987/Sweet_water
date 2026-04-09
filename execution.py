@@ -600,7 +600,6 @@ def cleanup_position(algo, symbol, record_pnl=False, exit_price=None):
         algo._partial_tp_tier.pop(symbol, None)
 
 
-
 def sync_existing_positions(algo):
     algo.Debug("=" * 50)
     algo.Debug("=== SYNCING EXISTING POSITIONS ===")

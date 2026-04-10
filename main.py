@@ -7,6 +7,8 @@ from events import on_order_event
 from scoring import MicroScalpEngine
 from collections import deque
 import numpy as np
+import math
+import itertools
 from QuantConnect.Orders.Fees import FeeModel, OrderFee
 from QuantConnect.Securities import CashAmount
 # endregion
@@ -196,6 +198,16 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.volatility_regime = "normal"
         self.market_breadth   = 0.5
         self._regime_hold_count = 0
+
+        # Incremental rolling-stat accumulators for BTC (avoid deque→list→numpy each bar)
+        self._btc_sma48_window  = deque(maxlen=48)  # 48-bar price window for regime SMA
+        self._btc_sma48_sum     = 0.0
+        self._btc_mom12_window  = deque(maxlen=12)  # 12-bar return window for momentum
+        self._btc_mom12_sum     = 0.0
+        self._btc_vol_window    = deque(maxlen=10)  # 10-bar return window for volatility
+        self._btc_vol_sum       = 0.0
+        self._btc_vol_sum_sq    = 0.0
+        self._btc_vol_avg_sum   = 0.0              # running sum of btc_volatility values
 
         self.winning_trades = 0
         self.losing_trades  = 0
@@ -387,6 +399,18 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             'vwap_sd2_lower': 0.0,
             'vwap_sd3_lower': 0.0,
             'consolidator': None,
+            # Incremental rolling-stat accumulators (avoid deque→list→numpy each bar)
+            '_vma_window':   deque(maxlen=self.short_period),   # 6-bar rolling volume mean
+            '_vma_sum':      0.0,
+            '_vol_window':   deque(maxlen=10),                  # 10-bar rolling return std
+            '_vol_sum':      0.0,
+            '_vol_sum_sq':   0.0,
+            '_bb_window':    deque(maxlen=self.medium_period),  # 12-bar rolling price stats (BB)
+            '_bb_sum':       0.0,
+            '_bb_sum_sq':    0.0,
+            '_vol_long_sum': 0.0,                               # running sum of volume_long
+            '_vol20_window': deque(maxlen=20),                  # 20-bar rolling volume for scoring
+            '_vol20_sum':    0.0,
         }
         # Create 5-minute consolidator for this symbol
         try:
@@ -435,10 +459,38 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             if len(self.btc_prices) > 0:
                 btc_return = (btc_price - self.btc_prices[-1]) / self.btc_prices[-1]
                 self.btc_returns.append(btc_return)
+                # Maintain 12-bar momentum sum incrementally (avoids list copy each bar)
+                mom_w = self._btc_mom12_window
+                if len(mom_w) == mom_w.maxlen:
+                    self._btc_mom12_sum -= mom_w[0]
+                mom_w.append(btc_return)
+                self._btc_mom12_sum += btc_return
+                # Compute BTC volatility incrementally via rolling sum-of-squares (O(1))
+                btc_vol_w = self._btc_vol_window
+                if len(btc_vol_w) == btc_vol_w.maxlen:
+                    old_return = btc_vol_w[0]
+                    self._btc_vol_sum    -= old_return
+                    self._btc_vol_sum_sq -= old_return * old_return
+                btc_vol_w.append(btc_return)
+                self._btc_vol_sum    += btc_return
+                self._btc_vol_sum_sq += btc_return * btc_return
+                if len(btc_vol_w) >= 10:
+                    btc_vol_mean = self._btc_vol_sum / len(btc_vol_w)
+                    btc_vol_var  = self._btc_vol_sum_sq / len(btc_vol_w) - btc_vol_mean * btc_vol_mean
+                    new_vol = math.sqrt(max(btc_vol_var, 0.0))
+                    # Track running sum for btc_volatility mean used in _update_market_context
+                    if len(self.btc_volatility) == self.btc_volatility.maxlen:
+                        self._btc_vol_avg_sum -= self.btc_volatility[0]
+                    self.btc_volatility.append(new_vol)
+                    self._btc_vol_avg_sum += new_vol
+            # Maintain 48-bar price sum incrementally (avoids np.array + slicing each bar)
+            sma_w = self._btc_sma48_window
+            if len(sma_w) == sma_w.maxlen:
+                self._btc_sma48_sum -= sma_w[0]
+            sma_w.append(btc_price)
+            self._btc_sma48_sum += btc_price
             self.btc_prices.append(btc_price)
             self.btc_ema_24.Update(btc_bar.EndTime, btc_price)
-            if len(self.btc_returns) >= 10:
-                self.btc_volatility.append(np.std(list(self.btc_returns)[-10:]))
         for symbol in list(self.crypto_data.keys()):
             if not data.Bars.ContainsKey(symbol):
                 continue
@@ -480,16 +532,55 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         low = float(bar.Low)
         volume = float(bar.Volume)
         crypto['prices'].append(price)
+        # Maintain BB incremental window in sync with prices (O(1) update)
+        bb_w = crypto['_bb_window']
+        if len(bb_w) == bb_w.maxlen:
+            old_price = bb_w[0]
+            crypto['_bb_sum']    -= old_price
+            crypto['_bb_sum_sq'] -= old_price * old_price
+        bb_w.append(price)
+        crypto['_bb_sum']    += price
+        crypto['_bb_sum_sq'] += price * price
         crypto['highs'].append(high)
         crypto['lows'].append(low)
         if crypto['last_price'] > 0:
             ret = (price - crypto['last_price']) / crypto['last_price']
             crypto['returns'].append(ret)
+            # Incremental rolling volatility — rolling sum-of-squares (O(1), no list copy)
+            vol_w = crypto['_vol_window']
+            if len(vol_w) == vol_w.maxlen:
+                old_return = vol_w[0]
+                crypto['_vol_sum']    -= old_return
+                crypto['_vol_sum_sq'] -= old_return * old_return
+            vol_w.append(ret)
+            crypto['_vol_sum']    += ret
+            crypto['_vol_sum_sq'] += ret * ret
+            if len(vol_w) >= 10:
+                vol_mean = crypto['_vol_sum'] / len(vol_w)
+                vol_var  = crypto['_vol_sum_sq'] / len(vol_w) - vol_mean * vol_mean
+                crypto['volatility'].append(math.sqrt(max(vol_var, 0.0)))
         crypto['last_price'] = price
         crypto['volume'].append(volume)
         crypto['dollar_volume'].append(price * volume)
-        if len(crypto['volume']) >= self.short_period:
-            crypto['volume_ma'].append(np.mean(list(crypto['volume'])[-self.short_period:]))
+        # Incremental 6-bar rolling volume mean (O(1), avoids np.mean(list(volume)[-6:]))
+        vma_w = crypto['_vma_window']
+        if len(vma_w) == vma_w.maxlen:
+            crypto['_vma_sum'] -= vma_w[0]
+        vma_w.append(volume)
+        crypto['_vma_sum'] += volume
+        if len(vma_w) >= self.short_period:
+            crypto['volume_ma'].append(crypto['_vma_sum'] / len(vma_w))
+        # Maintain 20-bar volume window and volume_long running sums for scoring (O(1))
+        v20_w = crypto['_vol20_window']
+        if len(v20_w) == v20_w.maxlen:
+            crypto['_vol20_sum'] -= v20_w[0]
+        v20_w.append(volume)
+        crypto['_vol20_sum'] += volume
+        vol_long_w = crypto['volume_long']
+        if len(vol_long_w) == vol_long_w.maxlen:
+            crypto['_vol_long_sum'] -= vol_long_w[0]
+        vol_long_w.append(volume)
+        crypto['_vol_long_sum'] += volume
         crypto['ema_ultra_short'].Update(bar.EndTime, price)
         crypto['ema_short'].Update(bar.EndTime, price)
         crypto['ema_medium'].Update(bar.EndTime, price)
@@ -501,28 +592,27 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         total_v = sum(crypto['vwap_v'])
         if total_v > 0:
             crypto['vwap'] = sum(crypto['vwap_pv']) / total_v
-        crypto['volume_long'].append(volume)
         if len(crypto['vwap_v']) >= 5 and crypto['vwap'] > 0:
             vwap_val = crypto['vwap']
-            pv_list = list(crypto['vwap_pv'])
-            v_list = list(crypto['vwap_v'])
-            bar_prices = [pv / v for pv, v in zip(pv_list, v_list) if v > 0]
+            # zip directly over deques — avoids creating pv_list/v_list intermediaries
+            bar_prices = [pv / v for pv, v in zip(crypto['vwap_pv'], crypto['vwap_v']) if v > 0]
             if len(bar_prices) >= 5:
                 sd = float(np.std(bar_prices))
                 crypto['vwap_sd'] = sd
                 crypto['vwap_sd2_lower'] = vwap_val - 2.0 * sd
                 crypto['vwap_sd3_lower'] = vwap_val - 3.0 * sd
-        if len(crypto['returns']) >= 10:
-            crypto['volatility'].append(np.std(list(crypto['returns'])[-10:]))
         crypto['rsi'].Update(bar.EndTime, price)
         if len(crypto['returns']) >= self.short_period and len(self.btc_returns) >= self.short_period:
-            coin_ret = np.sum(list(crypto['returns'])[-self.short_period:])
-            btc_ret = np.sum(list(self.btc_returns)[-self.short_period:])
+            # sum last short_period elements without creating a full list copy
+            coin_ret = sum(itertools.islice(reversed(crypto['returns']), self.short_period))
+            btc_ret  = sum(itertools.islice(reversed(self.btc_returns),  self.short_period))
             crypto['rs_vs_btc'].append(coin_ret - btc_ret)
-        if len(crypto['prices']) >= self.medium_period:
-            prices_arr = np.array(list(crypto['prices'])[-self.medium_period:])
-            std = np.std(prices_arr)
-            mean = np.mean(prices_arr)
+        # Bollinger Bands via incremental stats (O(1), replaces np.array(list(prices)[-12:]))
+        if len(bb_w) >= self.medium_period:
+            n    = len(bb_w)
+            mean = crypto['_bb_sum'] / n
+            var  = crypto['_bb_sum_sq'] / n - mean * mean
+            std  = math.sqrt(max(var, 0.0))
             if std > 0:
                 crypto['bb_upper'].append(mean + 2 * std)
                 crypto['bb_lower'].append(mean - 2 * std)
@@ -550,10 +640,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
     def _update_market_context(self):
         if len(self.btc_prices) >= 48:
-            btc_arr = np.array(list(self.btc_prices))
-            current_btc = btc_arr[-1]
-            btc_mom_12 = np.mean(list(self.btc_returns)[-12:]) if len(self.btc_returns) >= 12 else 0.0
-            btc_sma = np.mean(btc_arr[-48:])
+            # Use incremental accumulators instead of full deque→list→numpy each bar
+            current_btc = self.btc_prices[-1]
+            btc_sma = (self._btc_sma48_sum / len(self._btc_sma48_window)
+                       if len(self._btc_sma48_window) > 0 else 0.0)
+            btc_mom_12 = (self._btc_mom12_sum / len(self._btc_mom12_window)
+                          if len(self._btc_mom12_window) >= 12 else 0.0)
             if current_btc > btc_sma * 1.02:
                 new_regime = "bull"
             elif current_btc < btc_sma * 0.98:
@@ -575,7 +667,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._regime_hold_count = 0
         if len(self.btc_volatility) >= 5:
             current_vol = self.btc_volatility[-1]
-            avg_vol = np.mean(list(self.btc_volatility))
+            # Use incremental running sum instead of np.mean(list(btc_volatility))
+            avg_vol = (self._btc_vol_avg_sum / len(self.btc_volatility)
+                       if len(self.btc_volatility) > 0 else 0.0)
             if current_vol > avg_vol * 1.5:
                 self.volatility_regime = "high"
             elif current_vol < avg_vol * 0.5:
@@ -659,7 +753,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         new_crypto = self.crypto_data.get(new_symbol)
         if not new_crypto or len(new_crypto['returns']) < 24:
             return True
-        new_rets = np.array(list(new_crypto['returns'])[-24:])
+        # np.array() accepts deques directly — avoids an intermediate Python list copy
+        new_rets = np.array(new_crypto['returns'])[-24:]
         if np.std(new_rets) < 1e-10:
             return True
         for sym in list(self.entry_prices.keys()):
@@ -668,7 +763,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             existing = self.crypto_data.get(sym)
             if not existing or len(existing['returns']) < 24:
                 continue
-            exist_rets = np.array(list(existing['returns'])[-24:])
+            exist_rets = np.array(existing['returns'])[-24:]
             if np.std(exist_rets) < 1e-10:
                 continue
             try:
@@ -706,7 +801,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self._btc_dump_size_mult = 1.0
         if len(self.btc_returns) >= 5:
-            btc_5bar_return = sum(list(self.btc_returns)[-5:])
+            # Sum last 5 returns without creating a full list copy
+            btc_5bar_return = sum(itertools.islice(reversed(self.btc_returns), 5))
             if btc_5bar_return < -0.04:
                 self._log_skip("BTC crashing")
                 return
@@ -826,7 +922,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             # RS override: altcoins with positive RS vs BTC enter at base threshold in bear/sideways.
             effective_threshold = threshold_now
             if self.market_regime in ("bear", "sideways") and len(crypto.get('rs_vs_btc', [])) >= 3:
-                recent_rs = sum(list(crypto['rs_vs_btc'])[-3:])
+                # Sum last 3 RS values without creating a list copy
+                recent_rs = sum(itertools.islice(reversed(crypto['rs_vs_btc']), 3))
                 if recent_rs > 0.005:
                     effective_threshold = self.entry_threshold
 
@@ -838,7 +935,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     'net_score': net_score,
                     'factors': factor_scores,
                     'volatility': crypto['volatility'][-1] if len(crypto['volatility']) > 0 else 0.05,
-                    'dollar_volume': list(crypto['dollar_volume'])[-6:] if len(crypto['dollar_volume']) >= 6 else [],
                 })
 
         try:
@@ -885,7 +981,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         sym_val = cand['symbol'].Value
         if sym_val in self._symbol_performance:
-            recent = list(self._symbol_performance[sym_val])
+            recent = self._symbol_performance[sym_val]  # deque, no list copy needed
             if len(recent) >= 3:
                 sym_avg = np.mean(recent)
                 adj += float(np.clip(sym_avg * 2.0, -self.ranking_symbol_bonus_cap, self.ranking_symbol_bonus_cap))
@@ -1012,11 +1108,15 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
             if len(crypto['dollar_volume']) >= 3:
                 dv_window = min(len(crypto['dollar_volume']), 12)
-                recent_dv = np.mean(list(crypto['dollar_volume'])[-dv_window:])
+                # Compute recent_dv once and reuse for both the liquidity filter and
+                # the liquidity cap below — avoids a duplicate list copy + numpy call.
+                recent_dv = sum(itertools.islice(reversed(crypto['dollar_volume']), dv_window)) / dv_window
                 dv_threshold = self.min_dollar_volume_usd
                 if recent_dv < dv_threshold:
                     reject_dollar_volume += 1
                     continue
+            else:
+                recent_dv = None
 
             vol = self._annualized_vol(crypto)
             size = self._calculate_position_size(net_score, threshold_now, vol)
@@ -1030,7 +1130,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             # Per-symbol penalty: halve size after consecutive losses
             sym_val = sym.Value
             if sym_val in self._symbol_performance:
-                recent_pnls = list(self._symbol_performance[sym_val])
+                recent_pnls = self._symbol_performance[sym_val]  # deque, no list copy needed
                 if len(recent_pnls) >= self.symbol_penalty_threshold:
                     recent_losses = sum(1 for p in recent_pnls[-self.symbol_penalty_threshold:] if p < 0)
                     if recent_losses == self.symbol_penalty_threshold:
@@ -1054,9 +1154,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
             # Liquidity cap: max 1% of estimated daily dollar volume (288 5-min bars/day)
             FIVE_MIN_BARS_PER_DAY = 288
-            if len(crypto['dollar_volume']) >= 3:
-                dv_window = min(len(crypto['dollar_volume']), 12)
-                recent_dv = np.mean(list(crypto['dollar_volume'])[-dv_window:])
+            if recent_dv is not None:
                 estimated_daily_dv = recent_dv * FIVE_MIN_BARS_PER_DAY
                 liquidity_cap = estimated_daily_dv * self.max_participation_rate
             else:

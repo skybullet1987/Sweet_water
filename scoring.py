@@ -81,14 +81,17 @@ class MicroScalpEngine:
             # to fire more trades when trend continuation is unlikely.
             # ----------------------------------------------------------
             if len(crypto['volume']) >= 20:
-                volumes = list(crypto['volume'])
-                current_vol = volumes[-1]
-                # Adaptive baseline: prefer long-term rolling average (up to 24h)
-                vol_long = list(crypto.get('volume_long', []))
+                current_vol = float(crypto['volume'][-1])   # deque supports -1 indexing
+                # Use precomputed running sums for O(1) volume baseline (avoid list + np.mean)
+                vol_long = crypto.get('volume_long', [])
                 if len(vol_long) >= 60:
-                    vol_baseline = float(np.mean(vol_long))
+                    vol_baseline = crypto.get('_vol_long_sum', 0.0) / len(vol_long)
+                elif (crypto.get('_vol20_window') is not None
+                        and len(crypto['_vol20_window']) >= 20):
+                    vol_baseline = crypto['_vol20_sum'] / 20
                 else:
-                    vol_baseline = float(np.mean(volumes[-20:]))
+                    # Cold-start fallback: list conversion (rare after warmup)
+                    vol_baseline = float(np.mean(list(crypto['volume'])[-20:]))
                 # ADX regime filter: lower thresholds in choppy markets (ADX < 25)
                 adx_indicator = crypto.get('adx')
                 is_choppy = (adx_indicator is not None and adx_indicator.IsReady

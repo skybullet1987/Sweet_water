@@ -9,7 +9,21 @@ from datetime import timedelta
 # endregion
 
 # Seed once at module load for deterministic backtests (backtest-only; non-fill simulation gated on not algo.LiveMode).
+# Default seed 42 preserves existing behaviour. Call reseed_non_fill_simulation() in Initialize to override.
 random.seed(42)
+
+# Additive non-fill penalty for breakout/momentum entries (vol-ignition-only, no mean-reversion support).
+# Configurable via algo.breakout_nonfill_penalty; conservative default 0.08 (+8 pp above base rate).
+_BREAKOUT_NONFILL_PENALTY_DEFAULT = 0.08
+
+
+def reseed_non_fill_simulation(seed):
+    """Re-seed the module-level RNG used for non-fill simulation.
+
+    Call this from QCAlgorithm.Initialize() to make the non-fill seed configurable
+    while preserving deterministic behaviour (default seed = 42).
+    """
+    random.seed(int(seed))
 
 # Round-trip fee estimate for PnL tracking (Kelly/circuit-breakers). Kraken 0.25% maker + 0.40% taker = 0.65%.
 ESTIMATED_ROUND_TRIP_FEE = 0.0065  # 0.65% round-trip
@@ -283,35 +297,12 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
                 track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
                 return True
         else:
-            # Stop loss - use limit order with 0.5% buffer to cap slippage on illiquid tokens
-            STOP_LOSS_LIMIT_BUFFER = 0.005   # 0.5% price buffer below current price
-            STOP_LOSS_LIMIT_TIMEOUT = 60     # seconds before market-order fallback
-            exit_price = algo.Securities[symbol].Price
-            if exit_price > 0:
-                # Place limit at buffer% worse than current price to accept some slippage but cap it
-                limit_price = exit_price * (1.0 - STOP_LOSS_LIMIT_BUFFER)
-                try:
-                    ticket = algo.LimitOrder(symbol, safe_qty * direction_mult, limit_price, tag=tag)
-                    track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
-                    # Track for quick market-order fallback if limit doesn't fill in time
-                    if hasattr(algo, '_submitted_orders'):
-                        algo._submitted_orders[symbol] = {
-                            'order_id': ticket.OrderId,
-                            'time': algo.Time,
-                            'quantity': safe_qty * direction_mult,
-                            'is_limit_exit': True,
-                            'intent': 'exit',
-                            'timeout_seconds': STOP_LOSS_LIMIT_TIMEOUT
-                        }
-                    return True
-                except Exception:
-                    ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
-                    track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
-                    return True
-            else:
-                ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
-                track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
-                return True
+            # Stop loss — use market order immediately.
+            # A limit-then-fallback approach is too slow: the 5–15 % downside during
+            # a fast crash far outweighs the ~0.5 % taker premium we would save.
+            ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
+            track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
+            return True
     else:
         algo.Debug(f"Warning: {symbol.Value} holding {holding_qty} rounds to 0")
         return False
@@ -797,12 +788,22 @@ def get_slippage_penalty(algo, symbol):
         return 1.0
 
 
-def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry"):
+def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry", is_breakout=False):
     """
     Place entry orders using limit orders to capture maker fees.
     In backtest: volatility-correlated non-fill simulation, then falls through
     to the same limit order logic as live.
     In live: use limit orders with timeout to capture maker fees.
+
+    Parameters
+    ----------
+    is_breakout : bool
+        When True (volume-ignition-heavy / momentum entry with no mean-reversion
+        support) an extra non-fill penalty is applied in backtest.  Momentum
+        entries are unlikely to fill passively as a maker — using a higher
+        rejection probability produces more realistic backtest results.
+        Configurable via algo.breakout_nonfill_penalty (default 0.08 / +8 pp).
+
     Returns the ticket from the order placement.
     """
     try:
@@ -819,6 +820,13 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 non_fill_prob = min(0.08 + recent_vol * 3.0, 0.30)
             else:
                 non_fill_prob = 0.15
+            # Signal-aware adjustment: breakout / momentum entries are rarely filled as
+            # maker — price is running away from the limit so the extra penalty models
+            # adverse selection more honestly.  Mean-reversion entries provide liquidity
+            # and are left at the base rate.
+            if is_breakout:
+                penalty = getattr(algo, 'breakout_nonfill_penalty', _BREAKOUT_NONFILL_PENALTY_DEFAULT)
+                non_fill_prob = min(non_fill_prob + penalty, 0.60)
             if random.random() < non_fill_prob:
                 return None
         # Fall through to limit order logic for both live and backtest

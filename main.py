@@ -237,6 +237,15 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.ranking_combo_bonus_cap  = self._get_param("ranking_combo_bonus_cap",  0.05)
         self.ranking_symbol_bonus_cap = self._get_param("ranking_symbol_bonus_cap", 0.03)
 
+        # Non-fill simulation seed (backtest only).
+        # Default 42 preserves deterministic behaviour; change for robustness sweeps.
+        non_fill_seed = int(self._get_param("non_fill_seed", 42))
+        reseed_non_fill_simulation(non_fill_seed)
+
+        # Signal-aware execution realism: extra non-fill penalty for breakout entries.
+        # Conservative default (+8 pp); set to 0 to disable.
+        self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.08)
+
         self.max_universe_size = 30
 
         self.kraken_status = "unknown"
@@ -978,10 +987,15 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 continue
 
             try:
-                ticket = place_limit_or_market(self, sym, qty, timeout_seconds=30, tag="Entry")
+                components = cand.get('factors', {})
+                # Breakout-like entry: strong vol ignition without mean-reversion support.
+                # These rarely fill passively as maker — apply a higher non-fill penalty.
+                is_breakout = (components.get('vol_ignition', 0) >= 0.20
+                               and components.get('mean_reversion', 0) < 0.10)
+                ticket = place_limit_or_market(self, sym, qty, timeout_seconds=30, tag="Entry",
+                                               is_breakout=is_breakout)
                 if ticket is not None:
                     self._recent_tickets.append(ticket)
-                    components = cand.get('factors', {})
                     sig_str = (f"vol={components.get('vol_ignition', 0):.2f} "
                                f"mean_rev={components.get('mean_reversion', 0):.2f} "
                                f"vwap={components.get('vwap_signal', 0):.2f}")

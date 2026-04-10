@@ -13,24 +13,18 @@ from QuantConnect.Securities import CashAmount
 
 
 class KrakenTieredFeeModel(FeeModel):
-    """
-    Volume-tiered fee model matching Kraken Pro (Canada) schedule.
-    Tracks cumulative volume and applies the correct tier.
-    Limit orders: 75% maker / 25% taker blend.
-    """
+    """Volume-tiered Kraken Pro (Canada) fee model; 75% maker / 25% taker blend."""
 
     LIMIT_TAKER_RATIO = 0.25
-
-    # Kraken Pro Canada fee tiers: (min_volume_usd, maker_pct, taker_pct)
     FEE_TIERS = [
-        (500_000, 0.0008, 0.0018),   # $500K+
-        (250_000, 0.0010, 0.0020),   # $250K+
-        (100_000, 0.0012, 0.0022),   # $100K+
-        (50_000,  0.0014, 0.0024),   # $50K+
-        (25_000,  0.0020, 0.0035),   # $25K+
-        (10_000,  0.0022, 0.0038),   # $10K+
-        (2_500,   0.0030, 0.0060),   # $2.5K+
-        (0,       0.0040, 0.0080),   # $0+
+        (500_000, 0.0008, 0.0018),
+        (250_000, 0.0010, 0.0020),
+        (100_000, 0.0012, 0.0022),
+        (50_000,  0.0014, 0.0024),
+        (25_000,  0.0020, 0.0035),
+        (10_000,  0.0022, 0.0038),
+        (2_500,   0.0030, 0.0060),
+        (0,       0.0040, 0.0080),
     ]
 
     def __init__(self):
@@ -41,29 +35,20 @@ class KrakenTieredFeeModel(FeeModel):
         order = parameters.Order
         price = parameters.Security.Price
         trade_value = order.AbsoluteQuantity * price
-
-        # Track volume
         self._cumulative_volume += trade_value
         if self._start_time is None:
             self._start_time = order.Time
-
-        # Approximate 30-day volume
         elapsed_days = max((order.Time - self._start_time).days, 1)
         monthly_volume = self._cumulative_volume * 30.0 / elapsed_days
-
-        # Find the correct tier
-        maker_rate, taker_rate = self.FEE_TIERS[-1][1], self.FEE_TIERS[-1][2]  # default: $0+ tier
+        maker_rate, taker_rate = self.FEE_TIERS[-1][1], self.FEE_TIERS[-1][2]
         for min_vol, maker, taker in self.FEE_TIERS:
             if monthly_volume >= min_vol:
                 maker_rate, taker_rate = maker, taker
                 break
-
-        # Calculate blended fee
         if order.Type == OrderType.Limit:
             fee_pct = (1 - self.LIMIT_TAKER_RATIO) * maker_rate + self.LIMIT_TAKER_RATIO * taker_rate
         else:
-            fee_pct = taker_rate  # Market orders always taker
-
+            fee_pct = taker_rate
         return OrderFee(CashAmount(trade_value * fee_pct, "USD"))
 
 
@@ -78,8 +63,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.entry_threshold = 0.40
         self.high_conviction_threshold = 0.50
         self.min_signal_count = int(self._get_param("min_signal_count", 2))
-        self.quick_take_profit = self._get_param("quick_take_profit", 0.100)   # was 0.150
-        self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.050)   # was 0.035
+        self.quick_take_profit = self._get_param("quick_take_profit", 0.100)
+        self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.050)
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
         self.atr_sl_mult  = self._get_param("atr_sl_mult",  2.0)
         self.trail_activation  = self._get_param("trail_activation",  0.030)
@@ -93,7 +78,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.position_size_pct  = 0.90
         self.max_positions      = 4
         self.min_notional       = 5.5
-        self.max_position_pct   = self._get_param("max_position_pct", 0.40)  # 40% max per position
+        self.max_position_pct   = self._get_param("max_position_pct", 0.40)
         self.min_price_usd      = 0.001
         self.cash_reserve_pct   = 0.00
         self.min_notional_fee_buffer = 1.5
@@ -106,13 +91,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.short_period       = 6
         self.medium_period      = 12
         self.lookback           = 48
-        self.sqrt_annualization = np.sqrt(60 * 24 * 365)   # 1-minute bar math
+        self.sqrt_annualization = np.sqrt(60 * 24 * 365)
 
-        self.max_spread_pct         = 0.005  # Tighter: 0.5% max spread (was 0.8%)
+        self.max_spread_pct         = 0.005
         self.spread_median_window   = 12
-        self.spread_widen_mult      = 2.0    # Tighter: 2x median (was 2.5x)
-        self.min_dollar_volume_usd  = 50000  # $50K min (was $20K)
-        self.min_volume_usd         = 25000  # $25K min (was $10K)
+        self.spread_widen_mult      = 2.0
+        self.min_dollar_volume_usd  = 50000
+        self.min_volume_usd         = 25000
 
         self.skip_hours_utc         = []
         self.max_daily_trades       = 24000
@@ -164,9 +149,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._failed_exit_counts   = {}
         self._daily_open_value     = None
         self.pnl_by_tag            = {}
-        self._entry_signal_combos  = {}   # {symbol: "vol+mean_rev+vwap" etc.}
-        self.pnl_by_signal_combo   = {}   # {"vol+mean_rev": [pnl1, pnl2, ...]}
-        self.pnl_by_hold_time      = {}   # {"<30min": [pnl1, ...], "30min-2h": [...], ...}
+        self._entry_signal_combos  = {}
+        self.pnl_by_signal_combo   = {}
+        self.pnl_by_hold_time      = {}
 
         self.peak_value       = None
         self.drawdown_cooldown = 0
@@ -174,13 +159,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.entry_prices     = {}
         self.highest_prices   = {}
         self.entry_times      = {}
-        self.entry_volumes    = {}   # for volume dry-up exit
+        self.entry_volumes    = {}
         self._partial_tp_taken      = {}
-        self._partial_tp_tier       = {}   # 0 = none, 1 = tier1 taken
+        self._partial_tp_tier       = {}
         self._partial_sell_symbols  = set()
         self._choppy_regime_entries = {}
         self.partial_tp_tier1_threshold = self._get_param("partial_tp_tier1_threshold", 0.025)
-        self.partial_tp_tier1_pct       = 0.33        # Sell 33% at tier 1
+        self.partial_tp_tier1_pct       = 0.33
         self.trade_count      = 0
         self._pending_orders  = {}
         self._cancel_cooldowns = {}
@@ -203,9 +188,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._last_live_trade_time = None
 
         self.btc_symbol       = None
-        self.btc_returns      = deque(maxlen=72)   # was 144
-        self.btc_prices       = deque(maxlen=72)   # was 144
-        self.btc_volatility   = deque(maxlen=72)   # was 144
+        self.btc_returns      = deque(maxlen=72)
+        self.btc_prices       = deque(maxlen=72)
+        self.btc_volatility   = deque(maxlen=72)
         self.btc_ema_24       = ExponentialMovingAverage(24)
         self.market_regime    = "unknown"
         self.volatility_regime = "normal"
@@ -215,34 +200,30 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.winning_trades = 0
         self.losing_trades  = 0
         self.total_pnl = 0
-        
-        # Paper trading safety limits for $50 capital
-        self._daily_loss_limit = -0.05  # Stop trading if down 5% daily
-        self._drawdown_limit = -0.20  # Stop for day if down 20%
-        self._min_trade_capital = 5  # Minimum $5 per trade
-        self._max_concurrent_positions = 4  # Max 4 concurrent positions
+        self._daily_loss_limit = -0.05
+        self._drawdown_limit = -0.20
+        self._min_trade_capital = 5
+        self._max_concurrent_positions = 4
         self._daily_start_equity = None
         self.trade_log      = deque(maxlen=500)
         self.log_budget     = 0
         self.last_log_time  = None
-        self.base_max_positions = self.max_positions  # Baseline for performance recovery logic
+        self.base_max_positions = self.max_positions
 
-        # Risk management parameters
-        self.max_participation_rate = 0.02   # Max 2% of daily dollar volume per position
-        self.reentry_cooldown_minutes = 5   # Min 5 min re-entry cooldown
-        self._btc_dump_size_mult = 1.0       # Position size multiplier during BTC weakness
+        self.max_participation_rate = 0.02
+        self.reentry_cooldown_minutes = 5
+        self._btc_dump_size_mult = 1.0
 
-        # Per-symbol performance tracking
-        self._symbol_performance      = {}   # {symbol_value: deque of recent PnLs}
-        self.symbol_penalty_threshold = 3    # consecutive losses to trigger penalty
-        self.symbol_penalty_size_mult = 0.50 # halve position size on penalized symbols
+        self._symbol_performance      = {}
+        self.symbol_penalty_threshold = 3
+        self.symbol_penalty_size_mult = 0.50
 
-        # Candidate ranking overlay: attribution-aware tiebreaker (does not override net_score)
+        # Ranking overlay: bounded attribution-aware tiebreaker; net_score remains primary.
         self.ranking_overlay_enabled  = bool(self._get_param("ranking_overlay_enabled",  1.0))
         self.ranking_combo_bonus_cap  = self._get_param("ranking_combo_bonus_cap",  0.05)
         self.ranking_symbol_bonus_cap = self._get_param("ranking_symbol_bonus_cap", 0.03)
 
-        self.max_universe_size = 30  # Focus on top 30 liquid assets (was 75)
+        self.max_universe_size = 30
 
         self.kraken_status = "unknown"
         self._last_skip_reason = None
@@ -423,7 +404,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._initialize_symbol(symbol)
         for security in changes.RemovedSecurities:
             symbol = security.Symbol
-            # Remove consolidator before liquidating/cleaning up
             if symbol in self.crypto_data and self.crypto_data[symbol].get('consolidator') is not None:
                 try:
                     self.SubscriptionManager.RemoveConsolidator(symbol, self.crypto_data[symbol]['consolidator'])
@@ -436,26 +416,19 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 del self.crypto_data[symbol]
 
     def OnData(self, data):
-        # Initialize daily equity tracker
         if self._daily_start_equity is None:
             self._daily_start_equity = self.Portfolio.TotalPortfolioValue
-        
-        # Check daily loss limit
         current_equity = self.Portfolio.TotalPortfolioValue
         daily_loss_pct = (current_equity - self._daily_start_equity) / self._daily_start_equity
         if daily_loss_pct < self._daily_loss_limit:
             self.Debug(f"⚠️ DAILY LOSS LIMIT: {daily_loss_pct:.2%} | Pausing trades")
             return
-        
-        # Check if in cash mode
         if self._cash_mode_until is not None and self._cash_mode_until > self.Time:
             return
-        # === Fear & Greed data ===
         if hasattr(self, 'fear_greed_symbol') and self.fear_greed_symbol and data.ContainsKey(self.fear_greed_symbol):
             fg = data[self.fear_greed_symbol]
             if fg is not None:
                 self.fear_greed_value = fg.Value
-        # === BTC market context update from 1-minute bars ===
         if self.btc_symbol is not None and data.Bars.ContainsKey(self.btc_symbol):
             btc_bar = data.Bars[self.btc_symbol]
             btc_price = float(btc_bar.Close)
@@ -466,7 +439,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.btc_ema_24.Update(btc_bar.EndTime, btc_price)
             if len(self.btc_returns) >= 10:
                 self.btc_volatility.append(np.std(list(self.btc_returns)[-10:]))
-        # Update quote data (bid/ask) from 1-min bars; indicator updates use the 5-min consolidator.
         for symbol in list(self.crypto_data.keys()):
             if not data.Bars.ContainsKey(symbol):
                 continue
@@ -492,7 +464,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             sync_existing_positions(self)
             self._positions_synced = True
             self._first_post_warmup = False
-            # Assume online if status never set after warmup
             if self.kraken_status == "unknown":
                 self.kraken_status = "online"
                 self.Debug("Fallback: kraken_status set to online after warmup")
@@ -570,9 +541,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 pass
 
     def _on_five_minute_bar(self, sender, bar):
-        """Called every 5 minutes with consolidated bar data.
-        Note: quote data (bid/ask sizes) is updated separately in OnData() from 1-min bars.
-        """
+        """Called every 5 minutes with consolidated bar data."""
         symbol = bar.Symbol
         if symbol not in self.crypto_data:
             return
@@ -653,7 +622,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         return max(0, min(1, (v - mn) / (mx - mn)))
 
     def _calculate_factor_scores(self, symbol, crypto):
-        """Evaluate long signals only. Short scoring disabled (Cash account)."""
         long_score, long_components = self._scoring_engine.calculate_scalp_score(crypto)
 
         sp = get_spread_pct(self, symbol)
@@ -668,15 +636,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         return components
 
     def _calculate_composite_score(self, factors, crypto=None):
-        """Return the pre-computed scalp score."""
         return factors.get('_scalp_score', 0.0)
 
     def _apply_fee_adjustment(self, score):
-        """Return score unchanged – signal thresholds already require >1% moves."""
         return score
 
     def _calculate_position_size(self, score, threshold, asset_vol_ann):
-        """Aggressive 70% base size, Kelly-adjusted, bear-halved."""
         return self._scoring_engine.calculate_position_size(score, threshold, asset_vol_ann)
 
     def _kelly_fraction(self):
@@ -689,7 +654,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         return self.entry_threshold
 
     def _check_correlation(self, new_symbol):
-        """Reject candidate if it is too correlated with any existing position (item 8)."""
         if not self.entry_prices:
             return True
         new_crypto = self.crypto_data.get(new_symbol)
@@ -716,7 +680,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         return True
 
     def _daily_loss_exceeded(self):
-        """Returns True if the portfolio has dropped >= 5% from today's open value."""
         if self._daily_open_value is None or self._daily_open_value <= 0:
             return False
         current = self.Portfolio.TotalPortfolioValue
@@ -741,7 +704,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self._log_skip("max daily loss exceeded")
             return
 
-        # BTC weakness: reduce position sizes; only hard-block on severe crashes (>4% drop in 5 bars)
         self._btc_dump_size_mult = 1.0
         if len(self.btc_returns) >= 5:
             btc_5bar_return = sum(list(self.btc_returns)[-5:])
@@ -749,7 +711,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._log_skip("BTC crashing")
                 return
             elif btc_5bar_return < -0.02:
-                self._btc_dump_size_mult = 0.50  # Half size during BTC weakness
+                self._btc_dump_size_mult = 0.50
         
         if self._cash_mode_until is not None and self.Time < self._cash_mode_until:
             self._log_skip("cash mode - poor recent performance")
@@ -793,10 +755,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.consecutive_losses = 0
             self._log_skip("consecutive loss cooldown (5 losses)")
             return
-        # Circuit breaker: exponential backoff after 6 consecutive losses
         if self.consecutive_losses >= 6:
             self._circuit_breaker_trigger_count += 1
-            backoff_hours = min(1 * (2 ** (self._circuit_breaker_trigger_count - 1)), 8)  # 1h, 2h, 4h, 8h max
+            backoff_hours = min(1 * (2 ** (self._circuit_breaker_trigger_count - 1)), 8)
             self.circuit_breaker_expiry = self.Time + timedelta(hours=backoff_hours)
             self.consecutive_losses = 0
             self._log_skip(f"circuit breaker triggered (6 losses, {backoff_hours}h cooldown #{self._circuit_breaker_trigger_count})")
@@ -853,9 +814,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             composite_score = self._calculate_composite_score(factor_scores, crypto)
             net_score = self._apply_fee_adjustment(composite_score)
 
-            # Visibility: log candidates where vol fired but Gate 2 (multi-signal confirmation)
-            # zeroed the score. The re-check here is intentional — it is for logging only;
-            # the gate itself is enforced in MicroScalpEngine.calculate_scalp_score.
+            # Log vol-only candidates filtered by multi-signal gate (logging only).
             _sig_keys = MicroScalpEngine.SIGNAL_KEYS
             if (factor_scores.get('vol_ignition', 0) >= 0.10
                     and sum(1 for k in _sig_keys if factor_scores.get(k, 0) >= 0.10) < self.min_signal_count):
@@ -864,12 +823,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
             crypto['recent_net_scores'].append(net_score)
 
-            # RS override: altcoins showing relative strength vs BTC enter at base threshold.
+            # RS override: altcoins with positive RS vs BTC enter at base threshold in bear/sideways.
             effective_threshold = threshold_now
             if self.market_regime in ("bear", "sideways") and len(crypto.get('rs_vs_btc', [])) >= 3:
                 recent_rs = sum(list(crypto['rs_vs_btc'])[-3:])
-                if recent_rs > 0.005:  # 0.5% cumulative RS outperformance vs BTC
-                    effective_threshold = self.entry_threshold  # base 0.40 instead of elevated
+                if recent_rs > 0.005:
+                    effective_threshold = self.entry_threshold
 
             if net_score >= effective_threshold:
                 count_above_thresh += 1
@@ -892,7 +851,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if len(scores) == 0:
             self._log_skip("no candidates passed filters")
             return
-        # Apply attribution-aware ranking overlay: small bounded adjustment on top of net_score.
         if self.ranking_overlay_enabled:
             for s in scores:
                 s['rank_adj'] = self._compute_ranking_overlay(s)
@@ -907,18 +865,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._execute_trades(scores, threshold_now)
 
     def _compute_ranking_overlay(self, cand):
-        """Conservative attribution-aware ranking adjustment for a scored candidate.
-
-        Uses existing pnl_by_signal_combo and _symbol_performance data to compute
-        a small bounded adjustment.  net_score remains the dominant signal; this
-        overlay only breaks ties and gently deprioritises historically weaker setups.
-
-        Returns a float in [-(combo_cap+symbol_cap), +(combo_cap+symbol_cap)].
-        """
+        """Small bounded attribution-aware ranking adjustment; net_score remains dominant."""
         adj = 0.0
         factors = cand.get('factors', {})
 
-        # --- Combo bonus: historical avg PnL of this signal combination ---
         if hasattr(self, 'pnl_by_signal_combo') and len(self.pnl_by_signal_combo) >= 2:
             combo_parts = []
             if factors.get('vol_ignition',   0) >= 0.10: combo_parts.append('vol')
@@ -933,7 +883,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 z = (combo_avgs[combo] - overall) / std
                 adj += float(np.clip(z * 0.02, -self.ranking_combo_bonus_cap, self.ranking_combo_bonus_cap))
 
-        # --- Symbol bonus: recent realized PnL for this symbol ---
         sym_val = cand['symbol'].Value
         if sym_val in self._symbol_performance:
             recent = list(self._symbol_performance[sym_val])
@@ -1290,7 +1239,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         trailing_activation = self.trail_activation
         trailing_stop_pct = self.trail_stop_pct
 
-        # --- Partial TP (single tier) ---
         tier = self._partial_tp_tier.get(symbol, 0)
         if tier == 0 and pnl >= self.partial_tp_tier1_threshold:
             if partial_smart_sell(self, symbol, self.partial_tp_tier1_pct, "Partial TP"):
@@ -1299,34 +1247,19 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self.Debug(f"PARTIAL TP: {symbol.Value} | PnL:{pnl:+.2%} | Held:{minutes:.0f}min")
                 return
 
-        # --- Exit tag determination ---
         tag = ""
-
-        # 1. Stop Loss
         if pnl <= -sl:
             tag = "Stop Loss"
-
-        # 2. Take Profit (only if no partial TP taken)
         if not tag and not self._partial_tp_taken.get(symbol, False) and pnl >= tp:
             tag = "Take Profit"
-
-        # 3. Trailing Stop
         if not tag and pnl > trailing_activation and dd >= trailing_stop_pct:
             tag = "Trailing Stop"
-
-        # 4. ATR Trail
         if not tag and atr and entry > 0 and holding.Quantity > 0:
-            effective_trail_mult = self.atr_trail_mult
-            if self._partial_tp_taken.get(symbol, False):
-                effective_trail_mult = self.post_partial_tp_trail_mult
-            trail_offset = atr * effective_trail_mult
-            trail_level = highest - trail_offset
-            if crypto:
-                crypto['trail_stop'] = trail_level
+            mult = self.post_partial_tp_trail_mult if self._partial_tp_taken.get(symbol, False) else self.atr_trail_mult
+            trail_level = highest - atr * mult
+            if crypto: crypto['trail_stop'] = trail_level
             if minutes >= self.min_trail_hold_minutes and price <= trail_level:
                 tag = "ATR Trail"
-
-        # 5. Time Stop
         if not tag and hours >= self.time_stop_hours and pnl < self.time_stop_pnl_min:
             tag = "Time Stop"
 
@@ -1394,49 +1327,21 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.Debug(f"Final: ${self.Portfolio.TotalPortfolioValue:.2f}")
         self.Debug(f"PnL: {self.total_pnl:+.2%}")
         persist_state(self)
-        if hasattr(self, 'pnl_by_regime') and self.pnl_by_regime:
-            self.Debug("=== PnL BY REGIME ===")
-            for regime, pnls in self.pnl_by_regime.items():
-                avg = np.mean(pnls) if pnls else 0
-                wr = sum(1 for p in pnls if p > 0) / len(pnls) if pnls else 0
-                self.Debug(f"  {regime}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%}")
-        if hasattr(self, 'pnl_by_vol_regime') and self.pnl_by_vol_regime:
-            self.Debug("=== PnL BY VOL REGIME ===")
-            for vol_regime, pnls in self.pnl_by_vol_regime.items():
-                avg = np.mean(pnls) if pnls else 0
-                wr = sum(1 for p in pnls if p > 0) / len(pnls) if pnls else 0
-                self.Debug(f"  {vol_regime}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%}")
-        # Exit-tag performance summary
-        if hasattr(self, 'pnl_by_tag') and self.pnl_by_tag:
-            self.Debug("=== PnL BY EXIT TAG ===")
-            for tag, pnls in sorted(self.pnl_by_tag.items()):
-                if len(pnls) == 0:
-                    continue
-                avg = sum(pnls) / len(pnls)
-                wr = sum(1 for p in pnls if p > 0) / len(pnls)
-                total = sum(pnls)
-                self.Debug(f"  {tag}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
-        # Signal-combination performance summary
-        if hasattr(self, 'pnl_by_signal_combo') and self.pnl_by_signal_combo:
-            self.Debug("=== PnL BY SIGNAL COMBO ===")
-            for combo, pnls in sorted(self.pnl_by_signal_combo.items()):
-                if len(pnls) == 0:
-                    continue
-                avg = sum(pnls) / len(pnls)
-                wr = sum(1 for p in pnls if p > 0) / len(pnls)
-                total = sum(pnls)
-                self.Debug(f"  {combo}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
-        # Hold-time performance summary
-        if hasattr(self, 'pnl_by_hold_time') and self.pnl_by_hold_time:
-            self.Debug("=== PnL BY HOLD TIME ===")
-            for bucket in ['<30min', '30min-2h', '2h-6h', '6h+', 'unknown']:
-                pnls = self.pnl_by_hold_time.get(bucket)
-                if not pnls:
-                    continue
-                avg = sum(pnls) / len(pnls)
-                wr = sum(1 for p in pnls if p > 0) / len(pnls)
-                total = sum(pnls)
-                self.Debug(f"  {bucket}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
+        _HOLD_ORDER = ['<30min', '30min-2h', '2h-6h', '6h+', 'unknown']
+        for label, d, order in [
+            ("REGIME",      getattr(self, 'pnl_by_regime', {}),      None),
+            ("VOL REGIME",  getattr(self, 'pnl_by_vol_regime', {}),   None),
+            ("EXIT TAG",    getattr(self, 'pnl_by_tag', {}),          None),
+            ("SIGNAL COMBO",getattr(self, 'pnl_by_signal_combo', {}), None),
+            ("HOLD TIME",   getattr(self, 'pnl_by_hold_time', {}),    _HOLD_ORDER),
+        ]:
+            if not d: continue
+            self.Debug(f"=== PnL BY {label} ===")
+            items = [(b, d.get(b)) for b in order] if order else sorted(d.items())
+            for k, v in items:
+                if not v: continue
+                n = len(v); avg = sum(v)/n; wr = sum(1 for p in v if p>0)/n; tot = sum(v)
+                self.Debug(f"  {k}: {n} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{tot:+.3%}")
 
     def DailyReport(self):
         if self.IsWarmingUp: return

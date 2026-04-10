@@ -77,7 +77,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.entry_threshold = 0.40
         self.high_conviction_threshold = 0.50
-        self.min_signal_count   = int(self._get_param("min_signal_count", 2))
+        self.min_signal_count = int(self._get_param("min_signal_count", 2))
         self.quick_take_profit = self._get_param("quick_take_profit", 0.100)   # was 0.150
         self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.050)   # was 0.035
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)

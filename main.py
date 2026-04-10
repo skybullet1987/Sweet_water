@@ -59,7 +59,7 @@ class KrakenTieredFeeModel(FeeModel):
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
     def Initialize(self):
-        self.SetStartDate(2026, 1, 1)
+        self.SetStartDate(2025, 1, 1)
         self.SetEndDate(2026, 12, 1)
         self.SetCash(50)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
@@ -907,7 +907,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             if sym_val in self._symbol_performance:
                 recent_pnls = self._symbol_performance[sym_val]  # deque, no list copy needed
                 if len(recent_pnls) >= self.symbol_penalty_threshold:
-                    recent_losses = sum(1 for p in recent_pnls[-self.symbol_penalty_threshold:] if p < 0)
+                    recent_losses = sum(1 for p in itertools.islice(reversed(recent_pnls), self.symbol_penalty_threshold) if p < 0)
                     if recent_losses == self.symbol_penalty_threshold:
                         size *= self.symbol_penalty_size_mult
                         self.Debug(f"PENALTY: {sym_val} size halved ({self.symbol_penalty_threshold} consecutive losses)")

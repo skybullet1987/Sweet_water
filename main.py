@@ -82,14 +82,30 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.050)   # was 0.035
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
         self.atr_sl_mult  = self._get_param("atr_sl_mult",  2.0)
-        self.trail_activation  = self._get_param("trail_activation",  0.030)   # was 0.040
-        self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.020)   # was 0.025
-        self.time_stop_hours   = self._get_param("time_stop_hours",   5.0)     # was 3.0
+        # --- Exit parameters (all configurable for hold-time-aware tuning) ---
+        # trail_activation: profit level at which trailing stop activates.
+        # Raised back to 0.040 to reduce premature trailing exits on 2h-6h trades.
+        self.trail_activation  = self._get_param("trail_activation",  0.040)
+        # trail_stop_pct: max drawdown from peak before trailing stop fires.
+        # Slightly widened to 0.025 to tolerate normal intraday swings.
+        self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.025)
+        # time_stop_hours: max hold before flat/marginally-profitable exits.
+        # Extended to 7h to support the 6h+ hold-time bucket.
+        self.time_stop_hours   = self._get_param("time_stop_hours",   7.0)
         self.time_stop_pnl_min = self._get_param("time_stop_pnl_min", 0.005)
+        # time_stop_early: cut clear losers before they compound; does NOT
+        # affect trades above time_stop_early_pnl, preserving developing winners.
+        self.time_stop_early_hours = self._get_param("time_stop_early_hours", 3.0)
+        self.time_stop_early_pnl   = self._get_param("time_stop_early_pnl",  -0.025)
 
-        self.atr_trail_mult             = 6.0
-        self.post_partial_tp_trail_mult = 3.5
-        self.min_trail_hold_minutes     = 60
+        # ATR trail multiplier: wider = looser trail.  Configurable so variants
+        # can be tested without code edits.
+        self.atr_trail_mult             = self._get_param("atr_trail_mult",             6.0)
+        # After partial TP, slightly relax trail to let remainder run.
+        self.post_partial_tp_trail_mult = self._get_param("post_partial_tp_trail_mult", 4.0)
+        # Minimum hold before ATR trail can fire; raised to 90 min so the
+        # trail doesn't cut off the 30min-2h bucket too aggressively.
+        self.min_trail_hold_minutes     = int(self._get_param("min_trail_hold_minutes", 90))
 
         self.position_size_pct  = 0.90
         self.max_positions      = 4
@@ -180,8 +196,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._partial_tp_tier       = {}   # 0 = none, 1 = tier1 taken
         self._partial_sell_symbols  = set()
         self._choppy_regime_entries = {}
-        self.partial_tp_tier1_threshold = 0.025  # First partial TP at 2.5%
-        self.partial_tp_tier1_pct   = 0.33        # Sell 33% at tier 1
+        self.partial_tp_tier1_threshold = self._get_param("partial_tp_tier1_threshold", 0.035)  # was 0.025; raised to let trades develop
+        self.partial_tp_tier1_pct       = 0.33        # Sell 33% at tier 1
+        # Minimum hold before partial TP fires; prevents cutting winners that
+        # haven't yet reached their best hold-time bucket.
+        self.partial_tp_min_hold_minutes = int(self._get_param("partial_tp_min_hold_minutes", 30))
         self.trade_count      = 0
         self._pending_orders  = {}
         self._cancel_cooldowns = {}
@@ -1240,12 +1259,14 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         trailing_stop_pct = self.trail_stop_pct
 
         # --- Partial TP (single tier) ---
+        # Guard: require minimum hold time before firing so early-phase trades
+        # can develop into the profitable 2h-6h hold window.
         tier = self._partial_tp_tier.get(symbol, 0)
-        if tier == 0 and pnl >= self.partial_tp_tier1_threshold:
+        if tier == 0 and pnl >= self.partial_tp_tier1_threshold and minutes >= self.partial_tp_min_hold_minutes:
             if partial_smart_sell(self, symbol, self.partial_tp_tier1_pct, "Partial TP"):
                 self._partial_tp_tier[symbol] = 1
                 self._partial_tp_taken[symbol] = True
-                self.Debug(f"PARTIAL TP: {symbol.Value} | PnL:{pnl:+.2%}")
+                self.Debug(f"PARTIAL TP: {symbol.Value} | PnL:{pnl:+.2%} | Held:{minutes:.0f}min")
                 return
 
         # --- Exit tag determination ---
@@ -1275,7 +1296,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             if minutes >= self.min_trail_hold_minutes and price <= trail_level:
                 tag = "ATR Trail"
 
-        # 5. Time Stop
+        # 5a. Early time stop: cut clear losers quickly to free capital.
+        # Only fires when PnL is deeply negative so developing winners are preserved.
+        if not tag and hours >= self.time_stop_early_hours and pnl < self.time_stop_early_pnl:
+            tag = "Time Stop"
+
+        # 5b. Main time stop: exit flat/marginally-profitable positions at max hold.
         if not tag and hours >= self.time_stop_hours and pnl < self.time_stop_pnl_min:
             tag = "Time Stop"
 
@@ -1291,7 +1317,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._exit_cooldowns[symbol] = self.Time + max(cooldown_delta, exit_cooldown_delta)
                 self.entry_volumes.pop(symbol, None)
                 self._choppy_regime_entries.pop(symbol, None)
-                self.Debug(f"{tag}: {symbol.Value} | PnL:{pnl:+.2%} | Held:{hours:.1f}h")
+                hold_bucket = get_hold_bucket(hours)
+                self.Debug(f"{tag}: {symbol.Value} | PnL:{pnl:+.2%} | Held:{hours:.1f}h ({hold_bucket})")
             else:
                 fail_count = self._failed_exit_counts.get(symbol, 0) + 1
                 self._failed_exit_counts[symbol] = fail_count

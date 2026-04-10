@@ -849,16 +849,14 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             composite_score = self._calculate_composite_score(factor_scores, crypto)
             net_score = self._apply_fee_adjustment(composite_score)
 
-            # Visibility: log candidates where vol fired but multi-signal confirmation
-            # was insufficient (rejected by Gate 2 in the scoring engine).
+            # Visibility: log candidates where vol fired but Gate 2 (multi-signal confirmation)
+            # zeroed the score. The re-check here is intentional — it is for logging only;
+            # the gate itself is enforced in MicroScalpEngine.calculate_scalp_score.
+            _sig_keys = MicroScalpEngine.SIGNAL_KEYS
             if (factor_scores.get('vol_ignition', 0) >= 0.10
-                    and sum(1 for k in ('vol_ignition', 'mean_reversion', 'vwap_signal')
-                            if factor_scores.get(k, 0) >= 0.10) < self.min_signal_count):
-                debug_limited(self, f"WEAK SIGNAL {symbol.Value}: "
-                              f"vol={factor_scores.get('vol_ignition',0):.2f} "
-                              f"mr={factor_scores.get('mean_reversion',0):.2f} "
-                              f"vwap={factor_scores.get('vwap_signal',0):.2f} "
-                              f"— skipped (need {self.min_signal_count} active signals)")
+                    and sum(1 for k in _sig_keys if factor_scores.get(k, 0) >= 0.10) < self.min_signal_count):
+                sig_vals = ' '.join(f"{k[:4]}={factor_scores.get(k, 0):.2f}" for k in _sig_keys)
+                debug_limited(self, f"WEAK SIGNAL {symbol.Value}: {sig_vals} — skipped (need {self.min_signal_count} active signals)")
 
             crypto['recent_net_scores'].append(net_score)
 

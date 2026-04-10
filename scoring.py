@@ -37,6 +37,8 @@ class MicroScalpEngine:
     RSI_OVERSOLD_THRESHOLD        = 45   # RSI < 45 → ranging-market entry (mean reversion in sideways/choppy markets)
     RSI_MILDLY_OVERSOLD_THRESHOLD = 50   # RSI < 50 → mild ranging-market entry, partial credit
     BB_NEAR_LOWER_PCT             = 0.03  # within 3% of lower Bollinger Band = near support
+    # Canonical signal names — used here and by callers for attribution / logging.
+    SIGNAL_KEYS = ('vol_ignition', 'mean_reversion', 'vwap_signal')
     # Entry-quality gate: minimum number of active signal components (value >= 0.10).
     # Default 2 rejects vol-only entries. Set via algo.min_signal_count to override.
     MIN_SIGNAL_COUNT              = 2

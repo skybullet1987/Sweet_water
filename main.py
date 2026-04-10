@@ -82,30 +82,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.050)   # was 0.035
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
         self.atr_sl_mult  = self._get_param("atr_sl_mult",  2.0)
-        # --- Exit parameters (all configurable for hold-time-aware tuning) ---
-        # trail_activation: profit level at which trailing stop activates.
-        # Raised back to 0.040 to reduce premature trailing exits on 2h-6h trades.
-        self.trail_activation  = self._get_param("trail_activation",  0.040)
-        # trail_stop_pct: max drawdown from peak before trailing stop fires.
-        # Slightly widened to 0.025 to tolerate normal intraday swings.
-        self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.025)
-        # time_stop_hours: max hold before flat/marginally-profitable exits.
-        # Extended to 7h to support the 6h+ hold-time bucket.
-        self.time_stop_hours   = self._get_param("time_stop_hours",   7.0)
+        self.trail_activation  = self._get_param("trail_activation",  0.030)
+        self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.020)
+        self.time_stop_hours   = self._get_param("time_stop_hours",   5.0)
         self.time_stop_pnl_min = self._get_param("time_stop_pnl_min", 0.005)
-        # time_stop_early: cut clear losers before they compound; does NOT
-        # affect trades above time_stop_early_pnl, preserving developing winners.
-        self.time_stop_early_hours = self._get_param("time_stop_early_hours", 3.0)
-        self.time_stop_early_pnl   = self._get_param("time_stop_early_pnl",  -0.025)
-
-        # ATR trail multiplier: wider = looser trail.  Configurable so variants
-        # can be tested without code edits.
         self.atr_trail_mult             = self._get_param("atr_trail_mult",             6.0)
-        # After partial TP, slightly relax trail to let remainder run.
-        self.post_partial_tp_trail_mult = self._get_param("post_partial_tp_trail_mult", 4.0)
-        # Minimum hold before ATR trail can fire; raised to 90 min so the
-        # trail doesn't cut off the 30min-2h bucket too aggressively.
-        self.min_trail_hold_minutes     = int(self._get_param("min_trail_hold_minutes", 90))
+        self.post_partial_tp_trail_mult = self._get_param("post_partial_tp_trail_mult", 3.5)
+        self.min_trail_hold_minutes     = int(self._get_param("min_trail_hold_minutes", 60))
 
         self.position_size_pct  = 0.90
         self.max_positions      = 4
@@ -196,11 +179,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._partial_tp_tier       = {}   # 0 = none, 1 = tier1 taken
         self._partial_sell_symbols  = set()
         self._choppy_regime_entries = {}
-        self.partial_tp_tier1_threshold = self._get_param("partial_tp_tier1_threshold", 0.035)  # was 0.025; raised to let trades develop
+        self.partial_tp_tier1_threshold = self._get_param("partial_tp_tier1_threshold", 0.025)
         self.partial_tp_tier1_pct       = 0.33        # Sell 33% at tier 1
-        # Minimum hold before partial TP fires; prevents cutting winners that
-        # haven't yet reached their best hold-time bucket.
-        self.partial_tp_min_hold_minutes = int(self._get_param("partial_tp_min_hold_minutes", 30))
         self.trade_count      = 0
         self._pending_orders  = {}
         self._cancel_cooldowns = {}
@@ -256,6 +236,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._symbol_performance      = {}   # {symbol_value: deque of recent PnLs}
         self.symbol_penalty_threshold = 3    # consecutive losses to trigger penalty
         self.symbol_penalty_size_mult = 0.50 # halve position size on penalized symbols
+
+        # Candidate ranking overlay: attribution-aware tiebreaker (does not override net_score)
+        self.ranking_overlay_enabled  = bool(self._get_param("ranking_overlay_enabled",  1.0))
+        self.ranking_combo_bonus_cap  = self._get_param("ranking_combo_bonus_cap",  0.05)
+        self.ranking_symbol_bonus_cap = self._get_param("ranking_symbol_bonus_cap", 0.03)
 
         self.max_universe_size = 30  # Focus on top 30 liquid assets (was 75)
 
@@ -907,9 +892,56 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if len(scores) == 0:
             self._log_skip("no candidates passed filters")
             return
-        scores.sort(key=lambda x: x['net_score'], reverse=True)
+        # Apply attribution-aware ranking overlay: small bounded adjustment on top of net_score.
+        if self.ranking_overlay_enabled:
+            for s in scores:
+                s['rank_adj'] = self._compute_ranking_overlay(s)
+                s['rank_score'] = s['net_score'] + s['rank_adj']
+            scores.sort(key=lambda x: x['rank_score'], reverse=True)
+            if len(scores) > 1:
+                adj_str = ' '.join(f"{s['symbol'].Value}({s['net_score']:.2f}{s['rank_adj']:+.3f})" for s in scores[:3])
+                debug_limited(self, f"RANK: {adj_str}")
+        else:
+            scores.sort(key=lambda x: x['net_score'], reverse=True)
         self._last_skip_reason = None
         self._execute_trades(scores, threshold_now)
+
+    def _compute_ranking_overlay(self, cand):
+        """Conservative attribution-aware ranking adjustment for a scored candidate.
+
+        Uses existing pnl_by_signal_combo and _symbol_performance data to compute
+        a small bounded adjustment.  net_score remains the dominant signal; this
+        overlay only breaks ties and gently deprioritises historically weaker setups.
+
+        Returns a float in [-(combo_cap+symbol_cap), +(combo_cap+symbol_cap)].
+        """
+        adj = 0.0
+        factors = cand.get('factors', {})
+
+        # --- Combo bonus: historical avg PnL of this signal combination ---
+        if hasattr(self, 'pnl_by_signal_combo') and len(self.pnl_by_signal_combo) >= 2:
+            combo_parts = []
+            if factors.get('vol_ignition',   0) >= 0.10: combo_parts.append('vol')
+            if factors.get('mean_reversion', 0) >= 0.10: combo_parts.append('mean_rev')
+            if factors.get('vwap_signal',    0) >= 0.10: combo_parts.append('vwap')
+            combo = '+'.join(combo_parts) if combo_parts else 'none'
+            combo_avgs = {c: np.mean(v) for c, v in self.pnl_by_signal_combo.items() if len(v) >= 3}
+            if combo in combo_avgs and len(combo_avgs) >= 2:
+                all_avgs = list(combo_avgs.values())
+                overall = np.mean(all_avgs)
+                std = max(np.std(all_avgs), 1e-6)
+                z = (combo_avgs[combo] - overall) / std
+                adj += float(np.clip(z * 0.02, -self.ranking_combo_bonus_cap, self.ranking_combo_bonus_cap))
+
+        # --- Symbol bonus: recent realized PnL for this symbol ---
+        sym_val = cand['symbol'].Value
+        if sym_val in self._symbol_performance:
+            recent = list(self._symbol_performance[sym_val])
+            if len(recent) >= 3:
+                sym_avg = np.mean(recent)
+                adj += float(np.clip(sym_avg * 2.0, -self.ranking_symbol_bonus_cap, self.ranking_symbol_bonus_cap))
+
+        return adj
 
     def _get_open_buy_orders_value(self):
         return get_open_buy_orders_value(self)
@@ -1259,10 +1291,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         trailing_stop_pct = self.trail_stop_pct
 
         # --- Partial TP (single tier) ---
-        # Guard: require minimum hold time before firing so early-phase trades
-        # can develop into the profitable 2h-6h hold window.
         tier = self._partial_tp_tier.get(symbol, 0)
-        if tier == 0 and pnl >= self.partial_tp_tier1_threshold and minutes >= self.partial_tp_min_hold_minutes:
+        if tier == 0 and pnl >= self.partial_tp_tier1_threshold:
             if partial_smart_sell(self, symbol, self.partial_tp_tier1_pct, "Partial TP"):
                 self._partial_tp_tier[symbol] = 1
                 self._partial_tp_taken[symbol] = True
@@ -1296,12 +1326,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             if minutes >= self.min_trail_hold_minutes and price <= trail_level:
                 tag = "ATR Trail"
 
-        # 5a. Early time stop: cut clear losers quickly to free capital.
-        # Only fires when PnL is deeply negative so developing winners are preserved.
-        if not tag and hours >= self.time_stop_early_hours and pnl < self.time_stop_early_pnl:
-            tag = "Time Stop"
-
-        # 5b. Main time stop: exit flat/marginally-profitable positions at max hold.
+        # 5. Time Stop
         if not tag and hours >= self.time_stop_hours and pnl < self.time_stop_pnl_min:
             tag = "Time Stop"
 

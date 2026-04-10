@@ -298,8 +298,8 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
                 return True
         else:
             # Stop loss — use market order immediately.
-            # A limit-then-fallback approach is too slow: the 5–15 % downside during
-            # a fast crash far outweighs the ~0.5 % taker premium we would save.
+            # A limit-then-fallback approach is too slow: the 5–15% downside during
+            # a fast crash far outweighs the ~0.5% taker premium we would save.
             ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
             track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
             return True
@@ -798,7 +798,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
     Parameters
     ----------
     is_breakout : bool
-        When True (volume-ignition-heavy / momentum entry with no mean-reversion
+        When True (vol-ignition-heavy / momentum entry with no mean-reversion
         support) an extra non-fill penalty is applied in backtest.  Momentum
         entries are unlikely to fill passively as a maker — using a higher
         rejection probability produces more realistic backtest results.

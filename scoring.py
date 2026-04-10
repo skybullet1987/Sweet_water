@@ -6,13 +6,16 @@ import numpy as np
 
 class MicroScalpEngine:
     """
-    Micro-Scalping Signal Engine - v8.0.0
+    Micro-Scalping Signal Engine - v8.1.0
 
     Simplified 3-signal scoring system with ADX regime filter.
     Strips kitchen-sink approach down to the 3 signals with proven edge.
 
     Score: 0.0 – 0.60 max (3 signals × 0.20 each).
-      Gate: vol_ignition >= 0.10 required for any entry.
+      Gate 1: vol_ignition >= 0.10 required for any entry.
+      Gate 2: at least MIN_SIGNAL_COUNT (default 2) active components required.
+              Rejects vol-only entries; allows vol+mean_rev, vol+vwap, vol+mean_rev+vwap.
+              Configurable via algo.min_signal_count parameter (backtest-friendly).
       ADX filter: ADX > 25 AND DI- > DI+ × 1.2 → reject (strong bearish trend).
 
     Signals
@@ -34,6 +37,9 @@ class MicroScalpEngine:
     RSI_OVERSOLD_THRESHOLD        = 45   # RSI < 45 → ranging-market entry (mean reversion in sideways/choppy markets)
     RSI_MILDLY_OVERSOLD_THRESHOLD = 50   # RSI < 50 → mild ranging-market entry, partial credit
     BB_NEAR_LOWER_PCT             = 0.03  # within 3% of lower Bollinger Band = near support
+    # Entry-quality gate: minimum number of active signal components (value >= 0.10).
+    # Default 2 rejects vol-only entries. Set via algo.min_signal_count to override.
+    MIN_SIGNAL_COUNT              = 2
 
     def __init__(self, algorithm):
         self.algo = algorithm
@@ -50,7 +56,9 @@ class MicroScalpEngine:
         (score, components) where score ∈ [0, 0.60] and components maps each
         signal name to its individual contribution (0.20 max each).
 
-        Gate: vol_ignition >= 0.10 required for any entry.
+        Gate 1: vol_ignition >= 0.10 required for any entry.
+        Gate 2: at least MIN_SIGNAL_COUNT active components (each >= 0.10) required.
+                Rejects vol-only entries; allows vol+mean_rev, vol+vwap, or all three.
         ADX filter: ADX > 25 AND DI- > DI+ × 1.2 → return (0.0, components).
         Max possible score: 0.20 (vol) + 0.20 (mean_rev) + 0.20 (vwap) = 0.60.
         """
@@ -165,10 +173,18 @@ class MicroScalpEngine:
 
         score = sum(components.values())
 
-        # Volume gate: require at least partial volume ignition for any entry.
+        # Gate 1 – Volume gate: require at least partial volume ignition for any entry.
         # This replaces the old separate backtest vs live gate logic.
         if components['vol_ignition'] < 0.10:
             score = 0.0
+        else:
+            # Gate 2 – Multi-signal confirmation: require at least MIN_SIGNAL_COUNT active
+            # components (value >= 0.10). Rejects weak vol-only entries while still
+            # allowing vol+mean_rev, vol+vwap, or vol+mean_rev+vwap combinations.
+            # Configurable via algo.min_signal_count for backtest variants.
+            min_req = getattr(self.algo, 'min_signal_count', self.MIN_SIGNAL_COUNT)
+            if sum(1 for v in components.values() if v >= 0.10) < min_req:
+                score = 0.0
 
         return min(score, 1.0), components
 

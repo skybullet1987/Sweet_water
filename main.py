@@ -77,6 +77,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.entry_threshold = 0.40
         self.high_conviction_threshold = 0.50
+        self.min_signal_count   = int(self._get_param("min_signal_count", 2))
         self.quick_take_profit = self._get_param("quick_take_profit", 0.100)   # was 0.150
         self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.050)   # was 0.035
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
@@ -847,6 +848,17 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
             composite_score = self._calculate_composite_score(factor_scores, crypto)
             net_score = self._apply_fee_adjustment(composite_score)
+
+            # Visibility: log candidates where vol fired but multi-signal confirmation
+            # was insufficient (rejected by Gate 2 in the scoring engine).
+            if (factor_scores.get('vol_ignition', 0) >= 0.10
+                    and sum(1 for k in ('vol_ignition', 'mean_reversion', 'vwap_signal')
+                            if factor_scores.get(k, 0) >= 0.10) < self.min_signal_count):
+                debug_limited(self, f"WEAK SIGNAL {symbol.Value}: "
+                              f"vol={factor_scores.get('vol_ignition',0):.2f} "
+                              f"mr={factor_scores.get('mean_reversion',0):.2f} "
+                              f"vwap={factor_scores.get('vwap_signal',0):.2f} "
+                              f"— skipped (need {self.min_signal_count} active signals)")
 
             crypto['recent_net_scores'].append(net_score)
 

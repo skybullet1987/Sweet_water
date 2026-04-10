@@ -77,6 +77,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.entry_threshold = 0.40
         self.high_conviction_threshold = 0.50
+        self.min_signal_count = int(self._get_param("min_signal_count", 2))
         self.quick_take_profit = self._get_param("quick_take_profit", 0.100)   # was 0.150
         self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.050)   # was 0.035
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
@@ -847,6 +848,15 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
             composite_score = self._calculate_composite_score(factor_scores, crypto)
             net_score = self._apply_fee_adjustment(composite_score)
+
+            # Visibility: log candidates where vol fired but Gate 2 (multi-signal confirmation)
+            # zeroed the score. The re-check here is intentional — it is for logging only;
+            # the gate itself is enforced in MicroScalpEngine.calculate_scalp_score.
+            _sig_keys = MicroScalpEngine.SIGNAL_KEYS
+            if (factor_scores.get('vol_ignition', 0) >= 0.10
+                    and sum(1 for k in _sig_keys if factor_scores.get(k, 0) >= 0.10) < self.min_signal_count):
+                sig_vals = ' '.join(f"{k[:4]}={factor_scores.get(k, 0):.2f}" for k in _sig_keys)
+                debug_limited(self, f"WEAK SIGNAL {symbol.Value}: {sig_vals} — skipped (need {self.min_signal_count} active signals)")
 
             crypto['recent_net_scores'].append(net_score)
 

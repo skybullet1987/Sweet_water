@@ -162,12 +162,17 @@ def update_symbol_data(algo, symbol, bar, quote_bar=None):
         crypto['vwap'] = sum(crypto['vwap_pv']) / total_v
     if len(crypto['vwap_v']) >= 5 and crypto['vwap'] > 0:
         vwap_val = crypto['vwap']
-        bar_prices = [pv / v for pv, v in zip(crypto['vwap_pv'], crypto['vwap_v']) if v > 0]
-        if len(bar_prices) >= 5:
-            sd = float(np.std(bar_prices))
-            crypto['vwap_sd'] = sd
-            crypto['vwap_sd2_lower'] = vwap_val - 2.0 * sd
-            crypto['vwap_sd3_lower'] = vwap_val - 3.0 * sd
+        total_v_sd = sum(crypto['vwap_v'])
+        if total_v_sd > 0:
+            # True volume-weighted variance: Σ(v_i × (p_i − VWAP)²) / Σ(v_i)
+            bar_prices = [pv / v for pv, v in zip(crypto['vwap_pv'], crypto['vwap_v']) if v > 0]
+            bar_vols   = [v for v in crypto['vwap_v'] if v > 0]
+            if len(bar_prices) >= 5:
+                vw_var = sum(bv * (bp - vwap_val) ** 2 for bp, bv in zip(bar_prices, bar_vols)) / total_v_sd
+                sd = math.sqrt(max(vw_var, 0.0))
+                crypto['vwap_sd'] = sd
+                crypto['vwap_sd2_lower'] = vwap_val - 2.0 * sd
+                crypto['vwap_sd3_lower'] = vwap_val - 3.0 * sd
     crypto['rsi'].Update(bar.EndTime, price)
     if len(crypto['returns']) >= algo.short_period and len(algo.btc_returns) >= algo.short_period:
         # sum last short_period elements without creating a full list copy

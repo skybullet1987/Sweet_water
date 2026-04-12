@@ -6,7 +6,7 @@ import numpy as np
 
 class MicroScalpEngine:
     """
-    Micro-Scalping Signal Engine - v8.1.0
+    Micro-Scalping Signal Engine - v8.2.0
 
     Simplified 3-signal scoring system with ADX regime filter.
     Strips kitchen-sink approach down to the 3 signals with proven edge.
@@ -17,12 +17,18 @@ class MicroScalpEngine:
               Rejects vol-only entries; allows vol+mean_rev, vol+vwap, vol+mean_rev+vwap.
               Configurable via algo.min_signal_count parameter (backtest-friendly).
       ADX filter: ADX > 25 AND DI- > DI+ × 1.2 → reject (strong bearish trend).
+      EMA momentum cap: ema_ultra_short < ema_short → cap total score at 0.30.
+      Vol-ignition dollar-volume floor: bar dollar volume < $1,000 → no vol score.
+      VWAP SD bands: computed via true volume-weighted variance (fixed from np.std).
 
     Signals
     -------
-    1. Volume Ignition (gate): 4× volume surge; 1.8× in choppy markets (ADX < 25)
+    1. Volume Ignition (gate): 4× volume surge; 2.5× in choppy markets (ADX < 25);
+       1.5× partial in choppy (was 1.0×); $1K dollar-volume floor per bar.
     2. Mean Reversion: RSI oversold + price near lower BB when ADX is low (max 0.20)
-    3. VWAP Reclaim / SD Band Bounce: price above VWAP or bouncing off -2/-3 SD (max 0.20)
+    3. VWAP Reclaim / SD Band Bounce: price above VWAP×1.0015 (0.15% buffer) with
+       EMA5 confirmation for full credit; partial credit 0.10 between VWAP and buffer;
+       bouncing off -2/-3 SD lower band (max 0.20)
 
     Removed: OBI, MTF trend, steady grind, ADX trend, CVD divergence, Kalman reversion, BB squeeze
     """
@@ -32,7 +38,7 @@ class MicroScalpEngine:
     VOL_SURGE_PARTIAL       = 2.5    # 2.5× volume = moderate spike
     ADX_STRONG_THRESHOLD    = 14     # (kept for mean reversion gating)
     ADX_MODERATE_THRESHOLD  = 10     # moderate directional threshold
-    VWAP_BUFFER             = 1.0005  # 0.05% above VWAP for confirmed reclaim
+    VWAP_BUFFER             = 1.0015  # 0.15% above VWAP for confirmed reclaim
     # Ranging-market mean reversion thresholds (used when ADX < ADX_MODERATE_THRESHOLD)
     RSI_OVERSOLD_THRESHOLD        = 45   # RSI < 45 → ranging-market entry (mean reversion in sideways/choppy markets)
     RSI_MILDLY_OVERSOLD_THRESHOLD = 50   # RSI < 50 → mild ranging-market entry, partial credit
@@ -62,6 +68,7 @@ class MicroScalpEngine:
         Gate 2: at least MIN_SIGNAL_COUNT active components (each >= 0.10) required.
                 Rejects vol-only entries; allows vol+mean_rev, vol+vwap, or all three.
         ADX filter: ADX > 25 AND DI- > DI+ × 1.2 → return (0.0, components).
+        EMA momentum cap: ema_ultra_short < ema_short → cap score at 0.30.
         Max possible score: 0.20 (vol) + 0.20 (mean_rev) + 0.20 (vwap) = 0.60.
         """
         components = {
@@ -69,6 +76,7 @@ class MicroScalpEngine:
             'mean_reversion': 0.0,
             'vwap_signal':    0.0,
         }
+        _downtrend = False
 
         try:
             # ----------------------------------------------------------
@@ -96,15 +104,20 @@ class MicroScalpEngine:
                 adx_indicator = crypto.get('adx')
                 is_choppy = (adx_indicator is not None and adx_indicator.IsReady
                              and adx_indicator.Current.Value < 25)
-                vol_strong  = 1.8 if is_choppy else self.VOL_SURGE_STRONG
-                vol_partial = 1.0 if is_choppy else self.VOL_SURGE_PARTIAL
-                if vol_baseline > 0:
-                    ratio = current_vol / vol_baseline
-                    if ratio >= vol_strong:
-                        components['vol_ignition'] = 0.20
-                    elif ratio >= vol_partial:
-                        # Partial credit for a meaningful volume spike
-                        components['vol_ignition'] = 0.10
+                # Dollar-volume floor: ignore volume spikes on illiquid bars
+                bar_dollar_vol = current_vol * float(crypto['prices'][-1]) if len(crypto['prices']) >= 1 else 0.0
+                if bar_dollar_vol < 1000.0:
+                    pass  # leave vol_ignition at 0.0 — spike is on an illiquid bar
+                else:
+                    vol_strong  = 2.5 if is_choppy else self.VOL_SURGE_STRONG   # was 1.8 in choppy
+                    vol_partial = 1.5 if is_choppy else self.VOL_SURGE_PARTIAL  # was 1.0 in choppy
+                    if vol_baseline > 0:
+                        ratio = current_vol / vol_baseline
+                        if ratio >= vol_strong:
+                            components['vol_ignition'] = 0.20
+                        elif ratio >= vol_partial:
+                            # Partial credit for a meaningful volume spike
+                            components['vol_ignition'] = 0.10
 
             # ----------------------------------------------------------
             # ADX FILTER: reject strong bearish trends
@@ -147,6 +160,15 @@ class MicroScalpEngine:
                         elif is_mild_oversold_ranging:
                             components['mean_reversion'] = 0.10
 
+            # EMA momentum filter: if ultra-short EMA is below short EMA (price trending down),
+            # cap score to prevent weak entries in active downtrends.
+            # Full mean-reversion entries (all 3 signals firing near max) can still pass at 0.30+.
+            ema_us = crypto.get('ema_ultra_short')
+            ema_sh = crypto.get('ema_short')
+            _downtrend = (ema_us is not None and ema_sh is not None
+                          and ema_us.IsReady and ema_sh.IsReady
+                          and ema_us.Current.Value < ema_sh.Current.Value)
+
             # ----------------------------------------------------------
             # SIGNAL: VWAP Reclaim / SD Band Bounce
             # Price > rolling 20-bar VWAP → institutional buying support.
@@ -158,13 +180,18 @@ class MicroScalpEngine:
             vwap_sd = crypto.get('vwap_sd', 0.0)
             vwap_sd2_lower = crypto.get('vwap_sd2_lower', 0.0)
             vwap_sd3_lower = crypto.get('vwap_sd3_lower', 0.0)
+            ema5 = crypto.get('ema_5')
+            ema_short = crypto.get('ema_short')
+            ema5_rising = (ema5 is not None and ema_short is not None
+                           and ema5.IsReady and ema_short.IsReady
+                           and ema5.Current.Value > ema_short.Current.Value)
             if vwap > 0 and len(crypto['prices']) >= 1:
                 price = crypto['prices'][-1]
                 if price > vwap * self.VWAP_BUFFER:
-                    # Price clearly above VWAP (0.1% buffer)
-                    components['vwap_signal'] = 0.20
+                    # Clearly above VWAP (0.15% buffer) — full credit only if EMA5 confirms uptrend
+                    components['vwap_signal'] = 0.20 if ema5_rising else 0.10
                 elif price > vwap:
-                    # Price marginally above VWAP
+                    # Marginally above VWAP — partial credit regardless of EMA
                     components['vwap_signal'] = 0.10
                 elif (vwap_sd > 0 and vwap_sd3_lower > 0
                       and price >= vwap_sd3_lower * 1.005
@@ -180,6 +207,12 @@ class MicroScalpEngine:
             self.algo.Debug(f"MicroScalpEngine.calculate_scalp_score error: {e}")
 
         score = sum(components.values())
+
+        # Apply downtrend cap BEFORE gates: if ultra-short EMA is below short EMA,
+        # cap score at 0.30 to block weak entries in active downtrends.
+        # Full mean-reversion entries (all 3 signals near max) can still pass.
+        if _downtrend:
+            score = min(score, 0.30)
 
         # Gate 1 – Volume gate: require at least partial volume ignition for any entry.
         # This replaces the old separate backtest vs live gate logic.

@@ -93,4 +93,39 @@ def daily_report(algo):
             wr = sum(1 for p in pnls if p > 0) / len(pnls)
             total = sum(pnls)
             algo.Debug(f"  {bucket}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
+    # Session PnL summary
+    if hasattr(algo, 'pnl_by_session') and algo.pnl_by_session:
+        algo.Debug("  --- PnL by session ---")
+        for bucket in ['asia_dead', 'asia', 'eu_open', 'eu_main',
+                       'us_open', 'us_main', 'us_eve']:
+            pnls = algo.pnl_by_session.get(bucket)
+            if not pnls:
+                continue
+            avg = sum(pnls) / len(pnls)
+            wr = sum(1 for p in pnls if p > 0) / len(pnls)
+            total = sum(pnls)
+            algo.Debug(f"  {bucket}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
+    # Setup archetype PnL summary
+    if hasattr(algo, 'pnl_by_archetype') and algo.pnl_by_archetype:
+        algo.Debug("  --- PnL by setup archetype ---")
+        for arch, pnls in sorted(algo.pnl_by_archetype.items()):
+            if not pnls:
+                continue
+            avg = sum(pnls) / len(pnls)
+            wr = sum(1 for p in pnls if p > 0) / len(pnls)
+            total = sum(pnls)
+            algo.Debug(f"  {arch}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
+    # MFE/MAE by archetype (compact)
+    mfe_arch = getattr(algo, 'mfe_by_archetype', {})
+    mae_arch = getattr(algo, 'mae_by_archetype', {})
+    if mfe_arch:
+        algo.Debug("  --- MFE/MAE by archetype ---")
+        for arch in sorted(mfe_arch.keys()):
+            mfes = mfe_arch.get(arch, [])
+            maes = mae_arch.get(arch, [])
+            if not mfes:
+                continue
+            avg_mfe = sum(mfes) / len(mfes)
+            avg_mae = sum(maes) / len(maes) if maes else 0
+            algo.Debug(f"  {arch}: n={len(mfes)} | AvgMFE:{avg_mfe:+.3%} | AvgMAE:{avg_mae:+.3%}")
     persist_state(algo)

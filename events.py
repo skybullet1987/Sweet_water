@@ -2,6 +2,7 @@
 from AlgorithmImports import *
 from execution import *
 from collections import deque
+from trade_quality import init_trade_excursion, finalize_trade_metadata_on_exit
 # endregion
 
 
@@ -67,6 +68,8 @@ def on_order_event(algo, event):
                 crypto = algo.crypto_data.get(symbol)
                 if crypto and len(crypto['volume']) >= 1:
                     algo.entry_volumes[symbol] = crypto['volume'][-1]
+                # Initialise MFE/MAE excursion tracking for this trade
+                init_trade_excursion(algo, symbol, event.FillPrice)
             else:
                 if symbol in algo._partial_sell_symbols:
                     algo._partial_sell_symbols.discard(symbol)
@@ -134,6 +137,8 @@ def on_order_event(algo, event):
                         'signal_combo': signal_combo,
                         'hold_bucket': hold_bucket,
                     })
+                    # Finalize rich per-trade metadata (MFE/MAE, session, archetype, etc.)
+                    finalize_trade_metadata_on_exit(algo, symbol, pnl)
                     if len(algo._recent_trade_outcomes) >= 16:
                         recent_wr = sum(algo._recent_trade_outcomes) / len(algo._recent_trade_outcomes)
                         if recent_wr < 0.15:

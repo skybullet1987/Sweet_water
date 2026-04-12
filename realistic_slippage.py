@@ -19,10 +19,15 @@ class RealisticCryptoSlippage:
     - max_slippage_pct raised to 2.0% for realistic altcoin costs.
     - Synthetic spread floors doubled vs prior values to match real Kraken spreads.
     - Synthetic spread floor applied when bid/ask unavailable (typical in backtest).
+
+    Stress mode:
+    - stress_mult > 1.0 scales base_slippage_pct for pessimistic robustness testing.
+      Set via algo.stress_slippage_mult (default 1.0 = no stress).
     """
 
-    def __init__(self):
-        self.base_slippage_pct = 0.0020      # 0.20% (calibrated to real Kraken altcoin fills)
+    def __init__(self, stress_mult=1.0):
+        base = 0.0020 * max(0.1, float(stress_mult))   # floor at 10% of default
+        self.base_slippage_pct = base
         self.volume_impact_factor = 0.40     # Real market impact at 1% participation on Kraken
         self.max_slippage_pct = 0.0200       # 2.00% cap
 

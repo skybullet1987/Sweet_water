@@ -7,6 +7,9 @@ from events import on_order_event
 from scoring import MicroScalpEngine
 from strategy_core import (initialize_symbol, update_symbol_data,
                             update_market_context, compute_ranking_overlay)
+from trade_quality import (get_session_quality, adverse_selection_filter,
+                            record_trade_metadata_on_entry, update_trade_excursion,
+                            get_bb_compression_state)
 from collections import deque
 import numpy as np
 import math
@@ -238,6 +241,59 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.ranking_combo_bonus_cap  = self._get_param("ranking_combo_bonus_cap",  0.05)
         self.ranking_symbol_bonus_cap = self._get_param("ranking_symbol_bonus_cap", 0.03)
 
+        # -----------------------------------------------------------------
+        # Trade Quality Architecture parameters
+        # All default to conservative values that preserve baseline behaviour.
+        # -----------------------------------------------------------------
+
+        # 1. Session / liquidity regime layer
+        # Set session_layer_enabled=False to disable all session adjustments.
+        self.session_layer_enabled = bool(self._get_param("session_layer_enabled", 1.0))
+        # Per-session parameter overrides are built from GetParameter calls so
+        # they are accessible in backtest optimisation sweeps.
+        for _sname, _sdefaults in [
+            ('asia_dead', ( 0.05,  0.70,  0.70)),
+            ('asia',      ( 0.02,  0.85,  0.85)),
+            ('eu_open',   ( 0.00,  1.00,  1.00)),
+            ('eu_main',   ( 0.00,  1.00,  1.00)),
+            ('us_open',   (-0.02,  1.05,  1.10)),
+            ('us_main',   ( 0.00,  1.00,  1.00)),
+            ('us_eve',    ( 0.02,  0.90,  0.90)),
+        ]:
+            setattr(self, f'_session_thresh_{_sname}',
+                    self._get_param(f'session_thresh_{_sname}',  _sdefaults[0]))
+            setattr(self, f'_session_size_{_sname}',
+                    self._get_param(f'session_size_{_sname}',    _sdefaults[1]))
+            setattr(self, f'_session_spread_{_sname}',
+                    self._get_param(f'session_spread_{_sname}',  _sdefaults[2]))
+
+        # 2. Adverse-selection filter
+        # Set adverse_selection_enabled=False to disable entirely.
+        self.adverse_selection_enabled         = bool(self._get_param("adverse_selection_enabled",         1.0))
+        self.asel_spread_widen_thresh          = self._get_param("asel_spread_widen_thresh",          2.5)
+        self.asel_bar_displacement_atr_mult    = self._get_param("asel_bar_displacement_atr_mult",    2.5)
+        self.asel_vwap_extension_sd_mult       = self._get_param("asel_vwap_extension_sd_mult",       2.0)
+        self.asel_breakout_max_bar_atr_mult    = self._get_param("asel_breakout_max_bar_atr_mult",    1.5)
+
+        # 3. BB compression context
+        # Set bb_compression_rank_enabled=False to disable the ranking boost.
+        self.bb_compression_rank_enabled       = bool(self._get_param("bb_compression_rank_enabled",  1.0))
+        self.bb_compression_rank_bonus_cap     = self._get_param("bb_compression_rank_bonus_cap",     0.04)
+        self.bb_compression_pct                = self._get_param("bb_compression_pct",                0.75)
+
+        # 4. RS-vs-BTC rank overlay
+        # Set rs_rank_overlay_enabled=False to disable.
+        self.rs_rank_overlay_enabled = bool(self._get_param("rs_rank_overlay_enabled", 1.0))
+        self.rs_rank_scale           = self._get_param("rs_rank_scale", 3.0)
+        self.rs_rank_cap             = self._get_param("rs_rank_cap",   0.05)
+
+        # 5 & 6. Stress modes (backtest realism toggles)
+        # All default to 1.0 / 0.0 = no stress (baseline behaviour preserved).
+        # Set stress_spread_mult=1.5 or stress_slippage_mult=1.5 for pessimistic runs.
+        self.stress_spread_mult        = self._get_param("stress_spread_mult",        1.0)
+        self.stress_slippage_mult      = self._get_param("stress_slippage_mult",      1.0)
+        self.stress_nonfill_penalty    = self._get_param("stress_nonfill_penalty",    0.0)
+
         # Non-fill simulation seed (backtest only).
         # Default 42 preserves deterministic behaviour; change for robustness sweeps.
         non_fill_seed = int(self._get_param("non_fill_seed", 42))
@@ -293,7 +349,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.Debug(f"Capital: ${self.Portfolio.Cash:.2f} | Max pos: {self.max_positions} | Size: {self.position_size_pct:.0%}")
 
     def CustomSecurityInitializer(self, security):
-        security.SetSlippageModel(RealisticCryptoSlippage())
+        stress_mult = getattr(self, 'stress_slippage_mult', 1.0)
+        security.SetSlippageModel(RealisticCryptoSlippage(stress_mult=stress_mult))
         security.SetFeeModel(KrakenTieredFeeModel())
 
     def _get_param(self, name, default):
@@ -700,6 +757,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             threshold_now = max(threshold_now, 0.50)
         elif self.market_regime == "sideways":
             threshold_now = max(threshold_now, 0.45)
+        # Session-layer threshold adjustment (additive, conservative by default).
+        _sess_thresh_adj, _sess_size_mult, _sess_spread_cap_mult = get_session_quality(
+            self, self.Time.hour)
+        threshold_now = max(0.0, threshold_now + _sess_thresh_adj)
         for symbol in list(self.crypto_data.keys()):
             if symbol.Value in SYMBOL_BLACKLIST or symbol.Value in self._session_blacklist:
                 continue
@@ -748,6 +809,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     'net_score': net_score,
                     'factors': factor_scores,
                     'volatility': crypto['volatility'][-1] if len(crypto['volatility']) > 0 else 0.05,
+                    'crypto': crypto,   # passed to compute_ranking_overlay for BB/RS context
                 })
 
         try:
@@ -910,6 +972,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             vol = self._annualized_vol(crypto)
             size = self._calculate_position_size(net_score, threshold_now, vol)
 
+            # Session layer: apply size multiplier for current time-of-day quality.
+            _s_thresh_adj, _s_size_mult, _s_spread_cap_mult = get_session_quality(
+                self, self.Time.hour)
+            size *= _s_size_mult
+
             if self._consecutive_loss_halve_remaining > 0:
                 size *= 0.50
 
@@ -991,14 +1058,30 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             if not intraday_volume_ok(self, sym, val):
                 continue
 
+            # Adverse-selection filter: reject overextended / late / thin-market entries.
+            _asel_pass, _asel_reason = adverse_selection_filter(
+                self, sym, crypto, cand.get('factors', {}), price)
+            if not _asel_pass:
+                debug_limited(self, f"ASEL REJECT {sym.Value}: {_asel_reason}")
+                continue
+
             try:
                 components = cand.get('factors', {})
                 # Breakout-like entry: strong vol ignition without mean-reversion support.
                 # These rarely fill passively as maker — apply a higher non-fill penalty.
                 is_breakout = (components.get('vol_ignition', 0) >= 0.20
                                and components.get('mean_reversion', 0) < 0.10)
+                # Stress mode: temporarily inflate breakout penalty for robustness testing.
+                _stress_nonfill = getattr(self, 'stress_nonfill_penalty', 0.0)
+                if _stress_nonfill > 0:
+                    # Store original, add stress penalty, restore after call
+                    _orig_penalty = getattr(self, 'breakout_nonfill_penalty',
+                                            0.08)
+                    self.breakout_nonfill_penalty = _orig_penalty + _stress_nonfill
                 ticket = place_limit_or_market(self, sym, qty, timeout_seconds=30, tag="Entry",
                                                is_breakout=is_breakout)
+                if _stress_nonfill > 0:
+                    self.breakout_nonfill_penalty = _orig_penalty
                 if ticket is not None:
                     self._recent_tickets.append(ticket)
                     sig_str = (f"vol={components.get('vol_ignition', 0):.2f} "
@@ -1015,6 +1098,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                         combo_parts.append('vwap')
                     signal_combo = '+'.join(combo_parts) if combo_parts else 'none'
                     self._entry_signal_combos[sym] = signal_combo
+                    # Record rich per-trade metadata for attribution analytics.
+                    record_trade_metadata_on_entry(
+                        self, sym, components, crypto,
+                        spread_pct=get_spread_pct(self, sym),
+                        recent_dv=recent_dv,
+                    )
                     success_count += 1
                     self.trade_count += 1
                     crypto['trade_count_today'] = crypto.get('trade_count_today', 0) + 1
@@ -1076,6 +1165,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             return
         if symbol in self._cancel_cooldowns and self.Time < self._cancel_cooldowns[symbol]:
             return
+
+        # Update per-trade MFE/MAE excursion tracker on every CheckExits call.
+        update_trade_excursion(self, symbol, price)
 
         min_notional_usd = get_min_notional_usd(self, symbol)
         if price > 0 and abs(holding.Quantity) * price < min_notional_usd * 0.3:
@@ -1220,12 +1312,20 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.Debug(f"PnL: {self.total_pnl:+.2%}")
         persist_state(self)
         _HOLD_ORDER = ['<30min', '30min-2h', '2h-6h', '6h+', 'unknown']
+        _SESSION_ORDER = ['asia_dead', 'asia', 'eu_open', 'eu_main',
+                          'us_open', 'us_main', 'us_eve']
         for label, d, order in [
-            ("REGIME",      getattr(self, 'pnl_by_regime', {}),      None),
-            ("VOL REGIME",  getattr(self, 'pnl_by_vol_regime', {}),   None),
-            ("EXIT TAG",    getattr(self, 'pnl_by_tag', {}),          None),
-            ("SIGNAL COMBO",getattr(self, 'pnl_by_signal_combo', {}), None),
-            ("HOLD TIME",   getattr(self, 'pnl_by_hold_time', {}),    _HOLD_ORDER),
+            ("REGIME",         getattr(self, 'pnl_by_regime', {}),        None),
+            ("VOL REGIME",     getattr(self, 'pnl_by_vol_regime', {}),     None),
+            ("EXIT TAG",       getattr(self, 'pnl_by_tag', {}),            None),
+            ("SIGNAL COMBO",   getattr(self, 'pnl_by_signal_combo', {}),   None),
+            ("HOLD TIME",      getattr(self, 'pnl_by_hold_time', {}),      _HOLD_ORDER),
+            ("SESSION",        getattr(self, 'pnl_by_session', {}),        _SESSION_ORDER),
+            ("SETUP ARCHETYPE",getattr(self, 'pnl_by_archetype', {}),      None),
+            ("ADX BUCKET",     getattr(self, 'pnl_by_adx_bucket', {}),     None),
+            ("SPREAD BUCKET",  getattr(self, 'pnl_by_spread_bucket', {}),  None),
+            ("DV BUCKET",      getattr(self, 'pnl_by_dv_bucket', {}),      None),
+            ("RS BUCKET",      getattr(self, 'pnl_by_rs_bucket', {}),      None),
         ]:
             if not d: continue
             self.Debug(f"=== PnL BY {label} ===")
@@ -1234,6 +1334,19 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 if not v: continue
                 n = len(v); avg = sum(v)/n; wr = sum(1 for p in v if p>0)/n; tot = sum(v)
                 self.Debug(f"  {k}: {n} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{tot:+.3%}")
+
+        # MFE/MAE by archetype summary
+        mfe_arch = getattr(self, 'mfe_by_archetype', {})
+        mae_arch = getattr(self, 'mae_by_archetype', {})
+        if mfe_arch:
+            self.Debug("=== MFE/MAE BY ARCHETYPE ===")
+            for arch in sorted(mfe_arch.keys()):
+                mfes = mfe_arch.get(arch, [])
+                maes = mae_arch.get(arch, [])
+                if not mfes: continue
+                avg_mfe = sum(mfes) / len(mfes)
+                avg_mae = sum(maes) / len(maes) if maes else 0
+                self.Debug(f"  {arch}: n={len(mfes)} | AvgMFE:{avg_mfe:+.3%} | AvgMAE:{avg_mae:+.3%}")
 
     def DailyReport(self):
         if self.IsWarmingUp: return

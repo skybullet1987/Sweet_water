@@ -458,6 +458,12 @@ def _estimate_backtest_spread(algo, symbol):
         tod_multiplier = 1.2
     estimated_spread *= tod_multiplier
 
+    # Stress mode: optional pessimistic spread multiplier for robustness testing.
+    # Set algo.stress_spread_mult > 1.0 (e.g. 1.5 or 2.0) to simulate harsher spreads.
+    stress_mult = getattr(algo, 'stress_spread_mult', 1.0)
+    if stress_mult != 1.0:
+        estimated_spread *= stress_mult
+
     estimated_spread = min(estimated_spread, 0.10)
 
     # NOTE: do NOT append to crypto['spreads'] here — this function may be called

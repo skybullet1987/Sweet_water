@@ -137,6 +137,10 @@ def update_symbol_data(algo, symbol, bar, quote_bar=None):
     # True intraday VWAP: reset accumulator lists at each new UTC day so the
     # VWAP level reflects today's actual traded price rather than an arbitrary
     # rolling 20-bar window that has no institutional significance.
+    # _VWAP_MAX_BARS is a safety cap: 5-min bars × 24 h × 2 = 576 covers a full
+    # day with margin; guarding against list runaway if the date-reset ever
+    # fails (e.g. data replayed without time advancing).
+    _VWAP_MAX_BARS = 576
     bar_date = bar.EndTime.date()
     if crypto.get('_vwap_date') != bar_date:
         crypto['_vwap_date'] = bar_date
@@ -148,6 +152,11 @@ def update_symbol_data(algo, symbol, bar, quote_bar=None):
         crypto['vwap_sd3_lower'] = 0.0
     crypto['vwap_pv'].append(price * volume)
     crypto['vwap_v'].append(volume)
+    # Safety trim: keep at most _VWAP_MAX_BARS entries so the lists stay
+    # bounded even if the date-reset is somehow skipped.
+    if len(crypto['vwap_pv']) > _VWAP_MAX_BARS:
+        crypto['vwap_pv'] = crypto['vwap_pv'][-_VWAP_MAX_BARS:]
+        crypto['vwap_v']  = crypto['vwap_v'][-_VWAP_MAX_BARS:]
     total_v = sum(crypto['vwap_v'])
     if total_v > 0:
         crypto['vwap'] = sum(crypto['vwap_pv']) / total_v
@@ -178,8 +187,12 @@ def update_symbol_data(algo, symbol, bar, quote_bar=None):
             crypto['bb_width'].append(4 * std / mean if mean > 0 else 0)
     sp = get_spread_pct(algo, symbol)
     if sp is None and not algo.LiveMode:
-        # Backtest: estimate from dollar volume. Done here (once per bar) so that
-        # repeated spread_ok() calls within the same bar don't double-append.
+        # Backtest: estimate spread from dollar volume. Appending happens here
+        # (once per bar, in update_symbol_data) rather than inside
+        # _estimate_backtest_spread(), which is also called by spread_ok() —
+        # twice per bar per symbol (once during candidate screening, once during
+        # execution).  Keeping the append here guarantees exactly one entry per
+        # 5-minute bar regardless of how many times spread_ok() is invoked.
         sp = _estimate_backtest_spread(algo, symbol)
     if sp is not None:
         crypto['spreads'].append(sp)

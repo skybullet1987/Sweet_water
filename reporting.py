@@ -129,3 +129,48 @@ def daily_report(algo):
             avg_mae = sum(maes) / len(maes) if maes else 0
             algo.Debug(f"  {arch}: n={len(mfes)} | AvgMFE:{avg_mfe:+.3%} | AvgMAE:{avg_mae:+.3%}")
     persist_state(algo)
+
+
+def final_report(algo):
+    """Print end-of-algorithm summary: headline stats, per-category PnL breakdowns, MFE/MAE."""
+    total = algo.winning_trades + algo.losing_trades
+    wr = algo.winning_trades / total if total > 0 else 0
+    algo.Debug("=== FINAL ===")
+    algo.Debug(f"Trades: {algo.trade_count} | WR: {wr:.1%}")
+    algo.Debug(f"Final: ${algo.Portfolio.TotalPortfolioValue:.2f}")
+    algo.Debug(f"PnL: {algo.total_pnl:+.2%}")
+    persist_state(algo)
+    _HOLD_ORDER = ['<30min', '30min-2h', '2h-6h', '6h+', 'unknown']
+    _SESSION_ORDER = ['asia_dead', 'asia', 'eu_open', 'eu_main', 'us_open', 'us_main', 'us_eve']
+    for label, d, order in [
+        ("REGIME",         getattr(algo, 'pnl_by_regime', {}),        None),
+        ("VOL REGIME",     getattr(algo, 'pnl_by_vol_regime', {}),     None),
+        ("EXIT TAG",       getattr(algo, 'pnl_by_tag', {}),            None),
+        ("SIGNAL COMBO",   getattr(algo, 'pnl_by_signal_combo', {}),   None),
+        ("HOLD TIME",      getattr(algo, 'pnl_by_hold_time', {}),      _HOLD_ORDER),
+        ("SESSION",        getattr(algo, 'pnl_by_session', {}),        _SESSION_ORDER),
+        ("SETUP ARCHETYPE",getattr(algo, 'pnl_by_archetype', {}),      None),
+        ("ADX BUCKET",     getattr(algo, 'pnl_by_adx_bucket', {}),     None),
+        ("SPREAD BUCKET",  getattr(algo, 'pnl_by_spread_bucket', {}),  None),
+        ("DV BUCKET",      getattr(algo, 'pnl_by_dv_bucket', {}),      None),
+        ("RS BUCKET",      getattr(algo, 'pnl_by_rs_bucket', {}),      None),
+    ]:
+        if not d: continue
+        algo.Debug(f"=== PnL BY {label} ===")
+        items = [(b, d.get(b)) for b in order] if order else sorted(d.items())
+        for k, v in items:
+            if not v: continue
+            n = len(v); avg = sum(v)/n; wr = sum(1 for p in v if p>0)/n; tot = sum(v)
+            algo.Debug(f"  {k}: {n} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{tot:+.3%} {'✅' if avg > 0 else '❌'}")
+    algo.Debug("=== SESSION SIZE MULTIPLIERS (current) ===")
+    for _sname in ['asia_dead', 'asia', 'eu_open', 'eu_main', 'us_open', 'us_main', 'us_eve']:
+        algo.Debug(f"  {_sname}: size_mult={getattr(algo, f'_session_size_{_sname}', 1.0):.2f}")
+    mfe_arch = getattr(algo, 'mfe_by_archetype', {})
+    mae_arch = getattr(algo, 'mae_by_archetype', {})
+    if mfe_arch:
+        algo.Debug("=== MFE/MAE BY ARCHETYPE ===")
+        for arch in sorted(mfe_arch.keys()):
+            mfes = mfe_arch.get(arch, [])
+            maes = mae_arch.get(arch, [])
+            if not mfes: continue
+            algo.Debug(f"  {arch}: n={len(mfes)} | AvgMFE:{sum(mfes)/len(mfes):+.3%} | AvgMAE:{sum(maes)/len(maes) if maes else 0:+.3%}")

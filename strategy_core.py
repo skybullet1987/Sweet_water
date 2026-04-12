@@ -4,6 +4,8 @@ import numpy as np
 import math
 import itertools
 from execution import get_spread_pct, _estimate_backtest_spread
+from trade_quality import (compute_rs_rank_modifier, get_bb_compression_rank,
+                            get_bb_compression_state)
 
 
 def initialize_symbol(algo, symbol):
@@ -262,9 +264,18 @@ def update_market_context(algo):
 
 
 def compute_ranking_overlay(algo, cand):
-    """Small bounded attribution-aware ranking adjustment; net_score remains dominant."""
+    """
+    Small bounded attribution-aware ranking adjustment; net_score remains dominant.
+
+    Components (all bounded):
+      1. Signal-combo historical expectancy z-score  → ±ranking_combo_bonus_cap
+      2. Per-symbol recent performance                → ±ranking_symbol_bonus_cap
+      3. RS-vs-BTC bounded modifier                  → ±rs_rank_cap  (default ±0.05)
+      4. BB compression context boost for breakouts  → +bb_compression_rank_bonus_cap
+    """
     adj = 0.0
     factors = cand.get('factors', {})
+    crypto  = cand.get('crypto')   # may be None for legacy callers
 
     if hasattr(algo, 'pnl_by_signal_combo') and len(algo.pnl_by_signal_combo) >= 2:
         combo_parts = []
@@ -286,5 +297,18 @@ def compute_ranking_overlay(algo, cand):
         if len(recent) >= 3:
             sym_avg = np.mean(recent)
             adj += float(np.clip(sym_avg * 2.0, -algo.ranking_symbol_bonus_cap, algo.ranking_symbol_bonus_cap))
+
+    # RS-vs-BTC bounded rank modifier
+    if crypto is not None:
+        adj += compute_rs_rank_modifier(algo, crypto)
+
+        # BB compression context: boost breakout-style entries coming out of a squeeze
+        if getattr(algo, 'bb_compression_rank_enabled', True):
+            is_breakout_like = (factors.get('vol_ignition',   0) >= 0.10
+                                and factors.get('mean_reversion', 0) < 0.10)
+            if is_breakout_like:
+                comp_rank = get_bb_compression_rank(crypto)
+                cap = getattr(algo, 'bb_compression_rank_bonus_cap', 0.04)
+                adj += float(np.clip(comp_rank * cap, 0.0, cap))
 
     return adj

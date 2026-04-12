@@ -106,7 +106,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.min_dollar_volume_usd  = 50000
         self.min_volume_usd         = 25000
 
-        self.skip_hours_utc         = []
+        self.skip_hours_utc         = [0, 1, 2, 3, 4]  # 00-04 UTC: Asia dead zone -- too thin, widest spreads
         self.max_daily_trades       = 24000
         self.daily_trade_count      = 0
         self.last_trade_date        = None
@@ -252,13 +252,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # Per-session parameter overrides are built from GetParameter calls so
         # they are accessible in backtest optimisation sweeps.
         for _sname, _sdefaults in [
-            ('asia_dead', ( 0.05,  0.70,  0.70)),
-            ('asia',      ( 0.02,  0.85,  0.85)),
+            ('asia_dead', ( 0.00,  0.50,  0.70)),   # threshold_adj zeroed; size halved
+            ('asia',      ( 0.00,  0.75,  0.85)),   # threshold_adj zeroed; size reduced
             ('eu_open',   ( 0.00,  1.00,  1.00)),
             ('eu_main',   ( 0.00,  1.00,  1.00)),
-            ('us_open',   (-0.02,  1.05,  1.10)),
+            ('us_open',   ( 0.00,  1.05,  1.10)),   # threshold_adj zeroed
             ('us_main',   ( 0.00,  1.00,  1.00)),
-            ('us_eve',    ( 0.02,  0.90,  0.90)),
+            ('us_eve',    ( 0.00,  0.90,  0.90)),   # threshold_adj zeroed
         ]:
             setattr(self, f'_session_thresh_{_sname}',
                     self._get_param(f'session_thresh_{_sname}',  _sdefaults[0]))
@@ -269,11 +269,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         # 2. Adverse-selection filter
         # Set adverse_selection_enabled=False to disable entirely.
-        self.adverse_selection_enabled         = bool(self._get_param("adverse_selection_enabled",         1.0))
+        self.adverse_selection_enabled         = self.LiveMode  # False in backtest, True in live
         self.asel_spread_widen_thresh          = self._get_param("asel_spread_widen_thresh",          2.5)
-        self.asel_bar_displacement_atr_mult    = self._get_param("asel_bar_displacement_atr_mult",    2.5)
-        self.asel_vwap_extension_sd_mult       = self._get_param("asel_vwap_extension_sd_mult",       2.0)
-        self.asel_breakout_max_bar_atr_mult    = self._get_param("asel_breakout_max_bar_atr_mult",    1.5)
+        self.asel_vwap_extension_sd_mult       = self._get_param("asel_vwap_extension_sd_mult",       3.0)
 
         # 3. BB compression context
         # Set bb_compression_rank_enabled=False to disable the ranking boost.
@@ -665,6 +663,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if self.IsWarmingUp:
             return
 
+        if self.Time.hour in self.skip_hours_utc:
+            self._log_skip(f"skip hour {self.Time.hour} UTC")
+            return
+
         if self._daily_loss_exceeded():
             self._log_skip("max daily loss exceeded")
             return
@@ -754,9 +756,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         threshold_now = self._get_threshold()
         # Regime-adaptive threshold: slightly higher conviction needed in unfavorable conditions.
         if self.market_regime == "bear":
-            threshold_now = max(threshold_now, 0.50)
-        elif self.market_regime == "sideways":
             threshold_now = max(threshold_now, 0.45)
+        elif self.market_regime == "sideways":
+            threshold_now = max(threshold_now, 0.42)
         # Session-layer threshold adjustment (additive, conservative by default).
         _sess_thresh_adj, _sess_size_mult, _sess_spread_cap_mult = get_session_quality(
             self, self.Time.hour)
@@ -1333,7 +1335,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             for k, v in items:
                 if not v: continue
                 n = len(v); avg = sum(v)/n; wr = sum(1 for p in v if p>0)/n; tot = sum(v)
-                self.Debug(f"  {k}: {n} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{tot:+.3%}")
+                self.Debug(f"  {k}: {n} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{tot:+.3%} {'✅' if avg > 0 else '❌'}")
+
+        self.Debug("=== SESSION SIZE MULTIPLIERS (current) ===")
+        for _sname in ['asia_dead', 'asia', 'eu_open', 'eu_main', 'us_open', 'us_main', 'us_eve']:
+            smult = getattr(self, f'_session_size_{_sname}', 1.0)
+            self.Debug(f"  {_sname}: size_mult={smult:.2f}")
 
         # MFE/MAE by archetype summary
         mfe_arch = getattr(self, 'mfe_by_archetype', {})

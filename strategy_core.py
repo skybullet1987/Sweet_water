@@ -3,7 +3,7 @@ from collections import deque
 import numpy as np
 import math
 import itertools
-from execution import get_spread_pct
+from execution import get_spread_pct, _estimate_backtest_spread
 
 
 def initialize_symbol(algo, symbol):
@@ -35,13 +35,16 @@ def initialize_symbol(algo, symbol):
         'last_loss_time': None,
         'bid_size': 0.0,
         'ask_size': 0.0,
-        'vwap_pv': deque(maxlen=20),
-        'vwap_v': deque(maxlen=20),
+        # True intraday VWAP: accumulates all bars since midnight UTC, resets daily.
+        # Using plain lists (no maxlen) so we always hold the full day's bars.
+        'vwap_pv': [],
+        'vwap_v': [],
         'vwap': 0.0,
         'volume_long': deque(maxlen=1440),
         'vwap_sd': 0.0,
         'vwap_sd2_lower': 0.0,
         'vwap_sd3_lower': 0.0,
+        '_vwap_date': None,           # tracks the UTC date of the last VWAP reset
         'consolidator': None,
         # Incremental rolling-stat accumulators (avoid deque→list→numpy each bar)
         '_vma_window':   deque(maxlen=algo.short_period),   # 6-bar rolling volume mean
@@ -97,8 +100,11 @@ def update_symbol_data(algo, symbol, bar, quote_bar=None):
         crypto['_vol_sum']    += ret
         crypto['_vol_sum_sq'] += ret * ret
         if len(vol_w) >= 10:
-            vol_mean = crypto['_vol_sum'] / len(vol_w)
-            vol_var  = crypto['_vol_sum_sq'] / len(vol_w) - vol_mean * vol_mean
+            n = len(vol_w)
+            vol_mean = crypto['_vol_sum'] / n
+            # Sample variance (Bessel's correction: divide by n-1, not n) to avoid
+            # systematically underestimating volatility by ~sqrt(n/(n-1)).
+            vol_var  = (crypto['_vol_sum_sq'] - n * vol_mean * vol_mean) / (n - 1)
             crypto['volatility'].append(math.sqrt(max(vol_var, 0.0)))
     crypto['last_price'] = price
     crypto['volume'].append(volume)
@@ -128,6 +134,18 @@ def update_symbol_data(algo, symbol, bar, quote_bar=None):
     crypto['ema_5'].Update(bar.EndTime, price)
     crypto['atr'].Update(bar)
     crypto['adx'].Update(bar)
+    # True intraday VWAP: reset accumulator lists at each new UTC day so the
+    # VWAP level reflects today's actual traded price rather than an arbitrary
+    # rolling 20-bar window that has no institutional significance.
+    bar_date = bar.EndTime.date()
+    if crypto.get('_vwap_date') != bar_date:
+        crypto['_vwap_date'] = bar_date
+        crypto['vwap_pv'] = []
+        crypto['vwap_v'] = []
+        crypto['vwap'] = 0.0
+        crypto['vwap_sd'] = 0.0
+        crypto['vwap_sd2_lower'] = 0.0
+        crypto['vwap_sd3_lower'] = 0.0
     crypto['vwap_pv'].append(price * volume)
     crypto['vwap_v'].append(volume)
     total_v = sum(crypto['vwap_v'])
@@ -135,7 +153,6 @@ def update_symbol_data(algo, symbol, bar, quote_bar=None):
         crypto['vwap'] = sum(crypto['vwap_pv']) / total_v
     if len(crypto['vwap_v']) >= 5 and crypto['vwap'] > 0:
         vwap_val = crypto['vwap']
-        # zip directly over deques — avoids creating pv_list/v_list intermediaries
         bar_prices = [pv / v for pv, v in zip(crypto['vwap_pv'], crypto['vwap_v']) if v > 0]
         if len(bar_prices) >= 5:
             sd = float(np.std(bar_prices))
@@ -152,13 +169,18 @@ def update_symbol_data(algo, symbol, bar, quote_bar=None):
     if len(bb_w) >= algo.medium_period:
         n    = len(bb_w)
         mean = crypto['_bb_sum'] / n
-        var  = crypto['_bb_sum_sq'] / n - mean * mean
+        # Sample variance (Bessel's correction) for unbiased BB band width.
+        var  = (crypto['_bb_sum_sq'] - n * mean * mean) / (n - 1)
         std  = math.sqrt(max(var, 0.0))
         if std > 0:
             crypto['bb_upper'].append(mean + 2 * std)
             crypto['bb_lower'].append(mean - 2 * std)
             crypto['bb_width'].append(4 * std / mean if mean > 0 else 0)
     sp = get_spread_pct(algo, symbol)
+    if sp is None and not algo.LiveMode:
+        # Backtest: estimate from dollar volume. Done here (once per bar) so that
+        # repeated spread_ok() calls within the same bar don't double-append.
+        sp = _estimate_backtest_spread(algo, symbol)
     if sp is not None:
         crypto['spreads'].append(sp)
     if quote_bar is not None:

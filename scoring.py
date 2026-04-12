@@ -121,7 +121,10 @@ class MicroScalpEngine:
                 di_plus = adx_indicator.PositiveDirectionalIndex.Current.Value
                 di_minus = adx_indicator.NegativeDirectionalIndex.Current.Value
                 if adx_val > 25 and di_minus > di_plus * 1.2:
-                    # Strong bearish trend — mean reversion will fail, skip
+                    # Strong bearish trend — mean reversion will fail, skip.
+                    # Clear any partial vol_ignition so signal-attribution logging
+                    # doesn't incorrectly record a 'vol' combo for a rejected bar.
+                    components['vol_ignition'] = 0.0
                     return 0.0, components
                 if adx_val <= self.ADX_STRONG_THRESHOLD:
                     rsi_ind = crypto.get('rsi')
@@ -198,11 +201,20 @@ class MicroScalpEngine:
     # ------------------------------------------------------------------
     def calculate_position_size(self, score, threshold, asset_vol_ann):
         """
-        Simplified position sizing: fixed fraction with vol-targeting.
-        Kelly removed — noisy at this sample size and signal quality.
+        Conviction-scaled position sizing with vol-targeting.
+
+        Base size scales linearly from 0.30 (at threshold) to 0.50 (at max score
+        of 0.60), rewarding high-confluence entries without overriding the vol
+        scalar that keeps per-trade risk constant across assets.
         """
-        # Fixed base size — same for all entries that pass threshold
-        size = 0.50
+        # Conviction scaling: higher score → larger base allocation.
+        max_score = 0.60
+        score_range = max_score - threshold
+        if score_range > 0:
+            conviction = max(0.0, min(1.0, (score - threshold) / score_range))
+        else:
+            conviction = 1.0
+        size = 0.30 + 0.20 * conviction  # 0.30 at threshold → 0.50 at max score
 
         # Vol-targeting: scale down for volatile assets, keep size for calmer ones
         if asset_vol_ann is not None and asset_vol_ann > 0:

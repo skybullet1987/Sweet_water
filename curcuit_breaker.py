@@ -2,6 +2,7 @@
 # TODO: This file is misnamed — should be circuit_breaker.py (typo: 'curcuit').
 # Rename to circuit_breaker.py and update all imports once import breakage can be coordinated.
 from AlgorithmImports import *
+from collections import deque
 from datetime import datetime, timedelta
 # endregion
 
@@ -100,15 +101,14 @@ class RollingMaxDrawdown:
             lookback_bars: int, window for max drawdown calculation
         """
         self.lookback_bars = lookback_bars
-        self.equity_history = []
+        # deque with maxlen automatically discards the oldest entry in O(1);
+        # the old list + pop(0) was O(lookback_bars) per update.
+        self.equity_history = deque(maxlen=lookback_bars)
     
     def update(self, equity):
         """Add new equity value and calculate rolling max drawdown."""
         self.equity_history.append(equity)
-        
-        # Keep only last N bars
-        if len(self.equity_history) > self.lookback_bars:
-            self.equity_history.pop(0)
+        # maxlen on the deque handles eviction — no manual trimming needed.
     
     def get_max_drawdown(self):
         """Return max drawdown as decimal (e.g., -0.05 for -5%)."""

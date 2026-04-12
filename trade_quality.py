@@ -119,10 +119,11 @@ def adverse_selection_filter(algo, symbol, crypto, components, current_price):
 
     Checks (all configurable via algo attributes):
       A) Spread widening: current spread > median spread × asel_spread_widen_thresh
-      B) Bar displacement vs ATR: 1-bar move > ATR × asel_bar_displacement_atr_mult
       C) VWAP extension: price above VWAP by more than asel_vwap_extension_sd_mult × SD
-      D) Breakout-after-excessive-displacement:
-             vol-ignition entry + 1-bar move > ATR × asel_breakout_max_bar_atr_mult
+
+    Checks B (bar displacement vs ATR) and D (breakout after excessive displacement)
+    have been removed — they are structurally antagonistic with vol-ignition, which by
+    definition fires on high-displacement bars.
 
     Set algo.adverse_selection_enabled = False to disable entirely.
     """
@@ -145,46 +146,16 @@ def adverse_selection_filter(algo, symbol, crypto, components, current_price):
                     return False, (f'spread_widening({current_sp:.3%}>'
                                    f'{median_sp:.3%}x{widen_thresh})')
 
-        # B) Bar displacement vs ATR
-        atr_ind = crypto.get('atr')
-        prices = crypto.get('prices', [])
-        if (atr_ind is not None and atr_ind.IsReady
-                and len(prices) >= 2 and current_price > 0):
-            atr_val = float(atr_ind.Current.Value)
-            prev_price = float(prices[-2])
-            if prev_price > 0 and atr_val > 0:
-                bar_disp = abs(current_price - prev_price) / prev_price
-                atr_pct  = atr_val / current_price
-                max_disp = getattr(algo, 'asel_bar_displacement_atr_mult', 2.5)
-                if bar_disp > atr_pct * max_disp:
-                    return False, (f'bar_displacement({bar_disp:.3%}>'
-                                   f'{atr_pct * max_disp:.3%})')
-
         # C) VWAP extension: price too far above VWAP SD bands
         vwap   = crypto.get('vwap',   0.0)
         vwap_sd = crypto.get('vwap_sd', 0.0)
         if vwap > 0 and vwap_sd > 0 and current_price > 0:
             extension   = (current_price - vwap) / vwap
-            sd_mult     = getattr(algo, 'asel_vwap_extension_sd_mult', 2.0)
+            sd_mult     = getattr(algo, 'asel_vwap_extension_sd_mult', 3.0)
             max_ext_pct = sd_mult * (vwap_sd / vwap)
             if extension > max_ext_pct:
                 return False, (f'vwap_extension({extension:.3%}>'
                                f'{max_ext_pct:.3%})')
-
-        # D) Breakout after excessive 1-bar displacement
-        is_breakout = (components.get('vol_ignition',   0) >= 0.20
-                       and components.get('mean_reversion', 0) < 0.10)
-        if is_breakout and len(prices) >= 2 and current_price > 0:
-            if atr_ind is not None and atr_ind.IsReady:
-                atr_v2 = float(atr_ind.Current.Value)
-                prev2  = float(prices[-2])
-                if prev2 > 0 and atr_v2 > 0:
-                    move    = abs(current_price - prev2) / prev2
-                    atr_p2  = atr_v2 / current_price
-                    max_bo  = getattr(algo, 'asel_breakout_max_bar_atr_mult', 1.5)
-                    if move > atr_p2 * max_bo:
-                        return False, (f'breakout_overextended({move:.3%}>'
-                                       f'{atr_p2 * max_bo:.3%})')
 
     except Exception:
         pass  # Never block an entry on error

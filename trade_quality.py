@@ -261,7 +261,7 @@ def compute_rs_rank_modifier(algo, crypto):
     recent_rs = sum(itertools.islice(reversed(rs_deque), n)) / n
 
     scale = getattr(algo, 'rs_rank_scale', 3.0)   # e.g. 1% RS → ~0.03 adj
-    cap   = getattr(algo, 'rs_rank_cap',   0.05)   # hard clamp ±5 %
+    cap   = getattr(algo, 'rs_rank_cap',   0.05)   # hard clamp ±5%
     raw   = recent_rs * scale
     return float(max(-cap, min(cap, raw)))
 

@@ -119,11 +119,11 @@ def adverse_selection_filter(algo, symbol, crypto, components, current_price):
 
     Checks (all configurable via algo attributes):
       A) Spread widening: current spread > median spread × asel_spread_widen_thresh
+      B) Bar displacement vs ATR — late-entry filter (opt-in, gated by vol_ignition < 0.15).
+         Only fires when vol_ignition is below the strong threshold, because a high
+         vol_ignition score means the displacement IS the signal.
+         Gate: algo.asel_bar_displacement_enabled (default True).
       C) VWAP extension: price above VWAP by more than asel_vwap_extension_sd_mult × SD
-
-    Checks B (bar displacement vs ATR) and D (breakout after excessive displacement)
-    have been removed — they are structurally antagonistic with vol-ignition, which by
-    definition fires on high-displacement bars.
 
     Set algo.adverse_selection_enabled = False to disable entirely.
     """
@@ -145,6 +145,22 @@ def adverse_selection_filter(algo, symbol, crypto, components, current_price):
                 if median_sp > 0 and current_sp > median_sp * widen_thresh:
                     return False, (f'spread_widening({current_sp:.3%}>'
                                    f'{median_sp:.3%}x{widen_thresh})')
+
+        # B) Bar displacement vs ATR — late-entry filter
+        # Only active when vol_ignition is below the strong threshold (< 0.15),
+        # because a high vol_ignition score means the displacement IS the signal.
+        # This catches entries that are "overextended without a volume catalyst".
+        atr_ind = crypto.get('atr')
+        if (getattr(algo, 'asel_bar_displacement_enabled', True)
+                and components.get('vol_ignition', 0) < 0.15
+                and atr_ind is not None and atr_ind.IsReady):
+            atr_val = float(atr_ind.Current.Value)
+            if atr_val > 0 and len(crypto.get('prices', [])) >= 2:
+                bar_move = abs(float(crypto['prices'][-1]) - float(crypto['prices'][-2]))
+                disp_mult = getattr(algo, 'asel_bar_displacement_mult', 2.5)
+                if bar_move > disp_mult * atr_val:
+                    return False, (f'bar_displacement({bar_move:.4f}>'
+                                   f'{disp_mult}×ATR{atr_val:.4f})')
 
         # C) VWAP extension: price too far above VWAP SD bands
         vwap   = crypto.get('vwap',   0.0)

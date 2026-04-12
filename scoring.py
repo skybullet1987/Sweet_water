@@ -6,7 +6,7 @@ import numpy as np
 
 class MicroScalpEngine:
     """
-    Micro-Scalping Signal Engine - v8.2.0
+    Micro-Scalping Signal Engine - v8.1.0
 
     Simplified 3-signal scoring system with ADX regime filter.
     Strips kitchen-sink approach down to the 3 signals with proven edge.
@@ -34,8 +34,8 @@ class MicroScalpEngine:
     """
 
     # Tunable signal thresholds (easy to adjust for backtesting)
-    VOL_SURGE_STRONG        = 3.0    # 3× average volume = strong ignition
-    VOL_SURGE_PARTIAL       = 2.5    # 2.5× volume = moderate spike
+    VOL_SURGE_STRONG        = 4.0    # 4× average volume for 5-min bars (3× too loose at higher TF)
+    VOL_SURGE_PARTIAL       = 3.0    # 3× partial signal (was 2.5×)
     ADX_STRONG_THRESHOLD    = 14     # (kept for mean reversion gating)
     ADX_MODERATE_THRESHOLD  = 10     # moderate directional threshold
     VWAP_BUFFER             = 1.0015  # 0.15% above VWAP for confirmed reclaim

@@ -90,7 +90,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.cash_reserve_pct   = 0.00
         self.min_notional_fee_buffer = 1.5
 
-        self.target_position_ann_vol = self._get_param("target_position_ann_vol", 0.35)
+        self.target_position_ann_vol = self._get_param("target_position_ann_vol", 0.50)
         self.portfolio_vol_cap       = self._get_param("portfolio_vol_cap", 0.80)
         self.min_asset_vol_floor     = 0.05
 

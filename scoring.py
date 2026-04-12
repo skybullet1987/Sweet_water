@@ -23,7 +23,7 @@ class MicroScalpEngine:
 
     Signals
     -------
-    1. Volume Ignition (gate): 4× volume surge; 2.5× in choppy markets (ADX < 25);
+    1. Volume Ignition (gate): 3× volume surge; 2.5× in choppy markets (ADX < 25);
        1.5× partial in choppy (was 1.0×); $1K dollar-volume floor per bar.
     2. Mean Reversion: RSI oversold + price near lower BB when ADX is low (max 0.20)
     3. VWAP Reclaim / SD Band Bounce: price above VWAP×1.0015 (0.15% buffer) with
@@ -34,7 +34,7 @@ class MicroScalpEngine:
     """
 
     # Tunable signal thresholds (easy to adjust for backtesting)
-    VOL_SURGE_STRONG        = 4.0    # 4× average volume = strong ignition
+    VOL_SURGE_STRONG        = 3.0    # 3× average volume = strong ignition
     VOL_SURGE_PARTIAL       = 2.5    # 2.5× volume = moderate spike
     ADX_STRONG_THRESHOLD    = 14     # (kept for mean reversion gating)
     ADX_MODERATE_THRESHOLD  = 10     # moderate directional threshold
@@ -254,8 +254,8 @@ class MicroScalpEngine:
 
         # Vol-targeting: scale down for volatile assets, keep size for calmer ones
         if asset_vol_ann is not None and asset_vol_ann > 0:
-            target_vol = self.algo.target_position_ann_vol  # 0.35
+            target_vol = self.algo.target_position_ann_vol  # 0.50
             vol_scalar = min(target_vol / asset_vol_ann, 1.0)
-            size *= max(vol_scalar, 0.6)  # Never reduce below 60% of base size
+            size *= max(vol_scalar, 0.8)  # Never reduce below 80% of base size
 
         return size

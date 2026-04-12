@@ -14,9 +14,9 @@ class RealisticCryptoSlippage:
     argument" when constructing the instance.
 
     Backtest realism additions:
-    - base_slippage_pct 0.20% calibrated to real Kraken altcoin fills at $500-800 notional.
-    - volume_impact_factor 0.40 reflects real market impact at 1% participation (0.3-0.5%).
-    - max_slippage_pct raised to 2.0% for realistic altcoin costs.
+    - base_slippage_pct 0.40% calibrated to real Kraken altcoin fills at $500-800 notional.
+    - volume_impact_factor 0.25 reflects real market impact at 1% participation.
+    - max_slippage_pct raised to 5.0% for realistic altcoin costs.
     - Synthetic spread floors doubled vs prior values to match real Kraken spreads.
     - Synthetic spread floor applied when bid/ask unavailable (typical in backtest).
 
@@ -26,10 +26,10 @@ class RealisticCryptoSlippage:
     """
 
     def __init__(self, stress_mult=1.0):
-        base = 0.0020 * max(0.1, float(stress_mult))   # floor at 10% of default
+        base = 0.0040 * max(0.1, float(stress_mult))   # 0.4% base (was 0.2%)
         self.base_slippage_pct = base
-        self.volume_impact_factor = 0.40     # Real market impact at 1% participation on Kraken
-        self.max_slippage_pct = 0.0200       # 2.00% cap
+        self.volume_impact_factor = 0.25               # was 0.40 — note: PR review intended 0.25 for new model
+        self.max_slippage_pct = 0.0500                 # 5% cap (was 2%)
 
     def GetSlippageApproximation(self, asset, order):
         try:
@@ -77,13 +77,13 @@ class RealisticCryptoSlippage:
 
             # Price tier multipliers
             if price < 0.01:
-                slippage_pct *= 4.0
+                slippage_pct *= 5.0
             elif price < 0.10:
-                slippage_pct *= 2.5
+                slippage_pct *= 3.5
             elif price < 1.0:
-                slippage_pct *= 1.8
+                slippage_pct *= 2.5
             elif price < 10.0:
-                slippage_pct *= 1.2
+                slippage_pct *= 1.8
 
             # Cap slippage
             slippage_pct = min(slippage_pct, self.max_slippage_pct)

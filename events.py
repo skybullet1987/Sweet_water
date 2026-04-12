@@ -99,7 +99,7 @@ def on_order_event(algo, event):
                     if not hasattr(algo, '_symbol_performance'):
                         algo._symbol_performance = {}
                     if sym_val not in algo._symbol_performance:
-                        algo._symbol_performance[sym_val] = deque(maxlen=10)
+                        algo._symbol_performance[sym_val] = deque(maxlen=50)
                     algo._symbol_performance[sym_val].append(pnl)
                     if not hasattr(algo, 'pnl_by_tag'):
                         algo.pnl_by_tag = {}

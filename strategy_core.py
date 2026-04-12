@@ -42,7 +42,7 @@ def initialize_symbol(algo, symbol):
         'vwap_pv': [],
         'vwap_v': [],
         'vwap': 0.0,
-        'volume_long': deque(maxlen=1440),
+        'volume_long': deque(maxlen=288),  # 288 five-min bars = 24h (was 1440 one-min bars)
         'vwap_sd': 0.0,
         'vwap_sd2_lower': 0.0,
         'vwap_sd3_lower': 0.0,
@@ -152,6 +152,9 @@ def update_symbol_data(algo, symbol, bar, quote_bar=None):
         crypto['vwap_sd'] = 0.0
         crypto['vwap_sd2_lower'] = 0.0
         crypto['vwap_sd3_lower'] = 0.0
+        # NOTE: vwap_sd is 0.0 for the first ~5 bars of each day (insufficient history for variance).
+        # During this window vwap_signal can only earn partial credit (price > vwap path).
+        # This is correct behaviour — SD band entries are suppressed at day open.
     crypto['vwap_pv'].append(price * volume)
     crypto['vwap_v'].append(volume)
     # Safety trim: keep at most _VWAP_MAX_BARS entries so the lists stay

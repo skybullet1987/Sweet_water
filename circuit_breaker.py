@@ -1,6 +1,4 @@
 # region imports
-# TODO: This file is misnamed — should be circuit_breaker.py (typo: 'curcuit').
-# Rename to circuit_breaker.py and update all imports once import breakage can be coordinated.
 from AlgorithmImports import *
 from collections import deque
 from datetime import datetime, timedelta

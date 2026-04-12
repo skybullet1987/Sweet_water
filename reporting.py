@@ -105,6 +105,33 @@ def daily_report(algo):
             wr = sum(1 for p in pnls if p > 0) / len(pnls)
             total = sum(pnls)
             algo.Debug(f"  {bucket}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{total:+.3%}")
+    # ADX bucket PnL (compact)
+    if hasattr(algo, 'pnl_by_adx_bucket') and algo.pnl_by_adx_bucket:
+        algo.Debug("  --- PnL by ADX bucket ---")
+        for bucket in ['flat', 'mild', 'moderate', 'strong', 'unknown']:
+            pnls = algo.pnl_by_adx_bucket.get(bucket)
+            if not pnls: continue
+            avg = sum(pnls) / len(pnls)
+            wr = sum(1 for p in pnls if p > 0) / len(pnls)
+            algo.Debug(f"  {bucket}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%}")
+    # Spread bucket PnL (compact)
+    if hasattr(algo, 'pnl_by_spread_bucket') and algo.pnl_by_spread_bucket:
+        algo.Debug("  --- PnL by spread bucket ---")
+        for bucket in ['<0.1%', '0.1-0.3%', '0.3-0.5%', '0.5-1.0%', '>1.0%', 'unknown']:
+            pnls = algo.pnl_by_spread_bucket.get(bucket)
+            if not pnls: continue
+            avg = sum(pnls) / len(pnls)
+            wr = sum(1 for p in pnls if p > 0) / len(pnls)
+            algo.Debug(f"  {bucket}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%}")
+    # RS bucket PnL (compact)
+    if hasattr(algo, 'pnl_by_rs_bucket') and algo.pnl_by_rs_bucket:
+        algo.Debug("  --- PnL by RS-vs-BTC bucket ---")
+        for bucket in ['strong_neg', 'mild_neg', 'neutral', 'mild_pos', 'strong_pos', 'unknown']:
+            pnls = algo.pnl_by_rs_bucket.get(bucket)
+            if not pnls: continue
+            avg = sum(pnls) / len(pnls)
+            wr = sum(1 for p in pnls if p > 0) / len(pnls)
+            algo.Debug(f"  {bucket}: {len(pnls)} trades | WR:{wr:.0%} | Avg:{avg:+.3%}")
     # Setup archetype PnL summary
     if hasattr(algo, 'pnl_by_archetype') and algo.pnl_by_archetype:
         algo.Debug("  --- PnL by setup archetype ---")

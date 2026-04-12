@@ -61,16 +61,21 @@ class KrakenTieredFeeModel(FeeModel):
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
+    ALGO_VERSION = "v8.1.0"
+
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
         self.SetEndDate(2026, 12, 1)
+        # ⚠️ WALK-FORWARD WARNING: backtest runs Jan 2025–Dec 2026 with no held-out OOS window.
+        # All parameter tuning should be validated on a separate out-of-sample period before live.
+        # Recommended: tune on Jan–Jun 2025, validate on Jul–Dec 2025, deploy Jan 2026+.
         self.SetCash(50)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
-        self.entry_threshold = 0.35
-        self.high_conviction_threshold = 0.45
+        self.entry_threshold = 0.40
+        self.high_conviction_threshold = 0.50
         self.min_signal_count = int(self._get_param("min_signal_count", 1))
-        self.quick_take_profit = self._get_param("quick_take_profit", 0.150)
+        self.quick_take_profit = self._get_param("quick_take_profit", 0.015)  # 1.5% for 5-min scalping (was 15%)
         self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.050)
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
         self.atr_sl_mult  = self._get_param("atr_sl_mult",  2.0)
@@ -85,7 +90,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.position_size_pct  = 1.0
         self.max_positions      = 6
         self.min_notional       = 5.5
+        # NOTE: $5.50 minimum allows many tiny pyramid positions. Each pays full fee overhead.
+        # Monitor position count carefully when pyramiding is enabled.
         self.max_position_pct   = self._get_param("max_position_pct", 0.50)
+        # NOTE: At >$5,000 capital, max_position_pct=0.50 creates $2,500+ positions.
+        # Market impact becomes significant above ~$2,000 notional on low-cap alts.
+        # Consider reducing max_position_pct to 0.25 at higher capital levels.
         self.min_price_usd      = 0.001
         self.cash_reserve_pct   = 0.00
         self.min_notional_fee_buffer = 1.5
@@ -98,7 +108,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.short_period       = 6
         self.medium_period      = 12
         self.lookback           = 48
-        self.sqrt_annualization = np.sqrt(60 * 24 * 365)
+        self.sqrt_annualization = np.sqrt(12 * 24 * 365)  # 12 five-min bars per hour
 
         self.max_spread_pct         = 0.005
         self.spread_median_window   = 12
@@ -106,8 +116,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.min_dollar_volume_usd  = 25000
         self.min_volume_usd         = 10000
 
-        self.skip_hours_utc         = [0, 1, 2, 3, 4]  # 00-04 UTC: Asia dead zone -- too thin, widest spreads
-        self.max_daily_trades       = 24000
+        self.skip_hours_utc         = [0, 1, 2, 3, 4]  # 00-04 UTC: Asia dead zone — skips entries, data still feeds indicators
+        self.max_daily_trades       = 2000
         self.daily_trade_count      = 0
         self.last_trade_date        = None
         self.exit_cooldown_hours    = 0.1
@@ -236,13 +246,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.reentry_cooldown_minutes = 1
         self._btc_dump_size_mult = 1.0
 
-        self._symbol_performance      = {}
+        self._symbol_performance      = {}  # values will be deque(maxlen=50) — see compute_ranking_overlay
         self.symbol_penalty_threshold = 3
         self.symbol_penalty_size_mult = 0.50
 
         # Ranking overlay: bounded attribution-aware tiebreaker; net_score remains primary.
         self.ranking_overlay_enabled  = bool(self._get_param("ranking_overlay_enabled",  1.0))
-        self.ranking_combo_bonus_cap  = self._get_param("ranking_combo_bonus_cap",  0.05)
+        self.ranking_combo_bonus_cap  = self._get_param("ranking_combo_bonus_cap",  0.02)
         self.ranking_symbol_bonus_cap = self._get_param("ranking_symbol_bonus_cap", 0.03)
 
         # Trade Quality Architecture parameters

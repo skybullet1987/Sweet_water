@@ -105,7 +105,10 @@ class MicroScalpEngine:
                 is_choppy = (adx_indicator is not None and adx_indicator.IsReady
                              and adx_indicator.Current.Value < 25)
                 # Dollar-volume floor: ignore volume spikes on illiquid bars
-                bar_dollar_vol = current_vol * float(crypto['prices'][-1]) if len(crypto['prices']) >= 1 else 0.0
+                if len(crypto['prices']) >= 1:
+                    bar_dollar_vol = current_vol * float(crypto['prices'][-1])
+                else:
+                    bar_dollar_vol = 0.0
                 if bar_dollar_vol < 1000.0:
                     pass  # leave vol_ignition at 0.0 — spike is on an illiquid bar
                 else:
@@ -181,10 +184,10 @@ class MicroScalpEngine:
             vwap_sd2_lower = crypto.get('vwap_sd2_lower', 0.0)
             vwap_sd3_lower = crypto.get('vwap_sd3_lower', 0.0)
             ema5 = crypto.get('ema_5')
-            ema_short = crypto.get('ema_short')
-            ema5_rising = (ema5 is not None and ema_short is not None
-                           and ema5.IsReady and ema_short.IsReady
-                           and ema5.Current.Value > ema_short.Current.Value)
+            ema6 = ema_sh  # reuse already-fetched ema_short indicator (EMA6)
+            ema5_rising = (ema5 is not None and ema6 is not None
+                           and ema5.IsReady and ema6.IsReady
+                           and ema5.Current.Value > ema6.Current.Value)
             if vwap > 0 and len(crypto['prices']) >= 1:
                 price = crypto['prices'][-1]
                 if price > vwap * self.VWAP_BUFFER:

@@ -460,7 +460,9 @@ def _estimate_backtest_spread(algo, symbol):
 
     estimated_spread = min(estimated_spread, 0.10)
 
-    crypto['spreads'].append(estimated_spread)
+    # NOTE: do NOT append to crypto['spreads'] here — this function may be called
+    # more than once per bar (e.g. once in screening and once in execution).
+    # The single per-bar append is performed in update_symbol_data (strategy_core.py).
 
     return estimated_spread
 
@@ -968,21 +970,26 @@ def record_exit_pnl(algo, symbol, entry_price, exit_price, exit_tag="Unknown"):
         algo.pnl_by_tag[exit_tag] = []
     algo.pnl_by_tag[exit_tag].append(pnl)
 
-    # Regime-level PnL tracking
+    # Regime-level PnL tracking (capped at 200 entries per bucket to prevent
+    # unbounded memory growth during long live runs, consistent with pnl_by_tag).
     if not hasattr(algo, 'pnl_by_regime'):
         algo.pnl_by_regime = {}
     regime = getattr(algo, 'market_regime', 'unknown')
     if regime not in algo.pnl_by_regime:
         algo.pnl_by_regime[regime] = []
     algo.pnl_by_regime[regime].append(pnl)
+    if len(algo.pnl_by_regime[regime]) > 200:
+        algo.pnl_by_regime[regime] = algo.pnl_by_regime[regime][-200:]
 
-    # Volatility regime PnL tracking
+    # Volatility regime PnL tracking (same 200-entry cap)
     if not hasattr(algo, 'pnl_by_vol_regime'):
         algo.pnl_by_vol_regime = {}
     vol_regime = getattr(algo, 'volatility_regime', 'normal')
     if vol_regime not in algo.pnl_by_vol_regime:
         algo.pnl_by_vol_regime[vol_regime] = []
     algo.pnl_by_vol_regime[vol_regime].append(pnl)
+    if len(algo.pnl_by_vol_regime[vol_regime]) > 200:
+        algo.pnl_by_vol_regime[vol_regime] = algo.pnl_by_vol_regime[vol_regime][-200:]
 
     # Signal-combination attribution
     if hasattr(algo, '_entry_signal_combos') and symbol in algo._entry_signal_combos:

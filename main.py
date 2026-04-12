@@ -219,6 +219,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._min_trade_capital = 5
         self._max_concurrent_positions = 4
         self._daily_start_equity = None
+        self._daily_start_equity_date = None
         self.trade_log      = deque(maxlen=500)
         self.log_budget     = 0
         self.last_log_time  = None
@@ -395,8 +396,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 del self.crypto_data[symbol]
 
     def OnData(self, data):
-        if self._daily_start_equity is None:
+        # Reset daily equity baseline at the start of each new calendar day so the
+        # daily-loss-limit check is genuinely per-day, not a permanent lifetime floor.
+        today = self.Time.date()
+        if self._daily_start_equity is None or today != self._daily_start_equity_date:
             self._daily_start_equity = self.Portfolio.TotalPortfolioValue
+            self._daily_start_equity_date = today
         current_equity = self.Portfolio.TotalPortfolioValue
         daily_loss_pct = (current_equity - self._daily_start_equity) / self._daily_start_equity
         if daily_loss_pct < self._daily_loss_limit:

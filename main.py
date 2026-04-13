@@ -20,7 +20,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v8.1.0"
+    ALGO_VERSION = "v8.2.0"
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -28,14 +28,14 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # ⚠️ WALK-FORWARD WARNING: backtest runs Jan 2025–Dec 2026 with no held-out OOS window.
         # All parameter tuning should be validated on a separate out-of-sample period before live.
         # Recommended: tune on Jan–Jun 2025, validate on Jul–Dec 2025, deploy Jan 2026+.
-        self.SetCash(50)
+        self.SetCash(5000)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
         self.entry_threshold = 0.40
         self.high_conviction_threshold = 0.50
         self.min_signal_count = int(self._get_param("min_signal_count", 1))
         self.quick_take_profit = self._get_param("quick_take_profit", 0.015)  # 1.5% for 5-min scalping (was 15%)
-        self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.050)
+        self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.080)  # 8%: 5% was too tight for 5-min bars
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
         self.atr_sl_mult  = self._get_param("atr_sl_mult",  2.0)
         self.trail_activation  = self._get_param("trail_activation",  0.018)
@@ -51,7 +51,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.min_notional       = 5.5
         # NOTE: $5.50 minimum allows many tiny pyramid positions. Each pays full fee overhead.
         # Monitor position count carefully when pyramiding is enabled.
-        self.max_position_pct   = self._get_param("max_position_pct", 0.50)
+        self.max_position_pct   = self._get_param("max_position_pct", 0.25)  # Lowered: prevents 50% single-position concentration
         # NOTE: At >$5,000 capital, max_position_pct=0.50 creates $2,500+ positions.
         # Market impact becomes significant above ~$2,000 notional on low-cap alts.
         # Consider reducing max_position_pct to 0.25 at higher capital levels.
@@ -72,8 +72,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.max_spread_pct         = 0.005
         self.spread_median_window   = 12
         self.spread_widen_mult      = 2.0
-        self.min_dollar_volume_usd  = 25000
-        self.min_volume_usd         = 10000
+        self.min_dollar_volume_usd  = 100000  # Raised: per-bar dollar volume gate at execution
+        self.min_volume_usd         = 50000  # Raised: filters micro-caps below $50K/bar
+        self.min_capacity_usd       = 500000  # Min 24h USD volume for universe inclusion — capacity filter
 
         self.skip_hours_utc         = [0, 1, 2, 3, 4]  # 00-04 UTC: Asia dead zone — skips entries, data still feeds indicators
         self.max_daily_trades       = 2000
@@ -83,7 +84,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.cancel_cooldown_minutes = 1
         self.max_symbol_trades_per_day = 5
 
-        self.expected_round_trip_fees = 0.0060
+        self.expected_round_trip_fees = 0.0065  # 0.65%: Kraken blended maker+taker round-trip
         self.fee_slippage_buffer      = 0.002
         self.min_expected_profit_pct  = 0.012
         self.adx_min_period           = 10
@@ -367,8 +368,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 continue
             if crypto.VolumeInUsd is None or crypto.VolumeInUsd == 0:
                 continue
-            if crypto.VolumeInUsd >= self.min_volume_usd:
-                selected.append(crypto)
+            if crypto.VolumeInUsd < self.min_volume_usd:
+                continue
+            # Capacity gate: skip assets below min_capacity_usd 24h dollar volume.
+            # Prevents trading assets where a $500 order exceeds 0.1% of daily flow.
+            if self.min_capacity_usd > 0 and crypto.VolumeInUsd < self.min_capacity_usd:
+                continue
+            selected.append(crypto)
         selected.sort(key=lambda x: x.VolumeInUsd, reverse=True)
         return [c.Symbol for c in selected[:self.max_universe_size]]
 

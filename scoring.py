@@ -34,8 +34,8 @@ class MicroScalpEngine:
     """
 
     # Tunable signal thresholds (easy to adjust for backtesting)
-    VOL_SURGE_STRONG        = 4.0    # 4× average volume for 5-min bars (3× too loose at higher TF)
-    VOL_SURGE_PARTIAL       = 3.0    # 3× partial signal (was 2.5×)
+    VOL_SURGE_STRONG        = 3.5    # 3.5× — was 4.0; captures more genuine breakouts (3.0–3.5× is significant)
+    VOL_SURGE_PARTIAL       = 2.5    # 2.5× — was 3.0; partial credit starts earlier
     ADX_STRONG_THRESHOLD    = 14     # (kept for mean reversion gating)
     ADX_MODERATE_THRESHOLD  = 10     # moderate directional threshold
     VWAP_BUFFER             = 1.0015  # 0.15% above VWAP for confirmed reclaim

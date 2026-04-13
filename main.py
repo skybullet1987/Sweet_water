@@ -20,7 +20,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v8.3.0"
+    ALGO_VERSION = "v8.4.0"
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -42,8 +42,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.012)
         self.time_stop_hours   = self._get_param("time_stop_hours",   8.0)
         self.time_stop_pnl_min = self._get_param("time_stop_pnl_min", 0.005)
-        self.atr_trail_mult             = self._get_param("atr_trail_mult",             6.0)
-        self.post_partial_tp_trail_mult = self._get_param("post_partial_tp_trail_mult", 3.5)
+        self.atr_trail_mult             = self._get_param("atr_trail_mult",             4.0)   # was 6.0 — was too loose, gave back too much
+        self.post_partial_tp_trail_mult = self._get_param("post_partial_tp_trail_mult", 2.5)   # was 3.5 — tighter after locking profits
         self.min_trail_hold_minutes     = int(self._get_param("min_trail_hold_minutes", 60))
 
         self.position_size_pct  = 1.0
@@ -72,8 +72,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.max_spread_pct         = 0.005
         self.spread_median_window   = 12
         self.spread_widen_mult      = 2.0
-        self.min_dollar_volume_usd  = 100000  # Raised: per-bar dollar volume gate at execution
-        self.min_volume_usd         = 50000  # Raised: filters micro-caps below $50K/bar
+        self.min_dollar_volume_usd  = 15000   # $15K/5-min bar ≈ $4.3M/day; was $100K (=$28.8M/day — killed most universe symbols)
+        self.min_volume_usd         = 0  # disabled — min_capacity_usd (500K) is the binding gate; this was redundant
         self.min_capacity_usd       = 500000  # Min 24h USD volume for universe inclusion — capacity filter
 
         self.skip_hours_utc         = [0, 1]  # 00-01 UTC only: absolute dead zone — reduced from 5h to 2h
@@ -144,6 +144,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._choppy_regime_entries = {}
         self.partial_tp_tier1_threshold = self._get_param("partial_tp_tier1_threshold", 0.040)
         self.partial_tp_tier1_pct       = 0.25
+        self.partial_tp_tier2_threshold = self._get_param("partial_tp_tier2_threshold", 0.080)  # +8% → sell another 25%
+        self.partial_tp_tier2_pct       = 0.25
         self.pyramid_enabled = bool(self._get_param("pyramid_enabled", 1.0))
         self.pyramid_threshold = self._get_param("pyramid_threshold", 0.015)
         self.pyramid_size_pct = self._get_param("pyramid_size_pct", 1.0)
@@ -219,8 +221,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # 1. Session / liquidity regime layer
         self.session_layer_enabled = bool(self._get_param("session_layer_enabled", 1.0))
         for _sname, _sdefaults in [
-            ('asia_dead', ( 0.00,  0.50,  0.70)),   # threshold_adj zeroed; size halved
-            ('asia',      ( 0.00,  0.75,  0.85)),   # threshold_adj zeroed; size reduced
+            ('asia_dead', ( 0.00,  0.80,  0.80)),   # was 0.50 — hours 2-4 now traded, raise size from 50% → 80%
+            ('asia',      ( 0.00,  0.90,  0.90)),   # was 0.75 — Asian session quality improved, raise from 75% → 90%
             ('eu_open',   ( 0.00,  1.00,  1.00)),
             ('eu_main',   ( 0.00,  1.00,  1.00)),
             ('us_open',   ( 0.00,  1.05,  1.10)),   # threshold_adj zeroed
@@ -1175,6 +1177,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._partial_tp_tier[symbol] = 1
                 self._partial_tp_taken[symbol] = True
                 self.Debug(f"PARTIAL TP: {symbol.Value} | PnL:{pnl:+.2%} | Held:{minutes:.0f}min")
+                return
+
+        if tier == 1 and pnl >= self.partial_tp_tier2_threshold:
+            if partial_smart_sell(self, symbol, self.partial_tp_tier2_pct, "Partial TP T2"):
+                self._partial_tp_tier[symbol] = 2
+                self.Debug(f"PARTIAL TP T2: {symbol.Value} | PnL:{pnl:+.2%} | Held:{minutes:.0f}min")
                 return
 
         tag = ""

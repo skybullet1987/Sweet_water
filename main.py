@@ -20,7 +20,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v8.2.0"
+    ALGO_VERSION = "v8.3.0"
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -76,7 +76,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.min_volume_usd         = 50000  # Raised: filters micro-caps below $50K/bar
         self.min_capacity_usd       = 500000  # Min 24h USD volume for universe inclusion — capacity filter
 
-        self.skip_hours_utc         = [0, 1, 2, 3, 4]  # 00-04 UTC: Asia dead zone — skips entries, data still feeds indicators
+        self.skip_hours_utc         = [0, 1]  # 00-01 UTC only: absolute dead zone — reduced from 5h to 2h
         self.max_daily_trades       = 2000
         self.daily_trade_count      = 0
         self.last_trade_date        = None
@@ -146,7 +146,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.partial_tp_tier1_pct       = 0.25
         self.pyramid_enabled = bool(self._get_param("pyramid_enabled", 1.0))
         self.pyramid_threshold = self._get_param("pyramid_threshold", 0.015)
-        self.pyramid_size_pct = self._get_param("pyramid_size_pct", 0.50)
+        self.pyramid_size_pct = self._get_param("pyramid_size_pct", 1.0)
         self.trade_count      = 0
         self._pending_orders  = {}
         self._cancel_cooldowns = {}
@@ -303,7 +303,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if self.LiveMode:
             cleanup_object_store(self)
             load_persisted_state(self)
-            self.Debug("=== LIVE TRADING (MICRO-SCALP) v7.3.1 ===")
+            self.Debug(f"=== LIVE TRADING (MICRO-SCALP) {self.ALGO_VERSION} ===")
             self.Debug(f"Capital: ${self.Portfolio.Cash:.2f} | Max pos: {self.max_positions} | Size: {self.position_size_pct:.0%}")
 
     def CustomSecurityInitializer(self, security):
@@ -598,6 +598,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 return
             elif btc_5bar_return < -0.02:
                 self._btc_dump_size_mult = 0.50
+            elif btc_5bar_return > 0.02:
+                self._btc_dump_size_mult = 1.30  # 30% size boost on strong BTC momentum
         
         if self._cash_mode_until is not None and self.Time < self._cash_mode_until:
             self._log_skip("cash mode - poor recent performance")
@@ -659,7 +661,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self._log_skip("at max positions")
             return
         fg_value = getattr(self, 'fear_greed_value', 50)
-        if fg_value >= 85:
+        if fg_value >= 85 and self.market_regime != "bull":
             effective_max_pos = max(1, self.max_positions // 2)
             if pos_count >= effective_max_pos:
                 self._log_skip(f"Fear&Greed extreme greed ({fg_value}) — reduced max positions")
@@ -677,6 +679,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             threshold_now = max(threshold_now, 0.42)
         elif self.market_regime == "sideways":
             threshold_now = max(threshold_now, 0.38)
+        elif self.market_regime == "bull":
+            threshold_now = min(threshold_now, 0.35)  # lower bar in bull — more trades when edge is strongest
+        # Regime-adaptive position size cap
+        effective_max_position_pct = self.max_position_pct
+        if self.market_regime == "bull":
+            effective_max_position_pct = min(self.max_position_pct * 1.5, 0.40)
         # Session-layer threshold adjustment (additive, conservative by default).
         _sess_thresh_adj, _sess_size_mult, _sess_spread_cap_mult = get_session_quality(
             self, self.Time.hour)
@@ -753,9 +761,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         else:
             scores.sort(key=lambda x: x['net_score'], reverse=True)
         self._last_skip_reason = None
-        self._execute_trades(scores, threshold_now)
+        self._execute_trades(scores, threshold_now, effective_max_position_pct)
 
-    def _execute_trades(self, candidates, threshold_now):
+    def _execute_trades(self, candidates, threshold_now, effective_max_position_pct):
+
         if not self._positions_synced:
             return
         if self.LiveMode and self.kraken_status in ("maintenance", "cancel_only"):
@@ -931,7 +940,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             val = min(val, liquidity_cap)
 
             val = max(val, self.min_notional)
-            val = min(val, self.Portfolio.TotalPortfolioValue * self.max_position_pct)
+            val = min(val, self.Portfolio.TotalPortfolioValue * effective_max_position_pct)
 
             qty = round_quantity(self, sym, val / price)
             if qty < min_qty:

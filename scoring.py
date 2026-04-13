@@ -6,7 +6,7 @@ import numpy as np
 
 class MicroScalpEngine:
     """
-    Micro-Scalping Signal Engine - v8.1.0
+    Micro-Scalping Signal Engine - v8.2.0
 
     Simplified 3-signal scoring system with ADX regime filter.
     Strips kitchen-sink approach down to the 3 signals with proven edge.

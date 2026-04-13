@@ -20,7 +20,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v8.4.0"
+    ALGO_VERSION = "v8.5.0"
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -47,7 +47,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.min_trail_hold_minutes     = int(self._get_param("min_trail_hold_minutes", 60))
 
         self.position_size_pct  = 1.0
-        self.max_positions      = 6
+        self.max_positions      = 8
         self.min_notional       = 5.5
         # NOTE: $5.50 minimum allows many tiny pyramid positions. Each pays full fee overhead.
         # Monitor position count carefully when pyramiding is enabled.
@@ -73,8 +73,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.spread_median_window   = 12
         self.spread_widen_mult      = 2.0
         self.min_dollar_volume_usd  = 15000   # $15K/5-min bar ≈ $4.3M/day; was $100K (=$28.8M/day — killed most universe symbols)
-        self.min_volume_usd         = 0  # disabled — min_capacity_usd (500K) is the binding gate; this was redundant
-        self.min_capacity_usd       = 500000  # Min 24h USD volume for universe inclusion — capacity filter
+        self.min_volume_usd         = 0  # disabled — min_capacity_usd (250K) is the binding gate; this was redundant
+        self.min_capacity_usd       = 250000  # Min 24h USD volume for universe inclusion — capacity filter (was 500K — open mid-cap tier)
 
         self.skip_hours_utc         = [0, 1]  # 00-01 UTC only: absolute dead zone — reduced from 5h to 2h
         self.max_daily_trades       = 2000
@@ -91,7 +91,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.stale_order_timeout_seconds      = 30
         self.live_stale_order_timeout_seconds = 60
-        self.max_concurrent_open_orders       = 8
+        self.max_concurrent_open_orders       = 12  # was 8 — headroom for 8 positions + exit orders
         self.open_orders_cash_threshold       = 0.90
         self.order_fill_check_threshold_seconds = 60
         self.order_timeout_seconds              = 30
@@ -142,7 +142,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._partial_sell_symbols  = set()
         self._pyramided_symbols     = set()
         self._choppy_regime_entries = {}
-        self.partial_tp_tier1_threshold = self._get_param("partial_tp_tier1_threshold", 0.040)
+        self.partial_tp_tier1_threshold = self._get_param("partial_tp_tier1_threshold", 0.030)  # was 0.040 — fire earlier with tighter ATR trail
         self.partial_tp_tier1_pct       = 0.25
         self.partial_tp_tier2_threshold = self._get_param("partial_tp_tier2_threshold", 0.080)  # +8% → sell another 25%
         self.partial_tp_tier2_pct       = 0.25
@@ -196,7 +196,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._daily_loss_limit = -0.05
         self._drawdown_limit = -0.20
         self._min_trade_capital = 5
-        self._max_concurrent_positions = 6
+        self._max_concurrent_positions = 8
         self._daily_start_equity = None
         self._daily_start_equity_date = None
         self.trade_log      = deque(maxlen=500)

@@ -1042,9 +1042,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     is_choppy = (adx_ind is not None and adx_ind.IsReady
                                  and adx_ind.Current.Value < 25)
                     # Also mark as choppy if entered in sideways regime without vol ignition
-                    # (mean-reversion entry allowed by Fix 3 regime-aware gate)
-                    if self.market_regime == "sideways" and components.get('vol_ignition', 0) < 0.10:
-                        is_choppy = True
+                    # (mean-reversion entry allowed by regime-aware gate in Fix 3)
+                    is_choppy = is_choppy or (
+                        self.market_regime == "sideways"
+                        and components.get('vol_ignition', 0) < 0.10
+                    )
                     self._choppy_regime_entries[sym] = is_choppy
                     if self._consecutive_loss_halve_remaining > 0:
                         self._consecutive_loss_halve_remaining -= 1
@@ -1165,7 +1167,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         # Pyramid into winner: add to position when up >pyramid_threshold and not yet pyramided
         if (getattr(self, 'pyramid_enabled', False)
-                and not self._choppy_regime_entries.get(symbol, False)  # disabled in choppy/ranging
+                and not self._choppy_regime_entries.get(symbol, False)  # disabled in choppy/ranging regime
                 and pnl >= getattr(self, 'pyramid_threshold', 0.015)
                 and not self._partial_tp_taken.get(symbol, False)
                 and symbol not in getattr(self, '_pyramided_symbols', set())

@@ -80,6 +80,11 @@ class MicroScalpEngine:
             'vwap_signal':    0.0,
         }
         _downtrend = False
+        # Determine choppy regime state once for the whole function (avoids duplicate definition)
+        in_choppy_regime = (
+            getattr(self.algo, 'market_regime', '') == 'sideways'
+            or crypto.get('is_symbol_choppy', False)
+        )
 
         try:
             # ----------------------------------------------------------
@@ -154,18 +159,17 @@ class MicroScalpEngine:
                         bb_lower = bb_lower_data[-1]
                         is_mild_oversold_ranging = (adx_val <= self.ADX_MODERATE_THRESHOLD
                                                     and rsi_val < self.RSI_MILDLY_OVERSOLD_THRESHOLD)
-                        # BB compression check: only award full mean-rev credit when BB is compressed
+                        # BB compression check: only award full mean-rev credit when BB is compressed.
+                        # Guard at >= 10 bars; median uses up to 20 bars ([-20:] safely takes all
+                        # available elements when fewer than 20 exist).
                         bb_width_hist = crypto.get('bb_width', [])
                         bb_compressed = False
                         if len(bb_width_hist) >= 10:
                             width_list = list(bb_width_hist)
                             bb_compressed = width_list[-1] <= float(np.median(width_list[-20:]))
-                        # Range-position gate: in sideways regime require price in lower 35% of range
+                        # Range-position gate: in sideways/choppy regime require price in lower 35% of range.
+                        # Penalty: full credit → half credit if range_ok fails; half credit → no credit.
                         range_pos = crypto.get('range_position', 0.5)
-                        in_choppy_regime = (
-                            getattr(self.algo, 'market_regime', '') == 'sideways'
-                            or crypto.get('is_symbol_choppy', False)
-                        )
                         range_ok = (not in_choppy_regime or range_pos <= 0.35)
                         if (self.algo.market_regime == 'sideways'
                                 and bb_lower > 0 and price <= bb_lower * 1.005 and rsi_val < 35):
@@ -237,10 +241,7 @@ class MicroScalpEngine:
 
         # Gate 1 – Volume gate (regime-aware)
         # In choppy/sideways markets, allow mean_reversion+vwap entries without vol ignition.
-        in_choppy_regime = (
-            getattr(self.algo, 'market_regime', 'sideways') == 'sideways'
-            or crypto.get('is_symbol_choppy', False)
-        )
+        # in_choppy_regime is computed once above (before try block) and reused here.
         vol_gate_required = not in_choppy_regime  # vol ignition mandatory only in trending markets
 
         if vol_gate_required and components['vol_ignition'] < 0.10:

@@ -205,13 +205,15 @@ def update_symbol_data(algo, symbol, bar, quote_bar=None):
         else:
             crypto['range_position'] = 0.5
     else:
+        price_list = None
         crypto['range_position'] = 0.5
 
     # Per-symbol choppiness: ADX < 20 AND range width < 8% over 24 bars
     adx_ind = crypto.get('adx')
     if adx_ind is not None and adx_ind.IsReady and len(crypto['prices']) >= 24:
         symbol_adx = adx_ind.Current.Value
-        price_list = list(crypto['prices'])
+        if price_list is None:
+            price_list = list(crypto['prices'])
         rng_high = max(price_list[-24:])
         rng_low  = min(price_list[-24:])
         rng_width = (rng_high - rng_low) / rng_low if rng_low > 0 else 1.0

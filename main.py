@@ -218,6 +218,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._symbol_performance      = {}  # values will be deque(maxlen=50) — see compute_ranking_overlay
         self.symbol_penalty_threshold = 3
         self.symbol_penalty_size_mult = 0.50
+        self.correlation_reject_threshold = self._get_param("correlation_reject_threshold", 0.85)
 
         # Ranking overlay: bounded attribution-aware tiebreaker; net_score remains primary.
         self.ranking_overlay_enabled  = bool(self._get_param("ranking_overlay_enabled",  1.0))
@@ -574,7 +575,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         max_corr = self._max_open_position_correlation(new_symbol)
         if max_corr is None:
             return True
-        return max_corr <= 0.85
+        return max_corr <= self.correlation_reject_threshold
 
     def _max_open_position_correlation(self, new_symbol):
         if not self.entry_prices:

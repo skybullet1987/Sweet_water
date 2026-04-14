@@ -464,7 +464,7 @@ def run_chop_rebalance(algo):
         # Chop position sizing: own scale (15–25 %).
         size_frac = algo._chop_engine.calculate_position_size(score)
         size_frac *= _sess_size_mult
-        size_frac *= float(getattr(algo, 'regime_size_multiplier', 1.0))
+        size_frac *= getattr(algo, 'regime_size_multiplier', 1.0)
         setup_size_mult = getattr(algo, '_setup_family_size_mult', {}).get(setup_family, 1.0)
         size_frac *= setup_size_mult
         if algo._consecutive_loss_halve_remaining > 0:

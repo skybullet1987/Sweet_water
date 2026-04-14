@@ -455,7 +455,7 @@ def record_trade_metadata_on_entry(algo, symbol, components, crypto,
     if not hasattr(algo, '_entry_setup_family'):
         algo._entry_setup_family = {}
     algo._entry_setup_family[symbol] = family
-    return algo._trade_metadata[symbol]
+    return None
 
 
 def finalize_trade_metadata_on_exit(algo, symbol, pnl, exit_tag=None):

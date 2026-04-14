@@ -69,6 +69,11 @@ class RegimeRouter:
     # Minimum number of universe symbols with a ready ADX before we trust the
     # median (otherwise we stay in transition due to insufficient data).
     MIN_ADX_SYMBOLS  = 5
+    ADX_CONFIDENCE_RANGE = 12.0
+    BREADTH_NEUTRAL_POINT = 0.50
+    BREADTH_TREND_RANGE = 0.30
+    BREADTH_CHOP_RANGE = 0.20
+    TRANSITION_HOLD_CONFIDENCE_CAP = 0.45
 
     def __init__(self, algo):
         self.algo = algo
@@ -127,7 +132,7 @@ class RegimeRouter:
         # to 'transition' (suppress new entries while positions settle).
         if self._transition_hold > 0:
             self._transition_hold -= 1
-            self.current_confidence = min(self._candidate_confidence, 0.45)
+            self.current_confidence = min(self._candidate_confidence, self.TRANSITION_HOLD_CONFIDENCE_CAP)
             try:
                 self.algo.regime_confidence = self.get_confidence()
                 self.algo.regime_size_multiplier = 0.0
@@ -137,7 +142,7 @@ class RegimeRouter:
             self._regime_history.append("transition")
             return
 
-        stability = min(1.0, self._hold_count / max(1, self.REGIME_MIN_BARS))
+        stability = min(1.0, self._hold_count / self.REGIME_MIN_BARS)
         self.current_confidence = min(1.0, self._candidate_confidence * (0.70 + 0.30 * stability))
         self._publish_confidence()
         self._regime_history.append(self.current_regime)
@@ -204,10 +209,16 @@ class RegimeRouter:
         if median_adx is None:
             return "transition", 0.10
 
-        adx_trend = max(0.0, min(1.0, (median_adx - self.TREND_ADX_FLOOR) / 12.0))
-        adx_chop = max(0.0, min(1.0, (self.CHOP_ADX_CAP - median_adx) / 12.0))
-        breadth_trend = max(0.0, min(1.0, abs(breadth - 0.5) / 0.30))
-        breadth_chop = max(0.0, min(1.0, 1.0 - abs(breadth - 0.5) / 0.20))
+        adx_trend = max(0.0, min(1.0, (median_adx - self.TREND_ADX_FLOOR) / self.ADX_CONFIDENCE_RANGE))
+        adx_chop = max(0.0, min(1.0, (self.CHOP_ADX_CAP - median_adx) / self.ADX_CONFIDENCE_RANGE))
+        breadth_trend = max(
+            0.0,
+            min(1.0, abs(breadth - self.BREADTH_NEUTRAL_POINT) / self.BREADTH_TREND_RANGE)
+        )
+        breadth_chop = max(
+            0.0,
+            min(1.0, 1.0 - abs(breadth - self.BREADTH_NEUTRAL_POINT) / self.BREADTH_CHOP_RANGE)
+        )
 
         # ── Trend conditions ───────────────────────────────────────────────
         # BTC is clearly trending (bull or bear) and ADX confirms directionality.

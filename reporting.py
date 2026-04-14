@@ -6,14 +6,21 @@ import numpy as np
 
 
 def _expectancy_from_pnls(pnls):
-    if not pnls:
+    """Expected per-trade return from win/loss means adjusted for flat-trade rate."""
+    n = len(pnls)
+    if n == 0:
         return 0.0
     wins = [p for p in pnls if p > 0]
-    losses = [p for p in pnls if p <= 0]
-    wr = len(wins) / len(pnls)
+    losses = [p for p in pnls if p < 0]
+    flats = [p for p in pnls if p == 0]
+    active = len(wins) + len(losses)
+    if active == 0:
+        return 0.0
+    wr = len(wins) / active
+    flat_rate = len(flats) / n
     avg_win = sum(wins) / len(wins) if wins else 0.0
     avg_loss = sum(losses) / len(losses) if losses else 0.0
-    return wr * avg_win + (1.0 - wr) * avg_loss
+    return (1.0 - flat_rate) * (wr * avg_win + (1.0 - wr) * avg_loss)
 
 
 def review_performance(algo):

@@ -572,7 +572,7 @@ def sync_existing_positions(algo):
             continue
         if symbol not in algo.Securities:
             try:
-                algo.AddCrypto(ticker, Resolution.Minute5, Market.Kraken)
+                algo.AddCrypto(ticker, Resolution.Minute, Market.Kraken)
             except Exception as e:
                 algo.Debug(f"Error adding crypto {ticker}: {e}")
                 continue

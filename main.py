@@ -20,7 +20,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v9.1.0"
+    ALGO_VERSION = "v9.2.0"
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -86,7 +86,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.expected_round_trip_fees = 0.0065  # 0.65%: Kraken blended maker+taker round-trip
         self.fee_slippage_buffer      = 0.002
-        self.min_expected_profit_pct  = 0.012
+        self.min_expected_profit_pct  = 0.015  # 1.5%: tighter profit floor to avoid low-edge trades
         self.adx_min_period           = 10
 
         self.stale_order_timeout_seconds      = 30
@@ -268,11 +268,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.kraken_status = "unknown"
         self._last_skip_reason = None
 
-        self.UniverseSettings.Resolution = Resolution.Minute
+        self.UniverseSettings.Resolution = Resolution.FiveMinute
         self.AddUniverse(CryptoUniverse.Kraken(self.UniverseFilter))
 
         try:
-            btc = self.AddCrypto("BTCUSD", Resolution.Minute, Market.Kraken)
+            btc = self.AddCrypto("BTCUSD", Resolution.FiveMinute, Market.Kraken)
             self.btc_symbol = btc.Symbol
         except Exception as e:
             self.Debug(f"Warning: Could not add BTC - {e}")
@@ -291,8 +291,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(0, 0), self.ResetDailyCounters)
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(hours=6)), self.ReviewPerformance)
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(12, 0), self.HealthCheck)
-        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=5)), self.ResyncHoldings)
-        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=2)), self.VerifyOrderFills)
+        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=15)), self.ResyncHoldings)
+        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=5)), self.VerifyOrderFills)
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=15)), self.PortfolioSanityCheck)
 
         self.SetWarmUp(timedelta(days=5))
@@ -692,6 +692,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         _sess_thresh_adj, _sess_size_mult, _sess_spread_cap_mult = get_session_quality(
             self, self.Time.hour)
         threshold_now = max(0.0, threshold_now + _sess_thresh_adj)
+        # Market breadth gate: skip new entries when too few symbols are in uptrend
+        # (prevents entering in broad market downturns)
+        if self.market_breadth < 0.25 and self.market_regime != "bull":
+            return  # skip the entry block
         for symbol in list(self.crypto_data.keys()):
             if symbol.Value in SYMBOL_BLACKLIST or symbol.Value in self._session_blacklist:
                 continue

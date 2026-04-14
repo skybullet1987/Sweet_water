@@ -268,11 +268,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.kraken_status = "unknown"
         self._last_skip_reason = None
 
-        self.UniverseSettings.Resolution = Resolution.Minute5
+        self.UniverseSettings.Resolution = Resolution.Minute
         self.AddUniverse(CryptoUniverse.Kraken(self.UniverseFilter))
 
         try:
-            btc = self.AddCrypto("BTCUSD", Resolution.Minute5, Market.Kraken)
+            btc = self.AddCrypto("BTCUSD", Resolution.Minute, Market.Kraken)
             self.btc_symbol = btc.Symbol
         except Exception as e:
             self.Debug(f"Warning: Could not add BTC - {e}")

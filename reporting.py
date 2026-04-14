@@ -38,7 +38,9 @@ def daily_report(algo):
     avg = algo.total_pnl / total if total > 0 else 0
     algo.Debug(f"=== DAILY {algo.Time.date()} ===")
     algo.Debug(f"Portfolio: ${algo.Portfolio.TotalPortfolioValue:.2f} | Cash: ${algo.Portfolio.Cash:.2f}")
-    algo.Debug(f"Pos: {get_actual_position_count(algo)}/{algo.base_max_positions} | {algo.market_regime} {algo.volatility_regime} {algo.market_breadth:.0%}")
+    # Include regime router state in the daily header.
+    router_regime = getattr(getattr(algo, '_regime_router', None), 'current_regime', 'n/a')
+    algo.Debug(f"Pos: {get_actual_position_count(algo)}/{algo.base_max_positions} | {algo.market_regime} {algo.volatility_regime} {algo.market_breadth:.0%} | router:{router_regime}")
     algo.Debug(f"Trades: {total} | WR: {wr:.1%} | Avg: {avg:+.2%}")
     if algo._session_blacklist:
         algo.Debug(f"Blacklist: {len(algo._session_blacklist)}")
@@ -48,7 +50,19 @@ def daily_report(algo):
             entry = algo.entry_prices.get(s, kvp.Value.AveragePrice)
             cur = algo.Securities[s].Price if s in algo.Securities else kvp.Value.Price
             pnl = (cur - entry) / entry if entry > 0 else 0
-            algo.Debug(f"  {s.Value}: ${entry:.4f}→${cur:.4f} ({pnl:+.2%})")
+            engine_tag = algo._entry_engine.get(s, '?') if hasattr(algo, '_entry_engine') else '?'
+            algo.Debug(f"  {s.Value}: ${entry:.4f}→${cur:.4f} ({pnl:+.2%}) [{engine_tag}]")
+    # Engine PnL summary (trend vs chop).
+    if hasattr(algo, 'pnl_by_engine') and algo.pnl_by_engine:
+        algo.Debug("  --- PnL by engine ---")
+        for engine in ('trend', 'chop'):
+            pnls = algo.pnl_by_engine.get(engine, [])
+            if not pnls:
+                continue
+            avg_e = sum(pnls) / len(pnls)
+            wr_e  = sum(1 for p in pnls if p > 0) / len(pnls)
+            tot_e = sum(pnls)
+            algo.Debug(f"  {engine}: {len(pnls)} trades | WR:{wr_e:.0%} | Avg:{avg_e:+.3%} | Total:{tot_e:+.3%}")
     # Regime PnL summary
     if hasattr(algo, 'pnl_by_regime') and algo.pnl_by_regime:
         algo.Debug("  --- PnL by regime ---")
@@ -167,6 +181,40 @@ def final_report(algo):
     algo.Debug(f"Final: ${algo.Portfolio.TotalPortfolioValue:.2f}")
     algo.Debug(f"PnL: {algo.total_pnl:+.2%}")
     persist_state(algo)
+
+    # ── Dual-engine comparison (trend vs chop) ────────────────────────────
+    # This section makes it easy to compare the two engines side-by-side and
+    # verify that trend-mode behavior was preserved after the architecture change.
+    pnl_by_engine = getattr(algo, 'pnl_by_engine', {})
+    if pnl_by_engine:
+        algo.Debug("=== PnL BY ENGINE (trend vs chop) ===")
+        for engine in ('trend', 'chop'):
+            v = pnl_by_engine.get(engine, [])
+            if not v:
+                algo.Debug(f"  {engine}: 0 trades")
+                continue
+            n    = len(v)
+            avg  = sum(v) / n
+            wr_e = sum(1 for p in v if p > 0) / n
+            tot  = sum(v)
+            exp  = avg * wr_e - abs(avg) * (1 - wr_e)   # simplified expectancy
+            algo.Debug(
+                f"  {engine}: {n} trades | WR:{wr_e:.0%} | "
+                f"Avg:{avg:+.3%} | Total:{tot:+.3%} | "
+                f"Expectancy:{exp:+.4f} "
+                f"{'✅' if avg > 0 else '❌'}"
+            )
+        # Exit-tag breakdown per engine for chop attribution.
+        pnl_by_tag = getattr(algo, 'pnl_by_tag', {})
+        chop_tags  = [t for t in pnl_by_tag if t.startswith('Chop')]
+        if chop_tags:
+            algo.Debug("  --- Chop exit tags ---")
+            for tag in sorted(chop_tags):
+                v = pnl_by_tag.get(tag, [])
+                if not v: continue
+                n = len(v); avg = sum(v)/n; wr_t = sum(1 for p in v if p>0)/n
+                algo.Debug(f"  {tag}: {n} | WR:{wr_t:.0%} | Avg:{avg:+.3%}")
+
     _HOLD_ORDER = ['<30min', '30min-2h', '2h-6h', '6h+', 'unknown']
     _SESSION_ORDER = ['asia_dead', 'asia', 'eu_open', 'eu_main', 'us_open', 'us_main', 'us_eve']
     for label, d, order in [

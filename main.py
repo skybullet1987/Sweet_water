@@ -11,6 +11,8 @@ from trade_quality import (get_session_quality, adverse_selection_filter,
                             record_trade_metadata_on_entry, update_trade_excursion,
                             get_bb_compression_state)
 from fee_model import KrakenTieredFeeModel
+from regime_router import RegimeRouter
+from chop_engine import ChopEngine
 from collections import deque
 import numpy as np
 import math
@@ -20,7 +22,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v8.4.0"
+    ALGO_VERSION = "v8.5.0"  # dual-engine regime architecture
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -302,6 +304,20 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self._scoring_engine = MicroScalpEngine(self)
 
+        # ── Dual-engine regime architecture ────────────────────────────────
+        # RegimeRouter classifies market state ('trend', 'chop', 'transition')
+        # and gates which engine is allowed to enter new trades.
+        # ChopEngine provides signal scoring and risk params for sideways markets.
+        self._regime_router = RegimeRouter(self)
+        self._chop_engine   = ChopEngine(self)
+
+        # Engine attribution: tracks which engine opened each position.
+        # Values: 'trend' | 'chop'
+        self._entry_engine  = {}
+
+        # Per-engine PnL buckets for reporting (populated in events.py).
+        self.pnl_by_engine  = {'trend': [], 'chop': []}
+
         if self.LiveMode:
             cleanup_object_store(self)
             load_persisted_state(self)
@@ -333,6 +349,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.Debug(f"Clearing session blacklist ({len(self._session_blacklist)} items)")
             self._session_blacklist.clear()
         self._symbol_entry_cooldowns.clear()
+        # Reset chop engine daily trade counts.
+        self._chop_engine.reset_daily_counts()
         persist_state(self)
 
     def HealthCheck(self):
@@ -481,6 +499,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             ready_count = sum(1 for c in self.crypto_data.values() if self._is_ready(c))
             self.Debug(f"Post-warmup: {ready_count} symbols ready")
         update_market_context(self)
+        self._regime_router.update()
         self.Rebalance()
         self.CheckExits()
 
@@ -671,6 +690,21 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if len(self.Transactions.GetOpenOrders()) >= self.max_concurrent_open_orders:
             self._log_skip("too many open orders")
             return
+
+        # ── Regime routing (dual-engine architecture) ──────────────────────
+        # The RegimeRouter classifies the current market state and determines
+        # which engine is allowed to open new trades:
+        #   'trend'      → existing MicroScalpEngine logic continues below
+        #   'chop'       → delegate to the dedicated ChopEngine and return
+        #   'transition' → suppress all new entries; only manage existing exits
+        active_regime = self._regime_router.route()
+        if active_regime == "transition":
+            self._log_skip(f"regime router: transition (btc={self.market_regime})")
+            return
+        if active_regime == "chop":
+            self._run_chop_rebalance()
+            return
+        # active_regime == "trend" → fall through to existing trend engine logic.
 
         count_scored = 0
         count_above_thresh = 0
@@ -1022,6 +1056,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                         combo_parts.append('vwap')
                     signal_combo = '+'.join(combo_parts) if combo_parts else 'none'
                     self._entry_signal_combos[sym] = signal_combo
+                    # Tag this position as opened by the trend engine.
+                    self._entry_engine[sym] = 'trend'
                     # Record rich per-trade metadata for attribution analytics.
                     record_trade_metadata_on_entry(
                         self, sym, components, crypto,
@@ -1048,6 +1084,184 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         if success_count > 0 or (reject_exit_cooldown + reject_loss_cooldown) > 3:
             debug_limited(self, f"EXECUTE: {success_count}/{len(candidates)} | rejects: cd={reject_exit_cooldown} loss={reject_loss_cooldown} corr={reject_correlation} dv={reject_dollar_volume}")
+
+    def _run_chop_rebalance(self):
+        """
+        Execute chop-engine signal screening and order placement.
+
+        Called by Rebalance() when RegimeRouter.route() == 'chop'.
+        Uses ChopEngine.calculate_score() and ChopEngine risk parameters
+        instead of MicroScalpEngine, keeping the two engines fully isolated.
+        """
+        if not self._positions_synced:
+            return
+        if self.LiveMode and self.kraken_status in ("maintenance", "cancel_only"):
+            return
+
+        pos_count = get_actual_position_count(self)
+        if pos_count >= self.max_positions:
+            return
+
+        try:
+            available_cash = self.Portfolio.CashBook["USD"].Amount
+        except (KeyError, AttributeError):
+            available_cash = self.Portfolio.Cash
+
+        if available_cash <= 0:
+            return
+
+        _sess_thresh_adj, _sess_size_mult, _sess_spread_cap_mult = get_session_quality(
+            self, self.Time.hour)
+        chop_threshold = (self._chop_engine.CHOP_ENTRY_THRESHOLD
+                          + max(0.0, _sess_thresh_adj))
+
+        chop_candidates = []
+        for symbol in list(self.crypto_data.keys()):
+            if symbol.Value in SYMBOL_BLACKLIST or symbol.Value in self._session_blacklist:
+                continue
+            if symbol.Value in self._symbol_entry_cooldowns and self.Time < self._symbol_entry_cooldowns[symbol.Value]:
+                continue
+            if has_open_orders(self, symbol):
+                continue
+            if is_invested_not_dust(self, symbol):
+                continue
+            if not spread_ok(self, symbol):
+                continue
+
+            crypto = self.crypto_data[symbol]
+            if not self._is_ready(crypto):
+                continue
+
+            # Engine coordination: skip symbols with an active chop cooldown.
+            if self._chop_engine.is_in_fail_cooldown(symbol):
+                continue
+
+            # Per-symbol daily cap for chop trades.
+            if self._chop_engine.daily_trade_count(symbol) >= self._chop_engine.CHOP_MAX_TRADES_PER_SYMBOL_DAY:
+                continue
+
+            score, components = self._chop_engine.calculate_score(crypto)
+            if score < chop_threshold:
+                continue
+
+            chop_candidates.append({
+                'symbol':    symbol,
+                'score':     score,
+                'components': components,
+                'crypto':    crypto,
+            })
+
+        if not chop_candidates:
+            return
+
+        # Sort by score descending; take best candidate(s).
+        chop_candidates.sort(key=lambda x: x['score'], reverse=True)
+
+        cancel_stale_new_orders(self)
+
+        success_count = 0
+        for cand in chop_candidates:
+            if get_actual_position_count(self) >= self.max_positions:
+                break
+            if self.daily_trade_count >= self.max_daily_trades:
+                break
+
+            sym      = cand['symbol']
+            score    = cand['score']
+            crypto   = cand['crypto']
+            comps    = cand['components']
+
+            # Re-check cooldowns / invested status after prior iterations.
+            if is_invested_not_dust(self, sym):
+                continue
+            if has_open_orders(self, sym):
+                continue
+            if self._chop_engine.is_in_fail_cooldown(sym):
+                continue
+            if sym in self._exit_cooldowns and self.Time < self._exit_cooldowns[sym]:
+                continue
+            if sym in self._symbol_loss_cooldowns and self.Time < self._symbol_loss_cooldowns[sym]:
+                continue
+            if not self._check_correlation(sym):
+                continue
+
+            sec   = self.Securities[sym]
+            price = sec.Price
+            if price is None or price <= 0 or price < self.min_price_usd:
+                continue
+
+            try:
+                available_cash = self.Portfolio.CashBook["USD"].Amount
+            except (KeyError, AttributeError):
+                available_cash = self.Portfolio.Cash
+
+            # Chop position sizing: own scale (15–25 %).
+            size_frac = self._chop_engine.calculate_position_size(score)
+            size_frac *= _sess_size_mult
+            if self._consecutive_loss_halve_remaining > 0:
+                size_frac *= 0.50
+
+            val = available_cash * size_frac
+            val = max(val, self.min_notional)
+            val = min(val, self.Portfolio.TotalPortfolioValue * self.max_position_pct)
+
+            min_qty         = get_min_quantity(self, sym)
+            min_notional_usd = get_min_notional_usd(self, sym)
+            qty             = round_quantity(self, sym, val / price)
+            if qty < min_qty:
+                qty = round_quantity(self, sym, min_qty)
+                val = qty * price
+
+            total_cost = val * 1.006
+            if total_cost > available_cash:
+                continue
+            if val < min_notional_usd * self.min_notional_fee_buffer or val < self.min_notional:
+                continue
+
+            try:
+                ticket = place_limit_or_market(self, sym, qty, timeout_seconds=30,
+                                               tag="Chop Entry")
+                if ticket is not None:
+                    self._recent_tickets.append(ticket)
+                    sig_str = ' '.join(f"{k[:6]}={v:.2f}" for k, v in comps.items() if v > 0)
+                    self.Debug(
+                        f"CHOP ENTRY: {sym.Value} | score={score:.2f} | "
+                        f"${val:.2f} | {sig_str}"
+                    )
+                    # Engine attribution and tracking.
+                    self._entry_engine[sym] = 'chop'
+                    self._chop_engine.register_entry(sym)
+                    # Mark as NOT a choppy trend entry (chop engine manages its own exit).
+                    self._choppy_regime_entries[sym] = False
+                    # Signal-combo attribution (chop engine signals).
+                    combo_parts = [k for k, v in comps.items() if v >= 0.10]
+                    signal_combo = '+'.join(combo_parts) if combo_parts else 'none'
+                    self._entry_signal_combos[sym] = signal_combo
+                    # Record metadata for attribution.
+                    record_trade_metadata_on_entry(
+                        self, sym, comps, crypto,
+                        spread_pct=get_spread_pct(self, sym),
+                        recent_dv=None,
+                    )
+                    success_count += 1
+                    self.trade_count += 1
+                    crypto['trade_count_today'] = crypto.get('trade_count_today', 0) + 1
+                    if self._consecutive_loss_halve_remaining > 0:
+                        self._consecutive_loss_halve_remaining -= 1
+                    self.daily_trade_count += 1
+                    if self.LiveMode:
+                        self._last_live_trade_time = self.Time
+            except Exception as e:
+                self.Debug(f"CHOP ORDER FAILED: {sym.Value} - {e}")
+                self._session_blacklist.add(sym.Value)
+                continue
+
+            if self.LiveMode and success_count >= 2:
+                # Limit live chop entries per bar to reduce overtrading.
+                break
+
+        if success_count > 0:
+            debug_limited(self, f"CHOP EXECUTE: {success_count} entries placed | regime=chop")
 
     def _is_ready(self, c):
         return len(c['prices']) >= 10 and c['rsi'].IsReady
@@ -1126,6 +1340,69 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         minutes = hours * 60
 
         atr = crypto['atr'].Current.Value if crypto and crypto['atr'].IsReady else None
+
+        # ── Chop engine exit path ──────────────────────────────────────────
+        # If this position was opened by the chop engine, use its own tighter
+        # exit parameters and simpler exit logic (no partial TP tiers, no
+        # ATR trail, no pyramid — chop trades target small fast moves).
+        if self._entry_engine.get(symbol) == 'chop':
+            chop_params = self._chop_engine.get_exit_params(symbol, entry, crypto)
+            chop_sl = chop_params['sl']
+            chop_tp = chop_params['tp']
+            chop_max_h = chop_params['max_hold_hours']
+            chop_ts_min = chop_params['time_stop_min_pnl']
+
+            chop_tag = ""
+            if pnl <= -chop_sl:
+                chop_tag = "Chop Stop Loss"
+            elif pnl >= chop_tp:
+                chop_tag = "Chop Take Profit"
+            elif hours >= chop_max_h and pnl < chop_ts_min:
+                chop_tag = "Chop Time Stop"
+
+            if chop_tag:
+                if price * abs(holding.Quantity) < min_notional_usd * 0.9:
+                    return
+                if pnl < 0:
+                    self._symbol_loss_cooldowns[symbol] = self.Time + timedelta(minutes=30)
+                sold = smart_liquidate(self, symbol, chop_tag)
+                if sold:
+                    cooldown_delta = timedelta(minutes=self.reentry_cooldown_minutes)
+                    exit_cooldown_delta = timedelta(hours=self.exit_cooldown_hours)
+                    self._exit_cooldowns[symbol] = self.Time + max(cooldown_delta, exit_cooldown_delta)
+                    self.entry_volumes.pop(symbol, None)
+                    self._choppy_regime_entries.pop(symbol, None)
+                    self._entry_engine.pop(symbol, None)
+                    if hasattr(self, '_pyramided_symbols'):
+                        self._pyramided_symbols.discard(symbol)
+                    hold_bucket = get_hold_bucket(hours)
+                    self.Debug(
+                        f"{chop_tag}: {symbol.Value} | PnL:{pnl:+.2%} | "
+                        f"Held:{hours:.1f}h ({hold_bucket})"
+                    )
+                else:
+                    fail_count = self._failed_exit_counts.get(symbol, 0) + 1
+                    self._failed_exit_counts[symbol] = fail_count
+                    self.Debug(
+                        f"⚠️ CHOP EXIT FAILED ({chop_tag}) #{fail_count}: "
+                        f"{symbol.Value} | PnL:{pnl:+.2%}"
+                    )
+                    if fail_count >= 3:
+                        self.Debug(f"FATAL CHOP EXIT: {symbol.Value} — escalating to market order")
+                        try:
+                            qty = abs(holding.Quantity)
+                            if qty > 0:
+                                self.MarketOrder(symbol, -qty,
+                                                 tag=f"Force Chop Exit (fail#{fail_count})")
+                        except Exception as e:
+                            self.Debug(f"Force chop market exit error for {symbol.Value}: {e}")
+                        self._failed_exit_counts.pop(symbol, None)
+                        self.entry_volumes.pop(symbol, None)
+                        self._choppy_regime_entries.pop(symbol, None)
+                        self._entry_engine.pop(symbol, None)
+            return  # chop positions are only managed by chop exit logic above
+
+        # ── Trend engine exit path (unchanged from original) ───────────────
         if atr and entry > 0:
             sl = max((atr * self.atr_sl_mult) / entry, self.tight_stop_loss)
             tp = max((atr * self.atr_tp_mult) / entry, self.quick_take_profit)
@@ -1213,6 +1490,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 self._exit_cooldowns[symbol] = self.Time + max(cooldown_delta, exit_cooldown_delta)
                 self.entry_volumes.pop(symbol, None)
                 self._choppy_regime_entries.pop(symbol, None)
+                self._entry_engine.pop(symbol, None)
                 if hasattr(self, '_pyramided_symbols'):
                     self._pyramided_symbols.discard(symbol)
                 hold_bucket = get_hold_bucket(hours)
@@ -1233,6 +1511,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     self._failed_exit_counts.pop(symbol, None)
                     self.entry_volumes.pop(symbol, None)
                     self._choppy_regime_entries.pop(symbol, None)
+                    self._entry_engine.pop(symbol, None)
 
     def OnOrderEvent(self, event):
         on_order_event(self, event)

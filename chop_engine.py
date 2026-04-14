@@ -77,6 +77,9 @@ class ChopEngine:
     # Failed breakout lookback
     FAILED_BKO_LOOKBACK     = 3       # bars to scan for a failed breakout
     FAILED_BKO_VOL_MULT     = 2.5     # volume spike threshold for breakout detection
+    # Price must retreat at least this fraction below the breakout high before we
+    # classify the move as a "failed breakout" (avoids triggering on noise ticks).
+    FAILED_BKO_RETREAT_PCT  = 0.002   # 0.2 % retreat below spike high
 
     # BB reversion
     BB_NEAR_LOWER_PCT       = 0.005   # price within 0.5 % of lower Bollinger Band
@@ -100,6 +103,10 @@ class ChopEngine:
 
     CHOP_FAIL_COOLDOWN_MINUTES   = 30    # cooldown after a failed fade (stop hit)
     CHOP_MAX_TRADES_PER_SYMBOL_DAY = 3   # anti-overtrading: max chop trades/symbol/day
+
+    # Minimum ratio of take-profit to stop-loss.  Ensures TP > SL so the
+    # position is not immediately stopped out on the first adverse tick.
+    TP_SL_MIN_RATIO              = 1.1   # TP must be at least 10 % larger than SL
 
     # ── Entry gate ────────────────────────────────────────────────────────
     MIN_SIGNAL_COUNT        = 2     # require at least 2 active signals (>= 0.10)
@@ -251,7 +258,7 @@ class ChopEngine:
                                      for v in vol_scan)
                     if had_spike and len(highs_scan) > 0:
                         spike_high = max(highs_scan)
-                        if spike_high > 0 and price < spike_high * 0.998:
+                        if spike_high > 0 and price < spike_high * (1.0 - self.FAILED_BKO_RETREAT_PCT):
                             # Price failed to hold the breakout high.
                             components['failed_breakout'] = 0.10
 
@@ -331,7 +338,7 @@ class ChopEngine:
             tp = self.CHOP_FIXED_TP
 
         # Ensure TP > SL to avoid immediately exiting on the first tick.
-        if tp < sl * 1.1:
+        if tp < sl * self.TP_SL_MIN_RATIO:
             tp = sl * 1.1
 
         return {

@@ -15,7 +15,7 @@ class MicroScalpEngine:
       Gate 1: vol_ignition >= 0.10 required for any entry.
       Gate 2: at least MIN_SIGNAL_COUNT (default 2) active components required.
               Rejects vol-only entries; allows vol+mean_rev, vol+vwap, vol+mean_rev+vwap.
-      ADX filter: ADX > 25 AND DI- > DI+ × 1.2 → reject (strong bearish trend).
+      ADX filter: ADX > 20 AND DI- > DI+ × 1.15 → reject (strong bearish trend).
       EMA momentum cap: ema_ultra_short < ema_short → cap total score at 0.30.
       Vol-ignition dollar-volume floor: bar dollar volume < $1,000 → no vol score.
       VWAP SD bands: computed via true volume-weighted variance (fixed from np.std).
@@ -40,9 +40,9 @@ class MicroScalpEngine:
     ADX_MODERATE_THRESHOLD  = 10     # moderate directional threshold
     VWAP_BUFFER             = 1.0015  # 0.15% above VWAP for confirmed reclaim
     # Ranging-market mean reversion thresholds (used when ADX < ADX_MODERATE_THRESHOLD)
-    RSI_OVERSOLD_THRESHOLD        = 45   # RSI < 45 → ranging-market entry (mean reversion in sideways/choppy markets)
-    RSI_MILDLY_OVERSOLD_THRESHOLD = 50   # RSI < 50 → mild ranging-market entry, partial credit
-    BB_NEAR_LOWER_PCT             = 0.03  # within 3% of lower Bollinger Band = near support
+    RSI_OVERSOLD_THRESHOLD        = 50   # RSI < 50 → ranging-market entry (mean reversion in sideways/choppy markets)
+    RSI_MILDLY_OVERSOLD_THRESHOLD = 55   # RSI < 55 → mild ranging-market entry, partial credit
+    BB_NEAR_LOWER_PCT             = 0.05  # within 5% of lower Bollinger Band = near support
     # Choppy-regime score bonus (additive, applied after gates when mean_reversion >= 0.20).
     CHOPPY_REGIME_BONUS           = 0.05
     # Canonical signal names — used here and by callers for attribution / logging.
@@ -69,7 +69,7 @@ class MicroScalpEngine:
         Gate 1: vol_ignition >= 0.10 required for any entry.
         Gate 2: at least MIN_SIGNAL_COUNT active components (each >= 0.10) required.
                 Rejects vol-only entries; allows vol+mean_rev, vol+vwap, or all three.
-        ADX filter: ADX > 25 AND DI- > DI+ × 1.2 → return (0.0, components).
+        ADX filter: ADX > 20 AND DI- > DI+ × 1.15 → return (0.0, components).
         EMA momentum cap: ema_ultra_short < ema_short → cap score at 0.30.
         Max possible score: 0.20 (vol) + 0.20 (mean_rev) + 0.20 (vwap) = 0.60.
         """
@@ -139,7 +139,7 @@ class MicroScalpEngine:
                 adx_val = adx_indicator.Current.Value
                 di_plus = adx_indicator.PositiveDirectionalIndex.Current.Value
                 di_minus = adx_indicator.NegativeDirectionalIndex.Current.Value
-                if adx_val > 25 and di_minus > di_plus * 1.2:
+                if adx_val > 20 and di_minus > di_plus * 1.15:
                     # Strong bearish trend — mean reversion will fail, skip.
                     # Clear any partial vol_ignition so signal-attribution logging
                     # doesn't incorrectly record a 'vol' combo for a rejected bar.

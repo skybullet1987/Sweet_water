@@ -329,8 +329,6 @@ def run_chop_rebalance(algo):
     This function was formerly the ``_run_chop_rebalance`` method of
     SimplifiedCryptoStrategy.
     """
-    from datetime import timedelta
-
     if not algo._positions_synced:
         return
     if algo.LiveMode and algo.kraken_status in ("maintenance", "cancel_only"):

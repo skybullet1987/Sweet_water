@@ -20,7 +20,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v8.6.0"
+    ALGO_VERSION = "v8.5.1"
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -225,8 +225,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             ('asia',      ( 0.00,  0.90,  0.90)),   # was 0.75 — Asian session quality improved, raise from 75% → 90%
             ('eu_open',   ( 0.00,  1.00,  1.00)),
             ('eu_main',   ( 0.00,  1.00,  1.00)),
-            ('us_open',   (-0.02,  1.20,  1.10)),   # lower threshold + 20% size boost in best hours
-            ('us_main',   (-0.01,  1.10,  1.00)),   # slight threshold reduction + 10% size boost
+            ('us_open',   ( 0.00,  1.05,  1.10)),
+            ('us_main',   ( 0.00,  1.00,  1.00)),
             ('us_eve',    ( 0.00,  0.90,  0.90)),   # unchanged
         ]:
             setattr(self, f'_session_thresh_{_sname}',
@@ -683,13 +683,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             threshold_now = max(threshold_now, 0.38)
         elif self.market_regime == "bull":
             threshold_now = min(threshold_now, 0.35)  # lower bar in bull — more trades when edge is strongest
-        # Market breadth gate: adjust threshold based on fraction of symbols in uptrend.
-        # High breadth (>70%) = rising tide, lower threshold for more trades.
-        # Low breadth (<30%) = most alts in downtrend, only high-conviction entries.
-        if self.market_breadth >= 0.70:
-            threshold_now = min(threshold_now, 0.34)
-        elif self.market_breadth < 0.30:
-            threshold_now = max(threshold_now, 0.44)
         # Regime-adaptive position size cap
         effective_max_position_pct = self.max_position_pct
         if self.market_regime == "bull":

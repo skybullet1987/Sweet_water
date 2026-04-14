@@ -20,7 +20,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v9.0.0"
+    ALGO_VERSION = "v9.1.0"
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -660,11 +660,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self._circuit_breaker_trigger_count = max(0, self._circuit_breaker_trigger_count - 1)  # decay
             self.circuit_breaker_expiry = None
         pos_count = get_actual_position_count(self)
-        # Effective max positions: reduce in sideways/choppy to prevent over-concentration
-        effective_max_pos_check = self.max_positions
-        if self.market_regime == "sideways":
-            effective_max_pos_check = min(self.max_positions, 3)
-        if pos_count >= effective_max_pos_check:
+        if pos_count >= self.max_positions:
             self._log_skip("at max positions")
             return
         fg_value = getattr(self, 'fear_greed_value', 50)
@@ -685,7 +681,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if self.market_regime == "bear":
             threshold_now = max(threshold_now, 0.42)
         elif self.market_regime == "sideways":
-            threshold_now = min(threshold_now, 0.38)  # slightly lower bar in sideways to catch mean-rev setups
+            threshold_now = min(threshold_now, 0.35)  # lower bar in sideways to catch mean-rev setups
         elif self.market_regime == "bull":
             threshold_now = min(threshold_now, 0.35)  # lower bar in bull — more trades when edge is strongest
         # Regime-adaptive position size cap

@@ -20,7 +20,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v9.2.0"
+    ALGO_VERSION = "v9.2.1"
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -268,11 +268,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.kraken_status = "unknown"
         self._last_skip_reason = None
 
-        self.UniverseSettings.Resolution = Resolution.FiveMinute
+        self.UniverseSettings.Resolution = Resolution.Minute5
         self.AddUniverse(CryptoUniverse.Kraken(self.UniverseFilter))
 
         try:
-            btc = self.AddCrypto("BTCUSD", Resolution.FiveMinute, Market.Kraken)
+            btc = self.AddCrypto("BTCUSD", Resolution.Minute5, Market.Kraken)
             self.btc_symbol = btc.Symbol
         except Exception as e:
             self.Debug(f"Warning: Could not add BTC - {e}")

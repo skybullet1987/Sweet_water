@@ -137,6 +137,18 @@ def on_order_event(algo, event):
                         'signal_combo': signal_combo,
                         'hold_bucket': hold_bucket,
                     })
+                    # Engine attribution: record which engine (trend/chop) made this trade.
+                    entry_engine = 'trend'  # default for trades before dual-engine was added
+                    if hasattr(algo, '_entry_engine'):
+                        entry_engine = algo._entry_engine.pop(symbol, 'trend')
+                    if not hasattr(algo, 'pnl_by_engine'):
+                        algo.pnl_by_engine = {'trend': [], 'chop': []}
+                    if entry_engine not in algo.pnl_by_engine:
+                        algo.pnl_by_engine[entry_engine] = []
+                    algo.pnl_by_engine[entry_engine].append(pnl)
+                    # Notify chop engine of exit so it can apply fail cooldowns.
+                    if entry_engine == 'chop' and hasattr(algo, '_chop_engine'):
+                        algo._chop_engine.register_exit(symbol, exit_tag, pnl)
                     # Finalize rich per-trade metadata (MFE/MAE, session, archetype, etc.)
                     finalize_trade_metadata_on_exit(algo, symbol, pnl)
                     if len(algo._recent_trade_outcomes) >= 16:

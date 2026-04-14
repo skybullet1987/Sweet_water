@@ -20,7 +20,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v8.5.0"
+    ALGO_VERSION = "v8.5.1"
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -142,7 +142,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._partial_sell_symbols  = set()
         self._pyramided_symbols     = set()
         self._choppy_regime_entries = {}
-        self.partial_tp_tier1_threshold = self._get_param("partial_tp_tier1_threshold", 0.030)  # was 0.040 — fire earlier with tighter ATR trail
+        self.partial_tp_tier1_threshold = self._get_param("partial_tp_tier1_threshold", 0.040)
         self.partial_tp_tier1_pct       = 0.25
         self.partial_tp_tier2_threshold = self._get_param("partial_tp_tier2_threshold", 0.080)  # +8% → sell another 25%
         self.partial_tp_tier2_pct       = 0.25

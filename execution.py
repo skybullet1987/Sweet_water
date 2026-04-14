@@ -556,6 +556,8 @@ def cleanup_position(algo, symbol, record_pnl=False, exit_price=None):
         algo._partial_tp_tier.pop(symbol, None)
     if hasattr(algo, '_entry_signal_combos'):
         algo._entry_signal_combos.pop(symbol, None)
+    if hasattr(algo, '_entry_setup_family'):
+        algo._entry_setup_family.pop(symbol, None)
 
 
 def sync_existing_positions(algo):

@@ -87,6 +87,8 @@ class RegimeRouter:
 
         # Short history for debugging / reporting (last ~48 bars).
         self._regime_history  = deque(maxlen=48)
+        self.current_confidence = 0.0
+        self._candidate_confidence = 0.0
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
@@ -97,7 +99,8 @@ class RegimeRouter:
         Refresh regime classification. Call once per bar after
         update_market_context() has been called.
         """
-        new_candidate = self._classify()
+        new_candidate, candidate_conf = self._classify()
+        self._candidate_confidence = candidate_conf
 
         # Accumulate stability count for the current candidate.
         if new_candidate == self._candidate:
@@ -124,9 +127,19 @@ class RegimeRouter:
         # to 'transition' (suppress new entries while positions settle).
         if self._transition_hold > 0:
             self._transition_hold -= 1
+            self.current_confidence = min(self._candidate_confidence, 0.45)
+            try:
+                self.algo.regime_confidence = self.get_confidence()
+                self.algo.regime_size_multiplier = 0.0
+                self.algo.active_router_regime = "transition"
+            except Exception:
+                pass
             self._regime_history.append("transition")
             return
 
+        stability = min(1.0, self._hold_count / max(1, self.REGIME_MIN_BARS))
+        self.current_confidence = min(1.0, self._candidate_confidence * (0.70 + 0.30 * stability))
+        self._publish_confidence()
         self._regime_history.append(self.current_regime)
 
     def route(self) -> str:
@@ -144,14 +157,37 @@ class RegimeRouter:
         """Return True if the named engine ('trend' or 'chop') may enter new trades."""
         return self.route() == engine_name
 
+    def get_confidence(self) -> float:
+        """Return current regime confidence score in [0, 1]."""
+        return float(max(0.0, min(1.0, self.current_confidence)))
+
+    def get_size_multiplier(self, regime=None) -> float:
+        """
+        Confidence-aware position-size multiplier for new entries.
+        Lower confidence means lower participation.
+        """
+        active_regime = regime or self.route()
+        conf = self.get_confidence()
+        if active_regime == "transition":
+            return 0.0
+        if conf >= 0.80:
+            return 1.00
+        if conf >= 0.60:
+            return 0.80
+        if conf >= 0.45:
+            return 0.60
+        if conf >= 0.30:
+            return 0.40
+        return 0.0
+
     # ------------------------------------------------------------------ #
     #  Internal classification logic                                       #
     # ------------------------------------------------------------------ #
 
-    def _classify(self) -> str:
+    def _classify(self):
         """
         Compute the raw (un-hysteresis'd) regime from current market signals.
-        Returns 'trend', 'chop', or 'transition'.
+        Returns (regime, confidence).
         """
         algo        = self.algo
         btc_regime  = getattr(algo, 'market_regime',   'unknown')
@@ -159,34 +195,53 @@ class RegimeRouter:
 
         # Cannot classify without BTC regime data.
         if btc_regime == 'unknown':
-            return "transition"
+            return "transition", 0.05
 
         # Compute median ADX across the universe.
         median_adx = self._median_universe_adx()
 
         # Insufficient universe data → stay in transition.
         if median_adx is None:
-            return "transition"
+            return "transition", 0.10
+
+        adx_trend = max(0.0, min(1.0, (median_adx - self.TREND_ADX_FLOOR) / 12.0))
+        adx_chop = max(0.0, min(1.0, (self.CHOP_ADX_CAP - median_adx) / 12.0))
+        breadth_trend = max(0.0, min(1.0, abs(breadth - 0.5) / 0.30))
+        breadth_chop = max(0.0, min(1.0, 1.0 - abs(breadth - 0.5) / 0.20))
 
         # ── Trend conditions ───────────────────────────────────────────────
         # BTC is clearly trending (bull or bear) and ADX confirms directionality.
         if btc_regime in ('bull', 'bear'):
             if median_adx >= self.TREND_ADX_FLOOR:
-                return "trend"
+                conf = 0.50 + 0.35 * adx_trend + 0.15 * breadth_trend
+                return "trend", min(1.0, conf)
             # BTC trending but ADX too low — conflicting signals → transition.
-            return "transition"
+            conf = 0.20 + 0.20 * (1.0 - adx_trend)
+            return "transition", min(1.0, conf)
 
         # ── Chop conditions ────────────────────────────────────────────────
         # BTC is sideways AND ADX is low AND breadth is genuinely mixed.
         if btc_regime == 'sideways':
             if (median_adx <= self.CHOP_ADX_CAP
                     and self.BREADTH_CHOP_MIN <= breadth <= self.BREADTH_CHOP_MAX):
-                return "chop"
+                conf = 0.50 + 0.30 * adx_chop + 0.20 * breadth_chop
+                return "chop", min(1.0, conf)
             # Sideways but ADX elevated or breadth extreme → uncertain.
-            return "transition"
+            conf = 0.20 + 0.20 * (1.0 - adx_chop)
+            return "transition", min(1.0, conf)
 
         # Catch-all.
-        return "transition"
+        return "transition", 0.15
+
+    def _publish_confidence(self):
+        # Expose confidence/sizing to downstream components for sizing + reporting.
+        try:
+            active = self.route()
+            self.algo.regime_confidence = self.get_confidence()
+            self.algo.regime_size_multiplier = self.get_size_multiplier(active)
+            self.algo.active_router_regime = active
+        except Exception:
+            pass
 
     def _median_universe_adx(self):
         """

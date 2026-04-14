@@ -348,6 +348,32 @@ def get_setup_archetype(components, bb_compressed, crypto):
     return 'mixed'
 
 
+def get_setup_family(components, engine='trend'):
+    """
+    Coarser setup-family taxonomy for pruning/down-weighting and reporting.
+    """
+    engine = (engine or 'trend').lower()
+    if engine == 'chop':
+        if components.get('failed_breakout', 0) >= 0.10:
+            return 'chop_failed_breakout_reversal'
+        if components.get('vwap_stretch', 0) >= 0.10:
+            return 'chop_vwap_reversion'
+        if components.get('range_reversion', 0) >= 0.10:
+            return 'chop_range_reversion'
+        if components.get('bb_reversion', 0) >= 0.10:
+            return 'chop_bb_snapback'
+        return 'chop_mixed_reversion'
+
+    # trend engine families
+    if (components.get('vol_ignition', 0) >= 0.10
+            and components.get('mean_reversion', 0) < 0.10):
+        return 'trend_breakout_continuation'
+    if (components.get('mean_reversion', 0) >= 0.10
+            or components.get('vwap_signal', 0) >= 0.10):
+        return 'trend_pullback_reclaim'
+    return 'trend_mixed'
+
+
 # ---------------------------------------------------------------------------
 # 7.  Rich per-trade metadata helpers
 # ---------------------------------------------------------------------------
@@ -395,7 +421,8 @@ def get_rs_bucket(rs_val):
 
 
 def record_trade_metadata_on_entry(algo, symbol, components, crypto,
-                                    spread_pct, recent_dv):
+                                    spread_pct, recent_dv, engine='trend',
+                                    setup_family=None):
     """
     Record rich per-trade metadata dict at entry time.
     Stored in algo._trade_metadata[symbol].
@@ -409,8 +436,11 @@ def record_trade_metadata_on_entry(algo, symbol, components, crypto,
     bb_comp  = get_bb_compression_state(crypto,
                    getattr(algo, 'bb_compression_pct', 0.75))
 
+    family = setup_family or get_setup_family(components, engine=engine)
     algo._trade_metadata[symbol] = {
         'signal_combo':  algo._entry_signal_combos.get(symbol, 'unknown'),
+        'entry_engine':  engine,
+        'setup_family':  family,
         'session_bucket': get_session_bucket(algo.Time.hour),
         'spread_bucket':  get_spread_bucket(spread_pct),
         'dv_bucket':      get_dollar_volume_bucket(recent_dv),
@@ -420,10 +450,15 @@ def record_trade_metadata_on_entry(algo, symbol, components, crypto,
         'bb_compressed':  bb_comp,
         'regime':         getattr(algo, 'market_regime',    'unknown'),
         'vol_regime':     getattr(algo, 'volatility_regime', 'normal'),
+        'regime_confidence': float(getattr(algo, 'regime_confidence', 0.0)),
     }
+    if not hasattr(algo, '_entry_setup_family'):
+        algo._entry_setup_family = {}
+    algo._entry_setup_family[symbol] = family
+    return algo._trade_metadata[symbol]
 
 
-def finalize_trade_metadata_on_exit(algo, symbol, pnl):
+def finalize_trade_metadata_on_exit(algo, symbol, pnl, exit_tag=None):
     """
     Merge MFE/MAE into trade metadata and distribute PnL into per-dimension
     attribution dicts (pnl_by_session, pnl_by_archetype, etc.).
@@ -454,10 +489,19 @@ def finalize_trade_metadata_on_exit(algo, symbol, pnl):
 
     _record('pnl_by_session',      meta['session_bucket'],  pnl)
     _record('pnl_by_archetype',    meta['setup_archetype'], pnl)
+    _record('pnl_by_setup_family', meta.get('setup_family', 'unknown'), pnl)
     _record('pnl_by_adx_bucket',   meta['adx_bucket'],      pnl)
     _record('pnl_by_spread_bucket', meta['spread_bucket'],  pnl)
     _record('pnl_by_dv_bucket',    meta['dv_bucket'],       pnl)
     _record('pnl_by_rs_bucket',    meta['rs_bucket'],       pnl)
+
+    if exit_tag:
+        if not hasattr(algo, 'exit_counts_by_setup_family'):
+            algo.exit_counts_by_setup_family = {}
+        fam = meta.get('setup_family', 'unknown')
+        fam_counts = algo.exit_counts_by_setup_family.get(fam, {})
+        fam_counts[exit_tag] = fam_counts.get(exit_tag, 0) + 1
+        algo.exit_counts_by_setup_family[fam] = fam_counts
 
     # MFE/MAE per archetype
     arch = meta['setup_archetype']

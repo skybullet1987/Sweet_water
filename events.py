@@ -146,11 +146,21 @@ def on_order_event(algo, event):
                     if entry_engine not in algo.pnl_by_engine:
                         algo.pnl_by_engine[entry_engine] = []
                     algo.pnl_by_engine[entry_engine].append(pnl)
+                    setup_family = 'unknown'
+                    if hasattr(algo, '_entry_setup_family'):
+                        setup_family = algo._entry_setup_family.pop(symbol, 'unknown')
+                    if not hasattr(algo, 'pnl_by_setup_family'):
+                        algo.pnl_by_setup_family = {}
+                    if setup_family not in algo.pnl_by_setup_family:
+                        algo.pnl_by_setup_family[setup_family] = []
+                    algo.pnl_by_setup_family[setup_family].append(pnl)
+                    if 'setup_family' not in algo.trade_log[-1]:
+                        algo.trade_log[-1]['setup_family'] = setup_family
                     # Notify chop engine of exit so it can apply fail cooldowns.
                     if entry_engine == 'chop' and hasattr(algo, '_chop_engine'):
                         algo._chop_engine.register_exit(symbol, exit_tag, pnl)
                     # Finalize rich per-trade metadata (MFE/MAE, session, archetype, etc.)
-                    finalize_trade_metadata_on_exit(algo, symbol, pnl)
+                    finalize_trade_metadata_on_exit(algo, symbol, pnl, exit_tag=exit_tag)
                     if len(algo._recent_trade_outcomes) >= 16:
                         recent_wr = sum(algo._recent_trade_outcomes) / len(algo._recent_trade_outcomes)
                         if recent_wr < 0.15:

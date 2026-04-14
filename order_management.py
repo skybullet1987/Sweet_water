@@ -144,7 +144,7 @@ def resync_holdings_full(algo):
         for symbol in missing:
             try:
                 if symbol not in algo.Securities:
-                    algo.AddCrypto(symbol.Value, Resolution.FiveMinute, Market.Kraken)
+                    algo.AddCrypto(symbol.Value, Resolution.Minute5, Market.Kraken)
                 holding = algo.Portfolio[symbol]
                 entry = holding.AveragePrice
                 algo.entry_prices[symbol] = entry

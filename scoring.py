@@ -12,22 +12,20 @@ class MicroScalpEngine:
     Strips kitchen-sink approach down to the 3 signals with proven edge.
 
     Score: 0.0 – 0.60 max (3 signals × 0.20 each).
-      Gate 1: vol_ignition >= 0.10 required for trending entries; in choppy/sideways
-              regime, mean_reversion >= 0.10 is required instead (regime-aware gate).
+      Gate 1: vol_ignition >= 0.10 required for any entry.
       Gate 2: at least MIN_SIGNAL_COUNT (default 2) active components required.
-              Rejects vol-only entries; allows vol+mean_rev, vol+vwap, vol+mean_rev+vwap,
-              or mean_rev+vwap in choppy regime.
+              Rejects vol-only entries; allows vol+mean_rev, vol+vwap, vol+mean_rev+vwap.
       ADX filter: ADX > 25 AND DI- > DI+ × 1.2 → reject (strong bearish trend).
       EMA momentum cap: ema_ultra_short < ema_short → cap total score at 0.30.
       Vol-ignition dollar-volume floor: bar dollar volume < $1,000 → no vol score.
       VWAP SD bands: computed via true volume-weighted variance (fixed from np.std).
+      Choppy bonus: +0.05 when sideways regime AND mean_reversion >= 0.20.
 
     Signals
     -------
     1. Volume Ignition (gate): 3× volume surge; 2.5× in choppy markets (ADX < 25);
        1.5× partial in choppy (was 1.0×); $1K dollar-volume floor per bar.
-    2. Mean Reversion: RSI oversold + price near lower BB when ADX is low (max 0.20);
-       BB compression and range-position gating applied in choppy/sideways regime.
+    2. Mean Reversion: RSI oversold + price near lower BB when ADX is low (max 0.20)
     3. VWAP Reclaim / SD Band Bounce: price above VWAP×1.0015 (0.15% buffer) with
        EMA5 confirmation for full credit; partial credit 0.10 between VWAP and buffer;
        bouncing off -2/-3 SD lower band (max 0.20)
@@ -39,11 +37,11 @@ class MicroScalpEngine:
     VOL_SURGE_STRONG        = 3.5    # 3.5× — was 4.0; captures more genuine breakouts (3.0–3.5× is significant)
     VOL_SURGE_PARTIAL       = 2.5    # 2.5× — was 3.0; partial credit starts earlier
     ADX_STRONG_THRESHOLD    = 14     # (kept for mean reversion gating)
-    ADX_MODERATE_THRESHOLD  = 20     # moderate directional threshold (was 10)
+    ADX_MODERATE_THRESHOLD  = 10     # moderate directional threshold
     VWAP_BUFFER             = 1.0015  # 0.15% above VWAP for confirmed reclaim
     # Ranging-market mean reversion thresholds (used when ADX < ADX_MODERATE_THRESHOLD)
-    RSI_OVERSOLD_THRESHOLD        = 45   # RSI < 45 → ranging-market entry
-    RSI_MILDLY_OVERSOLD_THRESHOLD = 42   # was 50; tighter partial credit
+    RSI_OVERSOLD_THRESHOLD        = 45   # RSI < 45 → ranging-market entry (mean reversion in sideways/choppy markets)
+    RSI_MILDLY_OVERSOLD_THRESHOLD = 50   # RSI < 50 → mild ranging-market entry, partial credit
     BB_NEAR_LOWER_PCT             = 0.03  # within 3% of lower Bollinger Band = near support
     # Canonical signal names — used here and by callers for attribution / logging.
     SIGNAL_KEYS = ('vol_ignition', 'mean_reversion', 'vwap_signal')
@@ -66,10 +64,9 @@ class MicroScalpEngine:
         (score, components) where score ∈ [0, 0.60] and components maps each
         signal name to its individual contribution (0.20 max each).
 
-        Gate 1: vol_ignition >= 0.10 required in trending regime; in choppy/sideways,
-                mean_reversion >= 0.10 is required instead.
+        Gate 1: vol_ignition >= 0.10 required for any entry.
         Gate 2: at least MIN_SIGNAL_COUNT active components (each >= 0.10) required.
-                Rejects weak entries; allows vol+mean_rev, vol+vwap, mean_rev+vwap (in choppy), or all three.
+                Rejects vol-only entries; allows vol+mean_rev, vol+vwap, or all three.
         ADX filter: ADX > 25 AND DI- > DI+ × 1.2 → return (0.0, components).
         EMA momentum cap: ema_ultra_short < ema_short → cap score at 0.30.
         Max possible score: 0.20 (vol) + 0.20 (mean_rev) + 0.20 (vwap) = 0.60.
@@ -80,11 +77,8 @@ class MicroScalpEngine:
             'vwap_signal':    0.0,
         }
         _downtrend = False
-        # Determine choppy regime state once for the whole function (avoids duplicate definition)
-        in_choppy_regime = (
-            getattr(self.algo, 'market_regime', '') == 'sideways'
-            or crypto.get('is_symbol_choppy', False)
-        )
+        # Used for the post-gate choppy score bonus only (not for gating).
+        in_choppy_regime = (getattr(self.algo, 'market_regime', '') == 'sideways')
 
         try:
             # ----------------------------------------------------------
@@ -159,31 +153,16 @@ class MicroScalpEngine:
                         bb_lower = bb_lower_data[-1]
                         is_mild_oversold_ranging = (adx_val <= self.ADX_MODERATE_THRESHOLD
                                                     and rsi_val < self.RSI_MILDLY_OVERSOLD_THRESHOLD)
-                        # BB compression check: only award full mean-rev credit when BB is compressed.
-                        # Guard at >= 10 bars; median uses up to 20 bars ([-20:] safely takes all
-                        # available elements when fewer than 20 exist).
-                        bb_width_hist = crypto.get('bb_width', [])
-                        bb_compressed = False
-                        if len(bb_width_hist) >= 10:
-                            width_list = list(bb_width_hist)
-                            bb_compressed = width_list[-1] <= float(np.median(width_list[-20:]))
-                        # Range-position gate: in sideways/choppy regime require price in lower 35% of range.
-                        # Penalty: full credit → half credit if range_ok fails; half credit → no credit.
-                        range_pos = crypto.get('range_position', 0.5)
-                        range_ok = (not in_choppy_regime or range_pos <= 0.35)
                         if (self.algo.market_regime == 'sideways'
                                 and bb_lower > 0 and price <= bb_lower * 1.005 and rsi_val < 35):
-                            base_score = 0.20 if bb_compressed else 0.10
-                            components['mean_reversion'] = base_score if range_ok else max(0.0, base_score - 0.10)
+                            components['mean_reversion'] = 0.20
                         elif (adx_val <= self.ADX_MODERATE_THRESHOLD
                                 and rsi_val < self.RSI_OVERSOLD_THRESHOLD
                                 and bb_lower > 0
                                 and price <= bb_lower * (1 + self.BB_NEAR_LOWER_PCT)):
-                            base_score = 0.20 if bb_compressed else 0.10
-                            components['mean_reversion'] = base_score if range_ok else max(0.0, base_score - 0.10)
+                            components['mean_reversion'] = 0.20
                         elif is_mild_oversold_ranging:
-                            base_score = 0.10
-                            components['mean_reversion'] = base_score if range_ok else 0.0
+                            components['mean_reversion'] = 0.10
 
             # EMA momentum filter: if ultra-short EMA is below short EMA (price trending down),
             # cap score to prevent weak entries in active downtrends.
@@ -239,27 +218,23 @@ class MicroScalpEngine:
         if _downtrend:
             score = min(score, 0.30)
 
-        # Gate 1 – Volume gate (regime-aware)
-        # In choppy/sideways markets, allow mean_reversion+vwap entries without vol ignition.
-        # in_choppy_regime is computed once above (before try block) and reused here.
-        vol_gate_required = not in_choppy_regime  # vol ignition mandatory only in trending markets
-
-        if vol_gate_required and components['vol_ignition'] < 0.10:
+        # Gate 1 – Volume gate: require at least partial volume ignition for any entry.
+        if components['vol_ignition'] < 0.10:
             score = 0.0
-        elif not vol_gate_required:
-            # In choppy regime: require mean_reversion as primary gate instead of vol
-            if components['mean_reversion'] < 0.10:
-                score = 0.0
-            else:
-                # Still require MIN_SIGNAL_COUNT active signals (mean_rev + vwap = 2, passes)
-                min_req = getattr(self.algo, 'min_signal_count', self.MIN_SIGNAL_COUNT)
-                if sum(1 for v in components.values() if v >= 0.10) < min_req:
-                    score = 0.0
         else:
-            # Trending regime: Gate 2 – Multi-signal confirmation
+            # Gate 2 – Multi-signal confirmation: require at least MIN_SIGNAL_COUNT active
+            # components (value >= 0.10). Rejects weak vol-only entries while still
+            # allowing vol+mean_rev, vol+vwap, or vol+mean_rev+vwap combinations.
+            # Configurable via algo.min_signal_count for backtest variants.
             min_req = getattr(self.algo, 'min_signal_count', self.MIN_SIGNAL_COUNT)
             if sum(1 for v in components.values() if v >= 0.10) < min_req:
                 score = 0.0
+
+        # CHOPPY BONUS: when in sideways/choppy regime AND mean_reversion fired,
+        # boost the score by 0.05 to compensate for lower vol ignition in ranges.
+        # This adds trades without removing any trending trades.
+        if in_choppy_regime and components.get('mean_reversion', 0) >= 0.20:
+            score = min(score + 0.05, 1.0)
 
         return min(score, 1.0), components
 

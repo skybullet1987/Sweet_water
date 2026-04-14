@@ -20,7 +20,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v9.2.1"
+    ALGO_VERSION = "v8.4.0"
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -47,7 +47,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.min_trail_hold_minutes     = int(self._get_param("min_trail_hold_minutes", 60))
 
         self.position_size_pct  = 1.0
-        self.max_positions      = 8
+        self.max_positions      = 6
         self.min_notional       = 5.5
         # NOTE: $5.50 minimum allows many tiny pyramid positions. Each pays full fee overhead.
         # Monitor position count carefully when pyramiding is enabled.
@@ -73,8 +73,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.spread_median_window   = 12
         self.spread_widen_mult      = 2.0
         self.min_dollar_volume_usd  = 15000   # $15K/5-min bar ≈ $4.3M/day; was $100K (=$28.8M/day — killed most universe symbols)
-        self.min_volume_usd         = 0  # disabled — min_capacity_usd (250K) is the binding gate; this was redundant
-        self.min_capacity_usd       = 250000  # Min 24h USD volume for universe inclusion — capacity filter (was 500K — open mid-cap tier)
+        self.min_volume_usd         = 0  # disabled — min_capacity_usd (500K) is the binding gate; this was redundant
+        self.min_capacity_usd       = 500000  # Min 24h USD volume for universe inclusion — capacity filter
 
         self.skip_hours_utc         = [0, 1]  # 00-01 UTC only: absolute dead zone — reduced from 5h to 2h
         self.max_daily_trades       = 2000
@@ -91,7 +91,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.stale_order_timeout_seconds      = 30
         self.live_stale_order_timeout_seconds = 60
-        self.max_concurrent_open_orders       = 12  # was 8 — headroom for 8 positions + exit orders
+        self.max_concurrent_open_orders       = 8
         self.open_orders_cash_threshold       = 0.90
         self.order_fill_check_threshold_seconds = 60
         self.order_timeout_seconds              = 30
@@ -196,7 +196,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._daily_loss_limit = -0.05
         self._drawdown_limit = -0.20
         self._min_trade_capital = 5
-        self._max_concurrent_positions = 8
+        self._max_concurrent_positions = 6
         self._daily_start_equity = None
         self._daily_start_equity_date = None
         self.trade_log      = deque(maxlen=500)
@@ -225,9 +225,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             ('asia',      ( 0.00,  0.90,  0.90)),   # was 0.75 — Asian session quality improved, raise from 75% → 90%
             ('eu_open',   ( 0.00,  1.00,  1.00)),
             ('eu_main',   ( 0.00,  1.00,  1.00)),
-            ('us_open',   ( 0.00,  1.05,  1.10)),
+            ('us_open',   ( 0.00,  1.05,  1.10)),   # threshold_adj zeroed
             ('us_main',   ( 0.00,  1.00,  1.00)),
-            ('us_eve',    ( 0.00,  0.90,  0.90)),   # unchanged
+            ('us_eve',    ( 0.00,  0.90,  0.90)),   # threshold_adj zeroed
         ]:
             setattr(self, f'_session_thresh_{_sname}',
                     self._get_param(f'session_thresh_{_sname}',  _sdefaults[0]))
@@ -291,8 +291,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(0, 0), self.ResetDailyCounters)
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(hours=6)), self.ReviewPerformance)
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(12, 0), self.HealthCheck)
-        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=15)), self.ResyncHoldings)
-        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=5)), self.VerifyOrderFills)
+        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=5)), self.ResyncHoldings)
+        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=2)), self.VerifyOrderFills)
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=15)), self.PortfolioSanityCheck)
 
         self.SetWarmUp(timedelta(days=5))
@@ -556,8 +556,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 continue
             try:
                 corr = np.corrcoef(new_rets, exist_rets)[0, 1]
-                corr_threshold = 0.70 if self.market_regime == "sideways" else 0.85
-                if corr > corr_threshold:
+                if corr > 0.85:
                     return False
             except Exception:
                 continue
@@ -681,7 +680,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if self.market_regime == "bear":
             threshold_now = max(threshold_now, 0.42)
         elif self.market_regime == "sideways":
-            threshold_now = min(threshold_now, 0.35)  # lower bar in sideways to catch mean-rev setups
+            threshold_now = max(threshold_now, 0.38)
         elif self.market_regime == "bull":
             threshold_now = min(threshold_now, 0.35)  # lower bar in bull — more trades when edge is strongest
         # Regime-adaptive position size cap
@@ -810,9 +809,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         for cand in candidates:
             if self.daily_trade_count >= self.max_daily_trades:
                 break
-            # No max_positions cap in sideways — allow full position count for mean-rev entries
-            _exec_max_pos = self.max_positions
-            if get_actual_position_count(self) >= _exec_max_pos:
+            if get_actual_position_count(self) >= self.max_positions:
                 break
             sym = cand['symbol']
             net_score = cand.get('net_score', 0.5)
@@ -1037,12 +1034,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     adx_ind = crypto.get('adx')
                     is_choppy = (adx_ind is not None and adx_ind.IsReady
                                  and adx_ind.Current.Value < 25)
-                    # Also mark as choppy if entered in sideways regime without vol ignition
-                    # (mean-reversion entry allowed by regime-aware gate in Fix 3)
-                    is_choppy = is_choppy or (
-                        self.market_regime == "sideways"
-                        and components.get('vol_ignition', 0) < 0.10
-                    )
                     self._choppy_regime_entries[sym] = is_choppy
                     if self._consecutive_loss_halve_remaining > 0:
                         self._consecutive_loss_halve_remaining -= 1
@@ -1146,15 +1137,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             tp = sl * 1.2
 
         tp_mult = 1.0
-        sl_mult = 1.0
         if self._choppy_regime_entries.get(symbol, False):
             tp_mult *= 0.75
-            sl_mult *= 0.75   # keep R:R constant in chop
         if self.volatility_regime == "low":
             tp_mult *= 0.85
         tp_mult = max(tp_mult, 0.55)
         tp = tp * tp_mult
-        sl = sl * sl_mult
 
         trailing_activation = self.trail_activation
         trailing_stop_pct = self.trail_stop_pct
@@ -1163,7 +1151,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         # Pyramid into winner: add to position when up >pyramid_threshold and not yet pyramided
         if (getattr(self, 'pyramid_enabled', False)
-                and not self._choppy_regime_entries.get(symbol, False)  # disabled in choppy/ranging regime
                 and pnl >= getattr(self, 'pyramid_threshold', 0.015)
                 and not self._partial_tp_taken.get(symbol, False)
                 and symbol not in getattr(self, '_pyramided_symbols', set())
@@ -1213,20 +1200,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 tag = "ATR Trail"
         if not tag and hours >= self.time_stop_hours and pnl < self.time_stop_pnl_min:
             tag = "Time Stop"
-
-        # Effective time stop: shorten in choppy regime (positions reverse faster in ranges)
-        effective_time_stop = self.time_stop_hours
-        if self._choppy_regime_entries.get(symbol, False):
-            effective_time_stop = min(effective_time_stop, 4.0)
-        if not tag and hours >= effective_time_stop and pnl < self.time_stop_pnl_min:
-            tag = "Time Stop (Choppy)"
-
-        # Mean-reversion completion exit (choppy regime only)
-        if (self._choppy_regime_entries.get(symbol, False)
-                and not tag):
-            rsi_ind = crypto.get('rsi') if crypto else None
-            if rsi_ind is not None and rsi_ind.IsReady and rsi_ind.Current.Value > 62:
-                tag = "Mean Rev Complete"
 
         if tag:
             if price * abs(holding.Quantity) < min_notional_usd * 0.9:

@@ -15,11 +15,11 @@ class MicroScalpEngine:
       Gate 1: vol_ignition >= 0.10 required for any entry.
       Gate 2: at least MIN_SIGNAL_COUNT (default 2) active components required.
               Rejects vol-only entries; allows vol+mean_rev, vol+vwap, vol+mean_rev+vwap.
+              Configurable via algo.min_signal_count parameter (backtest-friendly).
       ADX filter: ADX > 25 AND DI- > DI+ × 1.2 → reject (strong bearish trend).
       EMA momentum cap: ema_ultra_short < ema_short → cap total score at 0.30.
       Vol-ignition dollar-volume floor: bar dollar volume < $1,000 → no vol score.
       VWAP SD bands: computed via true volume-weighted variance (fixed from np.std).
-      Choppy bonus: +0.05 when sideways regime AND mean_reversion >= 0.20.
 
     Signals
     -------
@@ -43,8 +43,6 @@ class MicroScalpEngine:
     RSI_OVERSOLD_THRESHOLD        = 45   # RSI < 45 → ranging-market entry (mean reversion in sideways/choppy markets)
     RSI_MILDLY_OVERSOLD_THRESHOLD = 50   # RSI < 50 → mild ranging-market entry, partial credit
     BB_NEAR_LOWER_PCT             = 0.03  # within 3% of lower Bollinger Band = near support
-    # Choppy-regime score bonus (additive, applied after gates when mean_reversion >= 0.20).
-    CHOPPY_REGIME_BONUS           = 0.05
     # Canonical signal names — used here and by callers for attribution / logging.
     SIGNAL_KEYS = ('vol_ignition', 'mean_reversion', 'vwap_signal')
     # Entry-quality gate: minimum number of active signal components (value >= 0.10).
@@ -79,8 +77,6 @@ class MicroScalpEngine:
             'vwap_signal':    0.0,
         }
         _downtrend = False
-        # Used for the post-gate choppy score bonus only (not for gating).
-        in_choppy_regime = (getattr(self.algo, 'market_regime', '') == 'sideways')
 
         try:
             # ----------------------------------------------------------
@@ -128,6 +124,7 @@ class MicroScalpEngine:
 
             # ----------------------------------------------------------
             # ADX FILTER: reject strong bearish trends
+            # If ADX > 25 AND DI- > DI+ × 1.2 → mean reversion will fail, skip.
             # Not additive to score — filter only.
             # ----------------------------------------------------------
             # SIGNAL: Mean Reversion
@@ -221,6 +218,7 @@ class MicroScalpEngine:
             score = min(score, 0.30)
 
         # Gate 1 – Volume gate: require at least partial volume ignition for any entry.
+        # This replaces the old separate backtest vs live gate logic.
         if components['vol_ignition'] < 0.10:
             score = 0.0
         else:
@@ -231,12 +229,6 @@ class MicroScalpEngine:
             min_req = getattr(self.algo, 'min_signal_count', self.MIN_SIGNAL_COUNT)
             if sum(1 for v in components.values() if v >= 0.10) < min_req:
                 score = 0.0
-
-        # CHOPPY BONUS: when in sideways/choppy regime AND mean_reversion fired,
-        # boost the score by CHOPPY_REGIME_BONUS to compensate for lower vol ignition in ranges.
-        # This adds trades without removing any trending trades.
-        if in_choppy_regime and components.get('mean_reversion', 0) >= 0.20:
-            score = min(score + self.CHOPPY_REGIME_BONUS, 1.0)
 
         return min(score, 1.0), components
 

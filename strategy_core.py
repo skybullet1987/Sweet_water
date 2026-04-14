@@ -195,32 +195,6 @@ def update_symbol_data(algo, symbol, bar, quote_bar=None):
             crypto['bb_upper'].append(mean + 2 * std)
             crypto['bb_lower'].append(mean - 2 * std)
             crypto['bb_width'].append(4 * std / mean if mean > 0 else 0)
-    # Range-position tracking (24-bar rolling high/low)
-    if len(crypto['prices']) >= 24:
-        price_list = list(crypto['prices'])
-        range_high = max(price_list[-24:])
-        range_low  = min(price_list[-24:])
-        if range_high > range_low:
-            crypto['range_position'] = (price_list[-1] - range_low) / (range_high - range_low)
-        else:
-            crypto['range_position'] = 0.5
-    else:
-        price_list = None
-        crypto['range_position'] = 0.5
-
-    # Per-symbol choppiness: ADX < 20 AND range width < 8% over 24 bars
-    adx_ind = crypto.get('adx')
-    if adx_ind is not None and adx_ind.IsReady and len(crypto['prices']) >= 24:
-        symbol_adx = adx_ind.Current.Value
-        if price_list is None:
-            price_list = list(crypto['prices'])
-        rng_high = max(price_list[-24:])
-        rng_low  = min(price_list[-24:])
-        rng_width = (rng_high - rng_low) / rng_low if rng_low > 0 else 1.0
-        crypto['is_symbol_choppy'] = (symbol_adx < 20 and rng_width < 0.08)
-    else:
-        crypto['is_symbol_choppy'] = False
-
     sp = get_spread_pct(algo, symbol)
     if sp is None and not algo.LiveMode:
         # Backtest: estimate spread from dollar volume. Appending happens here
@@ -258,9 +232,9 @@ def update_market_context(algo):
         else:
             new_regime = "sideways"
         if new_regime == "sideways" and len(algo.btc_returns) >= 12:
-            if btc_mom_12 > 0.0015:
+            if btc_mom_12 > 0.0001:
                 new_regime = "bull"
-            elif btc_mom_12 < -0.0015:
+            elif btc_mom_12 < -0.0001:
                 new_regime = "bear"
         # Hysteresis: only change if held for 3+ bars
         if new_regime != algo.market_regime:

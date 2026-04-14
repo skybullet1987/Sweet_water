@@ -20,7 +20,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v8.7.0"
+    ALGO_VERSION = "v9.0.0"
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -685,7 +685,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if self.market_regime == "bear":
             threshold_now = max(threshold_now, 0.42)
         elif self.market_regime == "sideways":
-            threshold_now = max(threshold_now, 0.38)
+            threshold_now = min(threshold_now, 0.38)  # slightly lower bar in sideways to catch mean-rev setups
         elif self.market_regime == "bull":
             threshold_now = min(threshold_now, 0.35)  # lower bar in bull — more trades when edge is strongest
         # Regime-adaptive position size cap
@@ -814,8 +814,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         for cand in candidates:
             if self.daily_trade_count >= self.max_daily_trades:
                 break
-            # Respect sideways max-positions cap during execution too
-            _exec_max_pos = min(self.max_positions, 3) if self.market_regime == "sideways" else self.max_positions
+            # No max_positions cap in sideways — allow full position count for mean-rev entries
+            _exec_max_pos = self.max_positions
             if get_actual_position_count(self) >= _exec_max_pos:
                 break
             sym = cand['symbol']
@@ -1221,7 +1221,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # Effective time stop: shorten in choppy regime (positions reverse faster in ranges)
         effective_time_stop = self.time_stop_hours
         if self._choppy_regime_entries.get(symbol, False):
-            effective_time_stop = min(effective_time_stop, 2.0)
+            effective_time_stop = min(effective_time_stop, 4.0)
         if not tag and hours >= effective_time_stop and pnl < self.time_stop_pnl_min:
             tag = "Time Stop (Choppy)"
 
@@ -1229,7 +1229,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if (self._choppy_regime_entries.get(symbol, False)
                 and not tag):
             rsi_ind = crypto.get('rsi') if crypto else None
-            if rsi_ind is not None and rsi_ind.IsReady and rsi_ind.Current.Value > 55:
+            if rsi_ind is not None and rsi_ind.IsReady and rsi_ind.Current.Value > 62:
                 tag = "Mean Rev Complete"
 
         if tag:

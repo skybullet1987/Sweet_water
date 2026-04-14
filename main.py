@@ -20,7 +20,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v8.5.1"
+    ALGO_VERSION = "v8.7.0"
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -556,7 +556,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 continue
             try:
                 corr = np.corrcoef(new_rets, exist_rets)[0, 1]
-                if corr > 0.85:
+                corr_threshold = 0.70 if self.market_regime == "sideways" else 0.85
+                if corr > corr_threshold:
                     return False
             except Exception:
                 continue
@@ -659,7 +660,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self._circuit_breaker_trigger_count = max(0, self._circuit_breaker_trigger_count - 1)  # decay
             self.circuit_breaker_expiry = None
         pos_count = get_actual_position_count(self)
-        if pos_count >= self.max_positions:
+        # Effective max positions: reduce in sideways/choppy to prevent over-concentration
+        effective_max_pos_check = self.max_positions
+        if self.market_regime == "sideways":
+            effective_max_pos_check = min(self.max_positions, 3)
+        if pos_count >= effective_max_pos_check:
             self._log_skip("at max positions")
             return
         fg_value = getattr(self, 'fear_greed_value', 50)
@@ -809,7 +814,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         for cand in candidates:
             if self.daily_trade_count >= self.max_daily_trades:
                 break
-            if get_actual_position_count(self) >= self.max_positions:
+            # Respect sideways max-positions cap during execution too
+            _exec_max_pos = min(self.max_positions, 3) if self.market_regime == "sideways" else self.max_positions
+            if get_actual_position_count(self) >= _exec_max_pos:
                 break
             sym = cand['symbol']
             net_score = cand.get('net_score', 0.5)
@@ -1034,6 +1041,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     adx_ind = crypto.get('adx')
                     is_choppy = (adx_ind is not None and adx_ind.IsReady
                                  and adx_ind.Current.Value < 25)
+                    # Also mark as choppy if entered in sideways regime without vol ignition
+                    # (mean-reversion entry allowed by Fix 3 regime-aware gate)
+                    if self.market_regime == "sideways" and components.get('vol_ignition', 0) < 0.10:
+                        is_choppy = True
                     self._choppy_regime_entries[sym] = is_choppy
                     if self._consecutive_loss_halve_remaining > 0:
                         self._consecutive_loss_halve_remaining -= 1
@@ -1137,12 +1148,15 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             tp = sl * 1.2
 
         tp_mult = 1.0
+        sl_mult = 1.0
         if self._choppy_regime_entries.get(symbol, False):
             tp_mult *= 0.75
+            sl_mult *= 0.75   # keep R:R constant in chop
         if self.volatility_regime == "low":
             tp_mult *= 0.85
         tp_mult = max(tp_mult, 0.55)
         tp = tp * tp_mult
+        sl = sl * sl_mult
 
         trailing_activation = self.trail_activation
         trailing_stop_pct = self.trail_stop_pct
@@ -1151,6 +1165,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         # Pyramid into winner: add to position when up >pyramid_threshold and not yet pyramided
         if (getattr(self, 'pyramid_enabled', False)
+                and not self._choppy_regime_entries.get(symbol, False)  # disabled in choppy/ranging
                 and pnl >= getattr(self, 'pyramid_threshold', 0.015)
                 and not self._partial_tp_taken.get(symbol, False)
                 and symbol not in getattr(self, '_pyramided_symbols', set())
@@ -1200,6 +1215,20 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 tag = "ATR Trail"
         if not tag and hours >= self.time_stop_hours and pnl < self.time_stop_pnl_min:
             tag = "Time Stop"
+
+        # Effective time stop: shorten in choppy regime (positions reverse faster in ranges)
+        effective_time_stop = self.time_stop_hours
+        if self._choppy_regime_entries.get(symbol, False):
+            effective_time_stop = min(effective_time_stop, 2.0)
+        if not tag and hours >= effective_time_stop and pnl < self.time_stop_pnl_min:
+            tag = "Time Stop (Choppy)"
+
+        # Mean-reversion completion exit (choppy regime only)
+        if (self._choppy_regime_entries.get(symbol, False)
+                and not tag):
+            rsi_ind = crypto.get('rsi') if crypto else None
+            if rsi_ind is not None and rsi_ind.IsReady and rsi_ind.Current.Value > 55:
+                tag = "Mean Rev Complete"
 
         if tag:
             if price * abs(holding.Quantity) < min_notional_usd * 0.9:

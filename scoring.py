@@ -40,8 +40,8 @@ class MicroScalpEngine:
     ADX_MODERATE_THRESHOLD  = 10     # moderate directional threshold
     VWAP_BUFFER             = 1.0015  # 0.15% above VWAP for confirmed reclaim
     # Ranging-market mean reversion thresholds (used when ADX < ADX_MODERATE_THRESHOLD)
-    RSI_OVERSOLD_THRESHOLD        = 50   # RSI < 50 → ranging-market entry (captures 45-50 bounce zone)
-    RSI_MILDLY_OVERSOLD_THRESHOLD = 55   # RSI < 55 → mild ranging-market entry, partial credit
+    RSI_OVERSOLD_THRESHOLD        = 45   # RSI < 45 → ranging-market entry
+    RSI_MILDLY_OVERSOLD_THRESHOLD = 50   # RSI < 50 → mild ranging-market entry, partial credit
     BB_NEAR_LOWER_PCT             = 0.03  # within 3% of lower Bollinger Band = near support
     # Canonical signal names — used here and by callers for attribution / logging.
     SIGNAL_KEYS = ('vol_ignition', 'mean_reversion', 'vwap_signal')
@@ -124,7 +124,6 @@ class MicroScalpEngine:
 
             # ----------------------------------------------------------
             # ADX FILTER: reject strong bearish trends
-            # Only reject confirmed strong downtrends (ADX > 30 AND DI- > DI+ × 1.5)
             # Not additive to score — filter only.
             # ----------------------------------------------------------
             # SIGNAL: Mean Reversion
@@ -136,7 +135,7 @@ class MicroScalpEngine:
                 adx_val = adx_indicator.Current.Value
                 di_plus = adx_indicator.PositiveDirectionalIndex.Current.Value
                 di_minus = adx_indicator.NegativeDirectionalIndex.Current.Value
-                if adx_val > 30 and di_minus > di_plus * 1.5:
+                if adx_val > 25 and di_minus > di_plus * 1.2:
                     # Strong bearish trend — mean reversion will fail, skip.
                     # Clear any partial vol_ignition so signal-attribution logging
                     # doesn't incorrectly record a 'vol' combo for a rejected bar.
@@ -239,7 +238,7 @@ class MicroScalpEngine:
         """
         Conviction-scaled position sizing with vol-targeting.
 
-        Base size scales linearly from 0.40 (at threshold) to 0.70 (at max score
+        Base size scales linearly from 0.30 (at threshold) to 0.50 (at max score
         of 0.60), rewarding high-confluence entries without overriding the vol
         scalar that keeps per-trade risk constant across assets.
         """
@@ -250,7 +249,7 @@ class MicroScalpEngine:
             conviction = max(0.0, min(1.0, (score - threshold) / score_range))
         else:
             conviction = 1.0
-        size = 0.40 + 0.30 * conviction  # 0.40 at threshold → 0.70 at max score
+        size = 0.30 + 0.20 * conviction  # 0.30 at threshold → 0.50 at max score
 
         # Vol-targeting: scale down for volatile assets, keep size for calmer ones
         if asset_vol_ann is not None and asset_vol_ann > 0:

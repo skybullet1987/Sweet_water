@@ -15,6 +15,8 @@ random.seed(42)
 # Additive non-fill penalty for breakout/momentum entries (vol-ignition-only, no mean-reversion support).
 # Configurable via algo.breakout_nonfill_penalty; conservative default 0.08 (+8 pp above base rate).
 _BREAKOUT_NONFILL_PENALTY_DEFAULT = 0.08
+_BACKTEST_ENTRY_ADVERSE_OFFSET_DEFAULT = 0.0018
+_BACKTEST_ENTRY_NOQUOTE_OFFSET_DEFAULT = 0.0022
 
 
 def reseed_non_fill_simulation(seed):
@@ -281,21 +283,27 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
                         track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
                         return True
                 else:
-                    # Spread is acceptable – use limit order to capture maker fee
+                    # Backtest realism: by default, don't assume maker-favorable exit fills.
+                    if not algo.LiveMode and getattr(algo, 'backtest_use_market_exits', True):
+                        ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
+                    else:
+                        exit_price = algo.Securities[symbol].Price
+                        try:
+                            ticket = algo.LimitOrder(symbol, safe_qty * direction_mult, exit_price, tag=tag)
+                        except Exception:
+                            ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
+                    track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
+                    return True
+            else:
+                if not algo.LiveMode and getattr(algo, 'backtest_use_market_exits', True):
+                    ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
+                else:
+                    # Spread unknown – use limit order at last price to capture maker fee
                     exit_price = algo.Securities[symbol].Price
                     try:
                         ticket = algo.LimitOrder(symbol, safe_qty * direction_mult, exit_price, tag=tag)
                     except Exception:
                         ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
-                    track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
-                    return True
-            else:
-                # Spread unknown – use limit order at last price to capture maker fee
-                exit_price = algo.Securities[symbol].Price
-                try:
-                    ticket = algo.LimitOrder(symbol, safe_qty * direction_mult, exit_price, tag=tag)
-                except Exception:
-                    ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
                 track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
                 return True
         else:
@@ -445,7 +453,7 @@ def _estimate_backtest_spread(algo, symbol):
 
     # Floor: even the most liquid alts have >= 0.05% spread on Kraken
     # Cap: don't estimate above 10% — if it's that wide, the filter will catch it
-    estimated_spread = max(estimated_spread, 0.0005)
+    estimated_spread = max(estimated_spread, 0.0007)
     estimated_spread = min(estimated_spread, 0.10)
 
     # Time-of-day: 00-08 UTC Asian (×1.5), 08-13 EU (×1.0), 13-21 US (×0.85), 21+ (×1.2).
@@ -556,8 +564,6 @@ def cleanup_position(algo, symbol, record_pnl=False, exit_price=None):
         algo._partial_tp_tier.pop(symbol, None)
     if hasattr(algo, '_entry_signal_combos'):
         algo._entry_signal_combos.pop(symbol, None)
-    if hasattr(algo, '_entry_setup_family'):
-        algo._entry_setup_family.pop(symbol, None)
 
 
 def sync_existing_positions(algo):
@@ -840,6 +846,9 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 penalty = getattr(algo, 'breakout_nonfill_penalty', _BREAKOUT_NONFILL_PENALTY_DEFAULT)
                 non_fill_prob = min(non_fill_prob + penalty, 0.60)
             if random.random() < non_fill_prob:
+                if getattr(algo, 'nonfill_market_fallback_enabled', True):
+                    algo.Debug(f"BACKTEST NON-FILL FALLBACK: {symbol.Value} p={non_fill_prob:.1%} -> market")
+                    return algo.MarketOrder(symbol, quantity, tag=f"{tag}_NonFillFallback")
                 return None
         # Fall through to limit order logic for both live and backtest
         sec = algo.Securities[symbol]
@@ -853,7 +862,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             # BACKTEST: simulate queue-priority cost when bid/ask data IS available.
             # Offset (0.12%) reflects real queue priority cost on Kraken altcoins (0.10-0.20%).
             if not algo.LiveMode:
-                adverse_offset = 0.0012  # 0.12% queue-priority cost
+                adverse_offset = getattr(algo, 'backtest_entry_adverse_offset', _BACKTEST_ENTRY_ADVERSE_OFFSET_DEFAULT)
                 if quantity > 0:
                     limit_price *= (1 + adverse_offset)
                     limit_price = min(limit_price, ask)  # buy: never cross the ask
@@ -893,7 +902,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             # Apply adverse offset + participation-rate rejection.
             if not algo.LiveMode:
                 # Adverse offset: algo is not first in line at the limit level.
-                adverse_offset = 0.0010  # 0.10% queue-priority cost (slippage model handles the rest)
+                adverse_offset = getattr(algo, 'backtest_entry_noquote_offset', _BACKTEST_ENTRY_NOQUOTE_OFFSET_DEFAULT)
                 if quantity > 0:
                     limit_price *= (1 + adverse_offset)
                 else:

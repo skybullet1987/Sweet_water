@@ -14,9 +14,9 @@ class RealisticCryptoSlippage:
     argument" when constructing the instance.
 
     Backtest realism additions:
-    - base_slippage_pct 0.40% calibrated to real Kraken altcoin fills at $500-800 notional.
-    - volume_impact_factor 0.25 reflects real market impact at 1% participation.
-    - max_slippage_pct raised to 5.0% for realistic altcoin costs.
+    - base_slippage_pct 0.50% calibrated for small-cap Kraken altcoin execution.
+    - volume_impact_factor raised for harsher market-impact assumptions.
+    - max_slippage_pct raised to 8.0% for realistic altcoin cost tails.
     - Synthetic spread floors doubled vs prior values to match real Kraken spreads.
     - Synthetic spread floor applied when bid/ask unavailable (typical in backtest).
 
@@ -25,11 +25,12 @@ class RealisticCryptoSlippage:
       Set via algo.stress_slippage_mult (default 1.0 = no stress).
     """
 
-    def __init__(self, stress_mult=1.0):
-        base = 0.0040 * max(0.1, float(stress_mult))   # 0.4% base (was 0.2%)
+    def __init__(self, stress_mult=1.0, spread_floor_mult=1.25, impact_mult=1.5):
+        base = 0.0050 * max(0.1, float(stress_mult))
         self.base_slippage_pct = base
-        self.volume_impact_factor = 0.25               # was 0.40 — note: PR review intended 0.25 for new model
-        self.max_slippage_pct = 0.0500                 # 5% cap (was 2%)
+        self.spread_floor_mult = max(0.5, float(spread_floor_mult))
+        self.volume_impact_factor = 0.60 * max(0.25, float(impact_mult))
+        self.max_slippage_pct = 0.0800
 
     def GetSlippageApproximation(self, asset, order):
         try:
@@ -53,17 +54,17 @@ class RealisticCryptoSlippage:
                 # Synthetic spread floor (backtest realism — doubled vs prior values to
                 # match real Kraken spreads which are roughly 2× the old floors)
                 if price < 0.01:
-                    slippage_pct += 0.0200
+                    slippage_pct += 0.0200 * self.spread_floor_mult
                 elif price < 0.10:
-                    slippage_pct += 0.0100
+                    slippage_pct += 0.0100 * self.spread_floor_mult
                 elif price < 1.0:
-                    slippage_pct += 0.0050
+                    slippage_pct += 0.0050 * self.spread_floor_mult
                 elif price < 10.0:
-                    slippage_pct += 0.0030
+                    slippage_pct += 0.0030 * self.spread_floor_mult
                 elif price < 100.0:
-                    slippage_pct += 0.0016
+                    slippage_pct += 0.0018 * self.spread_floor_mult
                 else:
-                    slippage_pct += 0.0010
+                    slippage_pct += 0.0012 * self.spread_floor_mult
 
             # Volume impact
             volume = getattr(asset, 'Volume', 0)
@@ -71,7 +72,7 @@ class RealisticCryptoSlippage:
                 order_value = abs(order.Quantity) * price
                 volume_value = volume * price
                 if volume_value > 0:
-                    participation_rate = order_value / volume_value
+                    participation_rate = min(order_value / volume_value, 0.20)
                     volume_impact = self.volume_impact_factor * (participation_rate ** 1.5)
                     slippage_pct += volume_impact
 

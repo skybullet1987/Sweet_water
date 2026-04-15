@@ -9,12 +9,11 @@ from strategy_core import (initialize_symbol, update_symbol_data,
                             update_market_context, compute_ranking_overlay)
 from trade_quality import (get_session_quality, adverse_selection_filter,
                             record_trade_metadata_on_entry, update_trade_excursion,
-                            get_bb_compression_state, get_setup_family)
+                            get_bb_compression_state)
 from fee_model import KrakenTieredFeeModel
 from regime_router import RegimeRouter
 from chop_engine import ChopEngine
 from entry_exec import execute_trend_trades, run_chop_rebalance
-from candidate_ranking import rank_candidates
 from collections import deque
 import numpy as np
 import math
@@ -131,7 +130,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._daily_open_value     = None
         self.pnl_by_tag            = {}
         self._entry_signal_combos  = {}
-        self._entry_setup_family   = {}
         self.pnl_by_signal_combo   = {}
         self.pnl_by_hold_time      = {}
 
@@ -184,8 +182,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.volatility_regime = "normal"
         self.market_breadth   = 0.5
         self._regime_hold_count = 0
-        self.regime_confidence = 0.0
-        self.regime_size_multiplier = 0.0
 
         # Incremental rolling-stat accumulators for BTC (avoid deque→list→numpy each bar)
         self._btc_sma48_window  = deque(maxlen=48)  # 48-bar price window for regime SMA
@@ -218,23 +214,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._symbol_performance      = {}  # values will be deque(maxlen=50) — see compute_ranking_overlay
         self.symbol_penalty_threshold = 3
         self.symbol_penalty_size_mult = 0.50
-        self.correlation_reject_threshold = self._get_param("correlation_reject_threshold", 0.85)
 
-        # Ranking overlay: bounded attribution-aware tiebreaker; net_score remains primary.
-        self.ranking_overlay_enabled  = bool(self._get_param("ranking_overlay_enabled",  1.0))
+        # Ranking overlay is adaptive to in-sample PnL; disabled by default for cleaner backtests.
+        self.ranking_overlay_enabled  = bool(self._get_param("ranking_overlay_enabled",  0.0))
         self.ranking_combo_bonus_cap  = self._get_param("ranking_combo_bonus_cap",  0.02)
         self.ranking_symbol_bonus_cap = self._get_param("ranking_symbol_bonus_cap", 0.03)
-        # Setup-family multipliers (1.0 = neutral, 0.0 = prune family).
-        self._setup_family_size_mult = {
-            'trend_breakout_continuation': self._get_param("sf_trend_breakout_continuation", 1.00),
-            'trend_pullback_reclaim':      self._get_param("sf_trend_pullback_reclaim",      1.00),
-            'trend_mixed':                 self._get_param("sf_trend_mixed",                 1.00),
-            'chop_range_reversion':        self._get_param("sf_chop_range_reversion",        1.00),
-            'chop_vwap_reversion':         self._get_param("sf_chop_vwap_reversion",         1.00),
-            'chop_failed_breakout_reversal': self._get_param("sf_chop_failed_breakout_reversal", 1.00),
-            'chop_bb_snapback':            self._get_param("sf_chop_bb_snapback",            1.00),
-            'chop_mixed_reversion':        self._get_param("sf_chop_mixed_reversion",        1.00),
-        }
 
         # Trade Quality Architecture parameters
         # 1. Session / liquidity regime layer
@@ -270,17 +254,23 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.rs_rank_scale           = self._get_param("rs_rank_scale", 3.0)
         self.rs_rank_cap             = self._get_param("rs_rank_cap",   0.05)
 
-        # 5 & 6. Stress modes (backtest realism toggles; default = no stress)
-        self.stress_spread_mult        = self._get_param("stress_spread_mult",        1.0)
-        self.stress_slippage_mult      = self._get_param("stress_slippage_mult",      1.0)
-        self.stress_nonfill_penalty    = self._get_param("stress_nonfill_penalty",    0.0)
+        # 5 & 6. Stress modes (backtest realism toggles)
+        self.stress_spread_mult        = self._get_param("stress_spread_mult",        1.15)
+        self.stress_slippage_mult      = self._get_param("stress_slippage_mult",      1.25)
+        self.stress_nonfill_penalty    = self._get_param("stress_nonfill_penalty",    0.05)
+        self.stress_spread_floor_mult  = self._get_param("stress_spread_floor_mult",  1.25)
+        self.stress_impact_mult        = self._get_param("stress_impact_mult",        1.5)
 
         # Non-fill simulation seed (backtest only; default 42 = deterministic)
         non_fill_seed = int(self._get_param("non_fill_seed", 42))
         reseed_non_fill_simulation(non_fill_seed)
 
-        # Breakout non-fill penalty (signal-aware execution realism; set to 0 to disable)
-        self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.08)
+        # Execution realism controls for backtests.
+        self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.12)
+        self.nonfill_market_fallback_enabled = bool(self._get_param("nonfill_market_fallback_enabled", 1.0))
+        self.backtest_entry_adverse_offset = self._get_param("backtest_entry_adverse_offset", 0.0018)
+        self.backtest_entry_noquote_offset = self._get_param("backtest_entry_noquote_offset", 0.0022)
+        self.backtest_use_market_exits = bool(self._get_param("backtest_use_market_exits", 1.0))
 
         self.max_universe_size = 50
 
@@ -343,7 +333,15 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
     def CustomSecurityInitializer(self, security):
         stress_mult = getattr(self, 'stress_slippage_mult', 1.0)
-        security.SetSlippageModel(RealisticCryptoSlippage(stress_mult=stress_mult))
+        spread_floor_mult = getattr(self, 'stress_spread_floor_mult', 1.0)
+        impact_mult = getattr(self, 'stress_impact_mult', 1.0)
+        security.SetSlippageModel(
+            RealisticCryptoSlippage(
+                stress_mult=stress_mult,
+                spread_floor_mult=spread_floor_mult,
+                impact_mult=impact_mult
+            )
+        )
         security.SetFeeModel(KrakenTieredFeeModel())
 
     def _get_param(self, name, default):
@@ -572,22 +570,15 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         return components
 
     def _check_correlation(self, new_symbol):
-        max_corr = self._max_open_position_correlation(new_symbol)
-        if max_corr is None:
-            return True
-        return max_corr <= self.correlation_reject_threshold
-
-    def _max_open_position_correlation(self, new_symbol):
         if not self.entry_prices:
-            return None
+            return True
         new_crypto = self.crypto_data.get(new_symbol)
         if not new_crypto or len(new_crypto['returns']) < 24:
-            return None
+            return True
         # np.array() accepts deques directly — avoids an intermediate Python list copy
         new_rets = np.array(new_crypto['returns'])[-24:]
         if np.std(new_rets) < 1e-10:
-            return None
-        max_corr = None
+            return True
         for sym in list(self.entry_prices.keys()):
             if sym == new_symbol:
                 continue
@@ -599,11 +590,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 continue
             try:
                 corr = np.corrcoef(new_rets, exist_rets)[0, 1]
-                if max_corr is None or corr > max_corr:
-                    max_corr = corr
+                if corr > 0.85:
+                    return False
             except Exception:
                 continue
-        return max_corr
+        return True
 
     def _daily_loss_exceeded(self):
         if self._daily_open_value is None or self._daily_open_value <= 0:
@@ -725,8 +716,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if active_regime == "transition":
             self._log_skip(f"regime router: transition (btc={self.market_regime})")
             return
-        regime_size_mult = self._regime_router.get_size_multiplier(active_regime)
-        self.regime_size_multiplier = regime_size_mult
         if active_regime == "chop":
             self._run_chop_rebalance()
             return
@@ -792,12 +781,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     effective_threshold = self.entry_threshold
 
             if net_score >= effective_threshold:
-                spread_pct = get_spread_pct(self, symbol)
-                atr_val = crypto['atr'].Current.Value if crypto['atr'].IsReady else None
-                expected_move_pct = ((atr_val * self.atr_tp_mult) / self.Securities[symbol].Price
-                                     if atr_val and self.Securities[symbol].Price > 0 else None)
-                expected_cost_pct = (self.expected_round_trip_fees + self.fee_slippage_buffer
-                                     + max(0.0, float(spread_pct or 0.0)))
                 count_above_thresh += 1
                 scores.append({
                     'symbol': symbol,
@@ -806,10 +789,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     'factors': factor_scores,
                     'volatility': crypto['volatility'][-1] if len(crypto['volatility']) > 0 else 0.05,
                     'crypto': crypto,   # passed to compute_ranking_overlay for BB/RS context
-                    'spread_pct': spread_pct,
-                    'expected_move_pct': expected_move_pct,
-                    'expected_cost_pct': expected_cost_pct,
-                    'setup_family': get_setup_family(factor_scores, engine='trend'),
                 })
 
         try:
@@ -822,30 +801,18 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if len(scores) == 0:
             self._log_skip("no candidates passed filters")
             return
-        for s in scores:
-            s['rank_adj'] = compute_ranking_overlay(self, s) if self.ranking_overlay_enabled else 0.0
-        scores = rank_candidates(
-            self,
-            scores,
-            base_score_key='net_score',
-            score_scale=1.0,
-        )
-        self._last_trend_ranking = [{
-            'symbol': s['symbol'].Value,
-            'net_score': s.get('net_score', 0.0),
-            'rank_score': s.get('rank_score', 0.0),
-            'rank_components': s.get('rank_components', {}),
-            'setup_family': s.get('setup_family', 'trend_mixed'),
-        } for s in scores[:10]]
-        if len(scores) > 1:
-            adj_str = ' '.join(
-                f"{s['symbol'].Value}({s['net_score']:.2f}->{s['rank_score']:.2f})"
-                for s in scores[:3]
-            )
-            debug_limited(self, f"RANK: {adj_str}")
+        if self.ranking_overlay_enabled:
+            for s in scores:
+                s['rank_adj'] = compute_ranking_overlay(self, s)
+                s['rank_score'] = s['net_score'] + s['rank_adj']
+            scores.sort(key=lambda x: x['rank_score'], reverse=True)
+            if len(scores) > 1:
+                adj_str = ' '.join(f"{s['symbol'].Value}({s['net_score']:.2f}{s['rank_adj']:+.3f})" for s in scores[:3])
+                debug_limited(self, f"RANK: {adj_str}")
+        else:
+            scores.sort(key=lambda x: x['net_score'], reverse=True)
         self._last_skip_reason = None
-        execute_trend_trades(self, scores, threshold_now, effective_max_position_pct,
-                             regime_size_mult=regime_size_mult)
+        execute_trend_trades(self, scores, threshold_now, effective_max_position_pct)
 
     def _run_chop_rebalance(self):
         run_chop_rebalance(self)

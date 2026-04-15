@@ -25,11 +25,13 @@ class RealisticCryptoSlippage:
       Set via algo.stress_slippage_mult (default 1.0 = no stress).
     """
 
+    BASE_VOLUME_IMPACT_FACTOR = 0.60
+
     def __init__(self, stress_mult=1.0, spread_floor_mult=1.25, impact_mult=1.5):
         base = 0.0050 * max(0.1, float(stress_mult))
         self.base_slippage_pct = base
         self.spread_floor_mult = max(0.5, float(spread_floor_mult))
-        self.volume_impact_factor = 0.60 * max(0.25, float(impact_mult))
+        self.volume_impact_factor = self.BASE_VOLUME_IMPACT_FACTOR * max(0.25, float(impact_mult))
         self.max_slippage_pct = 0.0800
 
     def GetSlippageApproximation(self, asset, order):

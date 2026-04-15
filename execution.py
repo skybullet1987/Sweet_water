@@ -17,6 +17,7 @@ random.seed(42)
 _BREAKOUT_NONFILL_PENALTY_DEFAULT = 0.08
 _BACKTEST_ENTRY_ADVERSE_OFFSET_DEFAULT = 0.0018
 _BACKTEST_ENTRY_NOQUOTE_OFFSET_DEFAULT = 0.0022
+_BACKTEST_SPREAD_FLOOR_ESTIMATE = 0.0007
 
 
 def reseed_non_fill_simulation(seed):
@@ -453,7 +454,7 @@ def _estimate_backtest_spread(algo, symbol):
 
     # Floor: even the most liquid alts have >= 0.05% spread on Kraken
     # Cap: don't estimate above 10% — if it's that wide, the filter will catch it
-    estimated_spread = max(estimated_spread, 0.0007)
+    estimated_spread = max(estimated_spread, _BACKTEST_SPREAD_FLOOR_ESTIMATE)
     estimated_spread = min(estimated_spread, 0.10)
 
     # Time-of-day: 00-08 UTC Asian (×1.5), 08-13 EU (×1.0), 13-21 US (×0.85), 21+ (×1.2).

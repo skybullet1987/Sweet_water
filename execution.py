@@ -21,7 +21,9 @@ _BACKTEST_ENTRY_ADVERSE_OFFSET_DEFAULT = 0.0012
 _BACKTEST_ENTRY_NOQUOTE_OFFSET_DEFAULT = 0.0016
 # Minimum estimated spread floor used by backtest spread proxy.
 _BACKTEST_SPREAD_FLOOR_ESTIMATE = 0.0005
-_NONFILL_MARKET_FALLBACK_RATE_DEFAULT = 0.35
+# Public default used by config wiring in main.py and fallback execution logic.
+NONFILL_MARKET_FALLBACK_RATE_DEFAULT = 0.35
+_NONFILL_MARKET_FALLBACK_RATE_DEFAULT = NONFILL_MARKET_FALLBACK_RATE_DEFAULT
 
 
 def reseed_non_fill_simulation(seed):

@@ -272,7 +272,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # Execution realism controls for backtests.
         self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.06)
         self.nonfill_market_fallback_enabled = bool(self._get_param("nonfill_market_fallback_enabled", 1.0))
-        _fallback_rate = self._get_param("nonfill_market_fallback_rate", _NONFILL_MARKET_FALLBACK_RATE_DEFAULT)
+        _fallback_rate = self._get_param("nonfill_market_fallback_rate", NONFILL_MARKET_FALLBACK_RATE_DEFAULT)
         # 0.0-1.0 probability that a simulated non-fill escalates to market fallback.
         self.nonfill_market_fallback_rate = max(0.0, min(1.0, _fallback_rate))
         self.backtest_entry_adverse_offset = self._get_param("backtest_entry_adverse_offset", 0.0012)
@@ -284,11 +284,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.kraken_status = "unknown"
         self._last_skip_reason = None
 
-        self.UniverseSettings.Resolution = Resolution.Minute
+        self.UniverseSettings.Resolution = Resolution.FiveMinute
         self.AddUniverse(CryptoUniverse.Kraken(self.UniverseFilter))
 
         try:
-            btc = self.AddCrypto("BTCUSD", Resolution.Minute, Market.Kraken)
+            btc = self.AddCrypto("BTCUSD", Resolution.FiveMinute, Market.Kraken)
             self.btc_symbol = btc.Symbol
         except Exception as e:
             self.Debug(f"Warning: Could not add BTC - {e}")

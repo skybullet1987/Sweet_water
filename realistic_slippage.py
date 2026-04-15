@@ -27,12 +27,14 @@ class RealisticCryptoSlippage:
 
     BASE_VOLUME_IMPACT_FACTOR = 0.60
 
-    def __init__(self, stress_mult=1.0, spread_floor_mult=1.25, impact_mult=1.5):
+    def __init__(self, stress_mult=1.0, spread_floor_mult=1.25, impact_mult=1.5, participation_cap=0.20):
         base = 0.0050 * max(0.1, float(stress_mult))
         self.base_slippage_pct = base
         self.spread_floor_mult = max(0.5, float(spread_floor_mult))
         self.volume_impact_factor = self.BASE_VOLUME_IMPACT_FACTOR * max(0.25, float(impact_mult))
         self.max_slippage_pct = 0.0800
+        # Cap participation so single-bar outliers don't dominate stress runs.
+        self.participation_cap = max(0.01, float(participation_cap))
 
     def GetSlippageApproximation(self, asset, order):
         try:
@@ -74,7 +76,7 @@ class RealisticCryptoSlippage:
                 order_value = abs(order.Quantity) * price
                 volume_value = volume * price
                 if volume_value > 0:
-                    participation_rate = min(order_value / volume_value, 0.20)
+                    participation_rate = min(order_value / volume_value, self.participation_cap)
                     volume_impact = self.volume_impact_factor * (participation_rate ** 1.5)
                     slippage_pct += volume_impact
 

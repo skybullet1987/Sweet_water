@@ -216,7 +216,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.symbol_penalty_size_mult = 0.50
 
         # Ranking overlay is adaptive to in-sample PnL; disabled by default for cleaner backtests.
-        self.ranking_overlay_enabled  = bool(self._get_param("ranking_overlay_enabled",  0.0))
+        self.ranking_overlay_enabled  = bool(self._get_param("ranking_overlay_enabled",  0))
         self.ranking_combo_bonus_cap  = self._get_param("ranking_combo_bonus_cap",  0.02)
         self.ranking_symbol_bonus_cap = self._get_param("ranking_symbol_bonus_cap", 0.03)
 
@@ -260,6 +260,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.stress_nonfill_penalty    = self._get_param("stress_nonfill_penalty",    0.05)
         self.stress_spread_floor_mult  = self._get_param("stress_spread_floor_mult",  1.25)
         self.stress_impact_mult        = self._get_param("stress_impact_mult",        1.5)
+        self.stress_participation_cap  = self._get_param("stress_participation_cap",  0.20)
 
         # Non-fill simulation seed (backtest only; default 42 = deterministic)
         non_fill_seed = int(self._get_param("non_fill_seed", 42))
@@ -335,11 +336,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         stress_mult = getattr(self, 'stress_slippage_mult', 1.0)
         spread_floor_mult = getattr(self, 'stress_spread_floor_mult', 1.0)
         impact_mult = getattr(self, 'stress_impact_mult', 1.0)
+        participation_cap = getattr(self, 'stress_participation_cap', 0.20)
         security.SetSlippageModel(
             RealisticCryptoSlippage(
                 stress_mult=stress_mult,
                 spread_floor_mult=spread_floor_mult,
-                impact_mult=impact_mult
+                impact_mult=impact_mult,
+                participation_cap=participation_cap
             )
         )
         security.SetFeeModel(KrakenTieredFeeModel())

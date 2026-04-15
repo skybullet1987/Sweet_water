@@ -31,7 +31,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # ⚠️ WALK-FORWARD WARNING: backtest runs Jan 2025–Dec 2026 with no held-out OOS window.
         # All parameter tuning should be validated on a separate out-of-sample period before live.
         # Recommended: tune on Jan–Jun 2025, validate on Jul–Dec 2025, deploy Jan 2026+.
-        self.SetCash(5000)
+        self.SetCash(500)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
         self.entry_threshold = 0.40
@@ -215,9 +215,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.symbol_penalty_threshold = 3
         self.symbol_penalty_size_mult = 0.50
 
-        # Ranking overlay is adaptive to in-sample realized PnL and can self-reinforce
-        # favorable paths during backtests; keep it opt-in (live/backtest parameter).
-        self.ranking_overlay_enabled  = bool(self._get_param("ranking_overlay_enabled",  0))
+        # Ranking overlay: bounded attribution-aware tiebreaker; net_score remains primary.
+        self.ranking_overlay_enabled  = bool(self._get_param("ranking_overlay_enabled",  1.0))
         self.ranking_combo_bonus_cap  = self._get_param("ranking_combo_bonus_cap",  0.02)
         self.ranking_symbol_bonus_cap = self._get_param("ranking_symbol_bonus_cap", 0.03)
 
@@ -255,40 +254,28 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.rs_rank_scale           = self._get_param("rs_rank_scale", 3.0)
         self.rs_rank_cap             = self._get_param("rs_rank_cap",   0.05)
 
-        # 5 & 6. Stress modes (backtest realism toggles).
-        # Baseline defaults are calibrated realism; use >1.0 multipliers for stress tests.
+        # 5 & 6. Stress modes (backtest realism toggles; default = no stress)
         self.stress_spread_mult        = self._get_param("stress_spread_mult",        1.0)
         self.stress_slippage_mult      = self._get_param("stress_slippage_mult",      1.0)
         self.stress_nonfill_penalty    = self._get_param("stress_nonfill_penalty",    0.0)
-        self.stress_spread_floor_mult  = self._get_param("stress_spread_floor_mult",  1.0)
-        self.stress_impact_mult        = self._get_param("stress_impact_mult",        1.0)
-        self.stress_participation_cap  = self._get_param("stress_participation_cap",  0.15)
-        self.stress_fee_mult           = self._get_param("stress_fee_mult",           1.0)
 
         # Non-fill simulation seed (backtest only; default 42 = deterministic)
         non_fill_seed = int(self._get_param("non_fill_seed", 42))
         reseed_non_fill_simulation(non_fill_seed)
 
-        # Execution realism controls for backtests.
-        self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.06)
-        self.nonfill_market_fallback_enabled = bool(self._get_param("nonfill_market_fallback_enabled", 1.0))
-        _fallback_rate = self._get_param("nonfill_market_fallback_rate", NONFILL_MARKET_FALLBACK_RATE_DEFAULT)
-        # 0.0-1.0 probability that a simulated non-fill escalates to market fallback.
-        self.nonfill_market_fallback_rate = max(0.0, min(1.0, _fallback_rate))
-        self.backtest_entry_adverse_offset = self._get_param("backtest_entry_adverse_offset", 0.0012)
-        self.backtest_entry_noquote_offset = self._get_param("backtest_entry_noquote_offset", 0.0016)
-        self.backtest_use_market_exits = bool(self._get_param("backtest_use_market_exits", 1.0))
+        # Breakout non-fill penalty (signal-aware execution realism; set to 0 to disable)
+        self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.08)
 
         self.max_universe_size = 50
 
         self.kraken_status = "unknown"
         self._last_skip_reason = None
 
-        self.UniverseSettings.Resolution = Resolution.FiveMinute
+        self.UniverseSettings.Resolution = Resolution.Minute
         self.AddUniverse(CryptoUniverse.Kraken(self.UniverseFilter))
 
         try:
-            btc = self.AddCrypto("BTCUSD", Resolution.FiveMinute, Market.Kraken)
+            btc = self.AddCrypto("BTCUSD", Resolution.Minute, Market.Kraken)
             self.btc_symbol = btc.Symbol
         except Exception as e:
             self.Debug(f"Warning: Could not add BTC - {e}")
@@ -340,18 +327,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
     def CustomSecurityInitializer(self, security):
         stress_mult = getattr(self, 'stress_slippage_mult', 1.0)
-        spread_floor_mult = getattr(self, 'stress_spread_floor_mult', 1.0)
-        impact_mult = getattr(self, 'stress_impact_mult', 1.0)
-        participation_cap = getattr(self, 'stress_participation_cap', 0.20)
-        security.SetSlippageModel(
-            RealisticCryptoSlippage(
-                stress_mult=stress_mult,
-                spread_floor_mult=spread_floor_mult,
-                impact_mult=impact_mult,
-                participation_cap=participation_cap
-            )
-        )
-        security.SetFeeModel(KrakenTieredFeeModel(fee_mult=getattr(self, 'stress_fee_mult', 1.0)))
+        security.SetSlippageModel(RealisticCryptoSlippage(stress_mult=stress_mult))
+        security.SetFeeModel(KrakenTieredFeeModel())
 
     def _get_param(self, name, default):
         try:

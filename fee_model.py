@@ -8,9 +8,13 @@ from datetime import timedelta
 
 
 class KrakenTieredFeeModel(FeeModel):
-    """Volume-tiered Kraken Pro (Canada) fee model; 75% maker / 25% taker blend."""
+    """Volume-tiered Kraken Pro (Canada) fee model; 80% maker / 20% taker blend.
 
-    LIMIT_TAKER_RATIO = 0.25
+    Args:
+        fee_mult: Scales computed fees for optional stress testing (default 1.0).
+    """
+
+    LIMIT_TAKER_RATIO = 0.20
     FEE_TIERS = [
         (500_000, 0.0008, 0.0018),
         (250_000, 0.0010, 0.0020),
@@ -22,11 +26,12 @@ class KrakenTieredFeeModel(FeeModel):
         (0,       0.0040, 0.0080),
     ]
 
-    def __init__(self):
+    def __init__(self, fee_mult=1.0):
         # Rolling 30-day notional traded, used for Kraken tier selection.
         self._rolling_30d_volume = 0.0
         # Queue of (timestamp, trade_value) events for sliding-window volume updates.
         self._volume_events = deque()
+        self._fee_mult = max(0.1, float(fee_mult))
 
     def _update_rolling_volume(self, when, trade_value):
         self._volume_events.append((when, trade_value))
@@ -55,4 +60,4 @@ class KrakenTieredFeeModel(FeeModel):
             fee_pct = (1 - self.LIMIT_TAKER_RATIO) * maker_rate + self.LIMIT_TAKER_RATIO * taker_rate
         else:
             fee_pct = taker_rate
-        return OrderFee(CashAmount(trade_value * fee_pct, "USD"))
+        return OrderFee(CashAmount(trade_value * fee_pct * self._fee_mult, "USD"))

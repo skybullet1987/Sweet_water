@@ -255,23 +255,28 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.rs_rank_scale           = self._get_param("rs_rank_scale", 3.0)
         self.rs_rank_cap             = self._get_param("rs_rank_cap",   0.05)
 
-        # 5 & 6. Stress modes (backtest realism toggles)
-        self.stress_spread_mult        = self._get_param("stress_spread_mult",        1.15)
-        self.stress_slippage_mult      = self._get_param("stress_slippage_mult",      1.25)
-        self.stress_nonfill_penalty    = self._get_param("stress_nonfill_penalty",    0.05)
-        self.stress_spread_floor_mult  = self._get_param("stress_spread_floor_mult",  1.25)
-        self.stress_impact_mult        = self._get_param("stress_impact_mult",        1.5)
-        self.stress_participation_cap  = self._get_param("stress_participation_cap",  0.20)
+        # 5 & 6. Stress modes (backtest realism toggles).
+        # Baseline defaults are calibrated realism; use >1.0 multipliers for stress tests.
+        self.stress_spread_mult        = self._get_param("stress_spread_mult",        1.0)
+        self.stress_slippage_mult      = self._get_param("stress_slippage_mult",      1.0)
+        self.stress_nonfill_penalty    = self._get_param("stress_nonfill_penalty",    0.0)
+        self.stress_spread_floor_mult  = self._get_param("stress_spread_floor_mult",  1.0)
+        self.stress_impact_mult        = self._get_param("stress_impact_mult",        1.0)
+        self.stress_participation_cap  = self._get_param("stress_participation_cap",  0.15)
+        self.stress_fee_mult           = self._get_param("stress_fee_mult",           1.0)
 
         # Non-fill simulation seed (backtest only; default 42 = deterministic)
         non_fill_seed = int(self._get_param("non_fill_seed", 42))
         reseed_non_fill_simulation(non_fill_seed)
 
         # Execution realism controls for backtests.
-        self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.12)
+        self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.06)
         self.nonfill_market_fallback_enabled = bool(self._get_param("nonfill_market_fallback_enabled", 1.0))
-        self.backtest_entry_adverse_offset = self._get_param("backtest_entry_adverse_offset", 0.0018)
-        self.backtest_entry_noquote_offset = self._get_param("backtest_entry_noquote_offset", 0.0022)
+        _fallback_rate = self._get_param("nonfill_market_fallback_rate", _NONFILL_MARKET_FALLBACK_RATE_DEFAULT)
+        # 0.0-1.0 probability that a simulated non-fill escalates to market fallback.
+        self.nonfill_market_fallback_rate = max(0.0, min(1.0, _fallback_rate))
+        self.backtest_entry_adverse_offset = self._get_param("backtest_entry_adverse_offset", 0.0012)
+        self.backtest_entry_noquote_offset = self._get_param("backtest_entry_noquote_offset", 0.0016)
         self.backtest_use_market_exits = bool(self._get_param("backtest_use_market_exits", 1.0))
 
         self.max_universe_size = 50
@@ -346,7 +351,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 participation_cap=participation_cap
             )
         )
-        security.SetFeeModel(KrakenTieredFeeModel())
+        security.SetFeeModel(KrakenTieredFeeModel(fee_mult=getattr(self, 'stress_fee_mult', 1.0)))
 
     def _get_param(self, name, default):
         try:

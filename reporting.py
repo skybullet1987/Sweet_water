@@ -5,24 +5,6 @@ import numpy as np
 # endregion
 
 
-def _expectancy_from_pnls(pnls):
-    """Expected per-trade return from win/loss means adjusted for flat-trade rate."""
-    n = len(pnls)
-    if n == 0:
-        return 0.0
-    wins = [p for p in pnls if p > 0]
-    losses = [p for p in pnls if p < 0]
-    flats = [p for p in pnls if p == 0]
-    active = len(wins) + len(losses)
-    if active == 0:
-        return 0.0
-    wr = len(wins) / active
-    flat_rate = len(flats) / n
-    avg_win = sum(wins) / len(wins) if wins else 0.0
-    avg_loss = sum(losses) / len(losses) if losses else 0.0
-    return (1.0 - flat_rate) * (wr * avg_win + (1.0 - wr) * avg_loss)
-
-
 def review_performance(algo):
     """Review recent performance and adjust max_positions accordingly."""
     if algo.IsWarmingUp or len(algo.trade_log) < 10:
@@ -58,9 +40,7 @@ def daily_report(algo):
     algo.Debug(f"Portfolio: ${algo.Portfolio.TotalPortfolioValue:.2f} | Cash: ${algo.Portfolio.Cash:.2f}")
     # Include regime router state in the daily header.
     router_regime = getattr(getattr(algo, '_regime_router', None), 'current_regime', 'n/a')
-    reg_conf = float(getattr(algo, 'regime_confidence', 0.0))
-    reg_size = float(getattr(algo, 'regime_size_multiplier', 0.0))
-    algo.Debug(f"Pos: {get_actual_position_count(algo)}/{algo.base_max_positions} | {algo.market_regime} {algo.volatility_regime} {algo.market_breadth:.0%} | router:{router_regime} conf:{reg_conf:.2f} size_mult:{reg_size:.2f}")
+    algo.Debug(f"Pos: {get_actual_position_count(algo)}/{algo.base_max_positions} | {algo.market_regime} {algo.volatility_regime} {algo.market_breadth:.0%} | router:{router_regime}")
     algo.Debug(f"Trades: {total} | WR: {wr:.1%} | Avg: {avg:+.2%}")
     if algo._session_blacklist:
         algo.Debug(f"Blacklist: {len(algo._session_blacklist)}")
@@ -189,26 +169,6 @@ def daily_report(algo):
             avg_mfe = sum(mfes) / len(mfes)
             avg_mae = sum(maes) / len(maes) if maes else 0
             algo.Debug(f"  {arch}: n={len(mfes)} | AvgMFE:{avg_mfe:+.3%} | AvgMAE:{avg_mae:+.3%}")
-    if hasattr(algo, 'pnl_by_setup_family') and algo.pnl_by_setup_family:
-        algo.Debug("  --- PnL by setup family ---")
-        exit_counts = getattr(algo, 'exit_counts_by_setup_family', {})
-        for family, pnls in sorted(algo.pnl_by_setup_family.items()):
-            if not pnls:
-                continue
-            n = len(pnls)
-            wr_f = sum(1 for p in pnls if p > 0) / n
-            avg_f = sum(pnls) / n
-            tot_f = sum(pnls)
-            exp_f = _expectancy_from_pnls(pnls)
-            exits = exit_counts.get(family, {})
-            top_exit = max(exits.items(), key=lambda kv: kv[1])[0] if exits else 'n/a'
-            algo.Debug(f"  {family}: {n} trades | WR:{wr_f:.0%} | Avg:{avg_f:+.3%} | Exp:{exp_f:+.3%} | Total:{tot_f:+.3%} | TopExit:{top_exit}")
-    if hasattr(algo, '_last_trend_ranking') and algo._last_trend_ranking:
-        top = algo._last_trend_ranking[0]
-        algo.Debug(f"  Trend rank top: {top['symbol']} score={top['net_score']:.2f} rank={top['rank_score']:.2f} fam={top['setup_family']}")
-    if hasattr(algo, '_last_chop_ranking') and algo._last_chop_ranking:
-        top = algo._last_chop_ranking[0]
-        algo.Debug(f"  Chop rank top: {top['symbol']} score={top['score']:.2f} rank={top['rank_score']:.2f} fam={top['setup_family']}")
     persist_state(algo)
 
 
@@ -265,7 +225,6 @@ def final_report(algo):
         ("HOLD TIME",      getattr(algo, 'pnl_by_hold_time', {}),      _HOLD_ORDER),
         ("SESSION",        getattr(algo, 'pnl_by_session', {}),        _SESSION_ORDER),
         ("SETUP ARCHETYPE",getattr(algo, 'pnl_by_archetype', {}),      None),
-        ("SETUP FAMILY",   getattr(algo, 'pnl_by_setup_family', {}),   None),
         ("ADX BUCKET",     getattr(algo, 'pnl_by_adx_bucket', {}),     None),
         ("SPREAD BUCKET",  getattr(algo, 'pnl_by_spread_bucket', {}),  None),
         ("DV BUCKET",      getattr(algo, 'pnl_by_dv_bucket', {}),      None),
@@ -277,17 +236,7 @@ def final_report(algo):
         for k, v in items:
             if not v: continue
             n = len(v); avg = sum(v)/n; wr = sum(1 for p in v if p>0)/n; tot = sum(v)
-            exp = _expectancy_from_pnls(v)
-            algo.Debug(f"  {k}: {n} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Exp:{exp:+.3%} | Total:{tot:+.3%} {'✅' if avg > 0 else '❌'}")
-    exit_counts = getattr(algo, 'exit_counts_by_setup_family', {})
-    if exit_counts:
-        algo.Debug("=== EXIT DISTRIBUTION BY SETUP FAMILY ===")
-        for fam in sorted(exit_counts.keys()):
-            tags = exit_counts.get(fam, {})
-            if not tags:
-                continue
-            dist = ', '.join(f"{tag}:{count}" for tag, count in sorted(tags.items(), key=lambda kv: kv[1], reverse=True)[:4])
-            algo.Debug(f"  {fam}: {dist}")
+            algo.Debug(f"  {k}: {n} trades | WR:{wr:.0%} | Avg:{avg:+.3%} | Total:{tot:+.3%} {'✅' if avg > 0 else '❌'}")
     algo.Debug("=== SESSION SIZE MULTIPLIERS (current) ===")
     for _sname in ['asia_dead', 'asia', 'eu_open', 'eu_main', 'us_open', 'us_main', 'us_eve']:
         algo.Debug(f"  {_sname}: size_mult={getattr(algo, f'_session_size_{_sname}', 1.0):.2f}")

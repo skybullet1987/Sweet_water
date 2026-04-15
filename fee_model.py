@@ -2,6 +2,8 @@
 from AlgorithmImports import *
 from QuantConnect.Orders.Fees import FeeModel, OrderFee
 from QuantConnect.Securities import CashAmount
+from collections import deque
+from datetime import timedelta
 # endregion
 
 
@@ -21,18 +23,29 @@ class KrakenTieredFeeModel(FeeModel):
     ]
 
     def __init__(self):
-        self._cumulative_volume = 0.0
-        self._start_time = None
+        # Rolling 30-day notional traded, used for Kraken tier selection.
+        self._rolling_30d_volume = 0.0
+        # Queue of (timestamp, trade_value) events for sliding-window volume updates.
+        self._volume_events = deque()
+
+    def _update_rolling_volume(self, when, trade_value):
+        self._volume_events.append((when, trade_value))
+        self._rolling_30d_volume += trade_value
+        cutoff = when - timedelta(days=30)
+        while self._volume_events and self._volume_events[0][0] < cutoff:
+            _, old_value = self._volume_events.popleft()
+            self._rolling_30d_volume -= old_value
+        self._rolling_30d_volume = max(0.0, self._rolling_30d_volume)
 
     def GetOrderFee(self, parameters):
         order = parameters.Order
         price = parameters.Security.Price
         trade_value = order.AbsoluteQuantity * price
-        self._cumulative_volume += trade_value
-        if self._start_time is None:
-            self._start_time = order.Time
-        elapsed_days = max((order.Time - self._start_time).days, 1)
-        monthly_volume = self._cumulative_volume * 30.0 / elapsed_days
+        if trade_value <= 0:
+            return OrderFee(CashAmount(0, "USD"))
+
+        self._update_rolling_volume(order.Time, trade_value)
+        monthly_volume = max(0.0, self._rolling_30d_volume)
         maker_rate, taker_rate = self.FEE_TIERS[-1][1], self.FEE_TIERS[-1][2]
         for min_vol, maker, taker in self.FEE_TIERS:
             if monthly_volume >= min_vol:

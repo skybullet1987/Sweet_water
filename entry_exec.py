@@ -24,12 +24,10 @@ from execution import (
 )
 from order_management import cancel_stale_new_orders
 from trade_quality import (get_session_quality, adverse_selection_filter,
-                            record_trade_metadata_on_entry, get_setup_family)
-from candidate_ranking import rank_candidates
+                            record_trade_metadata_on_entry)
 
 
-def execute_trend_trades(algo, candidates, threshold_now, effective_max_position_pct,
-                         regime_size_mult=1.0):
+def execute_trend_trades(algo, candidates, threshold_now, effective_max_position_pct):
     """
     Screen ranked candidates and place buy orders for the trend (MicroScalpEngine) regime.
 
@@ -82,7 +80,6 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
             break
         sym = cand['symbol']
         net_score = cand.get('net_score', 0.5)
-        setup_family = cand.get('setup_family', 'trend_mixed')
         if sym in algo._pending_orders and algo._pending_orders[sym] > 0:
             reject_pending_orders += 1
             continue
@@ -170,9 +167,6 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
         _s_thresh_adj, _s_size_mult, _s_spread_cap_mult = get_session_quality(
             algo, algo.Time.hour)
         size *= _s_size_mult
-        size *= regime_size_mult
-        setup_size_mult = getattr(algo, '_setup_family_size_mult', {}).get(setup_family, 1.0)
-        size *= setup_size_mult
 
         if algo._consecutive_loss_halve_remaining > 0:
             size *= 0.50
@@ -301,8 +295,6 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
                     algo, sym, components, crypto,
                     spread_pct=get_spread_pct(algo, sym),
                     recent_dv=recent_dv,
-                    engine='trend',
-                    setup_family=setup_family,
                 )
                 success_count += 1
                 algo.trade_count += 1
@@ -398,29 +390,8 @@ def run_chop_rebalance(algo):
     if not chop_candidates:
         return
 
-    for cand in chop_candidates:
-        symbol = cand['symbol']
-        spread_pct = get_spread_pct(algo, symbol)
-        cand['spread_pct'] = spread_pct
-        exit_params = algo._chop_engine.get_exit_params(symbol, algo.Securities[symbol].Price, cand['crypto'])
-        cand['expected_move_pct'] = float(exit_params.get('tp', 0.0))
-        cand['expected_cost_pct'] = (float(getattr(algo, 'expected_round_trip_fees', 0.0))
-                                     + float(getattr(algo, 'fee_slippage_buffer', 0.0))
-                                     + max(0.0, float(spread_pct or 0.0)))
-        cand['setup_family'] = get_setup_family(cand.get('components', {}), engine='chop')
-    chop_candidates = rank_candidates(
-        algo,
-        chop_candidates,
-        base_score_key='score',
-        score_scale=0.60,
-    )
-    algo._last_chop_ranking = [{
-        'symbol': c['symbol'].Value,
-        'score': c.get('score', 0.0),
-        'rank_score': c.get('rank_score', 0.0),
-        'rank_components': c.get('rank_components', {}),
-        'setup_family': c.get('setup_family', 'chop_mixed_reversion'),
-    } for c in chop_candidates[:10]]
+    # Sort by score descending; take best candidate(s).
+    chop_candidates.sort(key=lambda x: x['score'], reverse=True)
 
     cancel_stale_new_orders(algo)
 
@@ -435,7 +406,6 @@ def run_chop_rebalance(algo):
         score    = cand['score']
         crypto   = cand['crypto']
         comps    = cand['components']
-        setup_family = cand.get('setup_family', 'chop_mixed_reversion')
 
         # Re-check cooldowns / invested status after prior iterations.
         if is_invested_not_dust(algo, sym):
@@ -464,9 +434,6 @@ def run_chop_rebalance(algo):
         # Chop position sizing: own scale (15–25 %).
         size_frac = algo._chop_engine.calculate_position_size(score)
         size_frac *= _sess_size_mult
-        size_frac *= getattr(algo, 'regime_size_multiplier', 1.0)
-        setup_size_mult = getattr(algo, '_setup_family_size_mult', {}).get(setup_family, 1.0)
-        size_frac *= setup_size_mult
         if algo._consecutive_loss_halve_remaining > 0:
             size_frac *= 0.50
 
@@ -511,8 +478,6 @@ def run_chop_rebalance(algo):
                     algo, sym, comps, crypto,
                     spread_pct=get_spread_pct(algo, sym),
                     recent_dv=None,
-                    engine='chop',
-                    setup_family=setup_family,
                 )
                 success_count += 1
                 algo.trade_count += 1

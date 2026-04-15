@@ -23,7 +23,9 @@ class KrakenTieredFeeModel(FeeModel):
     ]
 
     def __init__(self):
+        # Rolling 30-day notional traded, used for Kraken tier selection.
         self._rolling_30d_volume = 0.0
+        # Queue of (timestamp, trade_value) events for sliding-window volume updates.
         self._volume_events = deque()
 
     def _update_rolling_volume(self, when, trade_value):

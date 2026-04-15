@@ -215,7 +215,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.symbol_penalty_threshold = 3
         self.symbol_penalty_size_mult = 0.50
 
-        # Ranking overlay is adaptive to in-sample PnL; disabled by default for cleaner backtests.
+        # Ranking overlay is adaptive to in-sample realized PnL and can self-reinforce
+        # favorable paths during backtests, so keep it opt-in by default.
         self.ranking_overlay_enabled  = bool(self._get_param("ranking_overlay_enabled",  0))
         self.ranking_combo_bonus_cap  = self._get_param("ranking_combo_bonus_cap",  0.02)
         self.ranking_symbol_bonus_cap = self._get_param("ranking_symbol_bonus_cap", 0.03)

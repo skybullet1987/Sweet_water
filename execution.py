@@ -15,8 +15,11 @@ random.seed(42)
 # Additive non-fill penalty for breakout/momentum entries (vol-ignition-only, no mean-reversion support).
 # Configurable via algo.breakout_nonfill_penalty; conservative default 0.08 (+8 pp above base rate).
 _BREAKOUT_NONFILL_PENALTY_DEFAULT = 0.08
+# Backtest queue-priority entry haircut when quotes are present.
 _BACKTEST_ENTRY_ADVERSE_OFFSET_DEFAULT = 0.0018
+# Backtest queue-priority entry haircut when bid/ask are unavailable.
 _BACKTEST_ENTRY_NOQUOTE_OFFSET_DEFAULT = 0.0022
+# Minimum estimated spread floor used by backtest spread proxy.
 _BACKTEST_SPREAD_FLOOR_ESTIMATE = 0.0007
 
 
@@ -847,7 +850,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 penalty = getattr(algo, 'breakout_nonfill_penalty', _BREAKOUT_NONFILL_PENALTY_DEFAULT)
                 non_fill_prob = min(non_fill_prob + penalty, 0.60)
             if random.random() < non_fill_prob:
-                # Mixed model is intentional: when a maker entry misses, real execution
+                # Backtest-only mixed model is intentional: when a maker entry misses, real execution
                 # often escalates to taker flow to avoid missing the move entirely.
                 # This preserves non-fill realism while charging harsher market costs
                 # instead of unrealistically dropping the trade from the backtest.

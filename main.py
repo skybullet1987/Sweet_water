@@ -262,7 +262,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.stress_nonfill_penalty    = self._get_param("stress_nonfill_penalty",    0.0)
         self.stress_spread_floor_mult  = self._get_param("stress_spread_floor_mult",  1.0)
         self.stress_impact_mult        = self._get_param("stress_impact_mult",        1.0)
-        self.stress_participation_cap  = self._get_param("stress_participation_cap",  0.20)
+        self.stress_participation_cap  = self._get_param("stress_participation_cap",  0.15)
         self.stress_fee_mult           = self._get_param("stress_fee_mult",           1.0)
 
         # Non-fill simulation seed (backtest only; default 42 = deterministic)
@@ -272,7 +272,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # Execution realism controls for backtests.
         self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.06)
         self.nonfill_market_fallback_enabled = bool(self._get_param("nonfill_market_fallback_enabled", 1.0))
-        self.nonfill_market_fallback_rate = self._get_param("nonfill_market_fallback_rate", 0.35)
+        _fallback_rate = self._get_param("nonfill_market_fallback_rate", _NONFILL_MARKET_FALLBACK_RATE_DEFAULT)
+        # 0.0-1.0 probability that a simulated non-fill escalates to market fallback.
+        self.nonfill_market_fallback_rate = max(0.0, min(1.0, _fallback_rate))
         self.backtest_entry_adverse_offset = self._get_param("backtest_entry_adverse_offset", 0.0012)
         self.backtest_entry_noquote_offset = self._get_param("backtest_entry_noquote_offset", 0.0016)
         self.backtest_use_market_exits = bool(self._get_param("backtest_use_market_exits", 1.0))

@@ -8,7 +8,11 @@ from datetime import timedelta
 
 
 class KrakenTieredFeeModel(FeeModel):
-    """Volume-tiered Kraken Pro (Canada) fee model; 80% maker / 20% taker blend."""
+    """Volume-tiered Kraken Pro (Canada) fee model; 80% maker / 20% taker blend.
+
+    Args:
+        fee_mult: Scales computed fees for optional stress testing (default 1.0).
+    """
 
     LIMIT_TAKER_RATIO = 0.20
     FEE_TIERS = [

@@ -21,6 +21,8 @@ class RealisticCryptoSlippage:
     Stress mode:
     - stress_mult > 1.0 scales base_slippage_pct for pessimistic robustness testing.
       Set via algo.stress_slippage_mult (default 1.0 = no stress).
+    - spread_floor_mult / impact_mult default to 1.0 for baseline realism.
+    - participation_cap defaults to 0.15 in baseline mode (raise for stress tests).
     """
 
     BASE_VOLUME_IMPACT_FACTOR = 0.35
@@ -41,6 +43,7 @@ class RealisticCryptoSlippage:
                 return 0
 
             slippage_pct = self.base_slippage_pct
+            # Initialize before branch-specific assignment from quoted or synthetic spread.
             spread_component = 0.0
 
             # Safely access bid/ask

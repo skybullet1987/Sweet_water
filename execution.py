@@ -21,6 +21,7 @@ _BACKTEST_ENTRY_ADVERSE_OFFSET_DEFAULT = 0.0012
 _BACKTEST_ENTRY_NOQUOTE_OFFSET_DEFAULT = 0.0016
 # Minimum estimated spread floor used by backtest spread proxy.
 _BACKTEST_SPREAD_FLOOR_ESTIMATE = 0.0005
+_NONFILL_MARKET_FALLBACK_RATE_DEFAULT = 0.35
 
 
 def reseed_non_fill_simulation(seed):
@@ -855,8 +856,8 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 # This preserves non-fill realism while charging harsher market costs
                 # instead of unrealistically dropping the trade from the backtest.
                 if getattr(algo, 'nonfill_market_fallback_enabled', True):
-                    fallback_rate = max(0.0, min(1.0, getattr(algo, 'nonfill_market_fallback_rate', 1.0)))
-                    if random.random() < fallback_rate:
+                    fallback_rate = getattr(algo, 'nonfill_market_fallback_rate', _NONFILL_MARKET_FALLBACK_RATE_DEFAULT)
+                    if fallback_rate >= 1.0 or (fallback_rate > 0.0 and random.random() < fallback_rate):
                         algo.Debug(f"BACKTEST NON-FILL FALLBACK: {symbol.Value} p={non_fill_prob:.1%} -> market")
                         return algo.MarketOrder(symbol, quantity, tag=f"{tag}_NonFillFallback")
                 return None

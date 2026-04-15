@@ -13,14 +13,14 @@ from datetime import timedelta
 random.seed(42)
 
 # Additive non-fill penalty for breakout/momentum entries (vol-ignition-only, no mean-reversion support).
-# Configurable via algo.breakout_nonfill_penalty; conservative default 0.08 (+8 pp above base rate).
-_BREAKOUT_NONFILL_PENALTY_DEFAULT = 0.08
+# Configurable via algo.breakout_nonfill_penalty.
+_BREAKOUT_NONFILL_PENALTY_DEFAULT = 0.06
 # Backtest queue-priority entry haircut when quotes are present.
-_BACKTEST_ENTRY_ADVERSE_OFFSET_DEFAULT = 0.0018
+_BACKTEST_ENTRY_ADVERSE_OFFSET_DEFAULT = 0.0012
 # Backtest queue-priority entry haircut when bid/ask are unavailable.
-_BACKTEST_ENTRY_NOQUOTE_OFFSET_DEFAULT = 0.0022
+_BACKTEST_ENTRY_NOQUOTE_OFFSET_DEFAULT = 0.0016
 # Minimum estimated spread floor used by backtest spread proxy.
-_BACKTEST_SPREAD_FLOOR_ESTIMATE = 0.0007
+_BACKTEST_SPREAD_FLOOR_ESTIMATE = 0.0005
 
 
 def reseed_non_fill_simulation(seed):
@@ -836,27 +836,29 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             crypto = algo.crypto_data.get(symbol)
             if crypto and len(crypto.get('volatility', [])) > 0:
                 recent_vol = float(crypto['volatility'][-1])
-                # Base non-fill rate 8%, scales up to 30% in high-vol environments.
+                # Base non-fill rate 5%, scales up to 22% in high-vol environments.
                 # Real limit order fill rates on Kraken altcoins at bid+0.05% are 70-92%
-                # within a 5-minute bar; the 8% base reflects a realistic rejection rate.
-                non_fill_prob = min(0.08 + recent_vol * 3.0, 0.30)
+                # within a 5-minute bar; baseline remains realistic without becoming extreme.
+                non_fill_prob = min(0.05 + recent_vol * 2.0, 0.22)
             else:
-                non_fill_prob = 0.15
+                non_fill_prob = 0.10
             # Signal-aware adjustment: breakout / momentum entries are rarely filled as
             # maker — price is running away from the limit so the extra penalty models
             # adverse selection more honestly.  Mean-reversion entries provide liquidity
             # and are left at the base rate.
             if is_breakout:
                 penalty = getattr(algo, 'breakout_nonfill_penalty', _BREAKOUT_NONFILL_PENALTY_DEFAULT)
-                non_fill_prob = min(non_fill_prob + penalty, 0.60)
+                non_fill_prob = min(non_fill_prob + penalty, 0.45)
             if random.random() < non_fill_prob:
                 # Backtest-only mixed model is intentional: when a maker entry misses, real execution
                 # often escalates to taker flow to avoid missing the move entirely.
                 # This preserves non-fill realism while charging harsher market costs
                 # instead of unrealistically dropping the trade from the backtest.
                 if getattr(algo, 'nonfill_market_fallback_enabled', True):
-                    algo.Debug(f"BACKTEST NON-FILL FALLBACK: {symbol.Value} p={non_fill_prob:.1%} -> market")
-                    return algo.MarketOrder(symbol, quantity, tag=f"{tag}_NonFillFallback")
+                    fallback_rate = max(0.0, min(1.0, getattr(algo, 'nonfill_market_fallback_rate', 1.0)))
+                    if random.random() < fallback_rate:
+                        algo.Debug(f"BACKTEST NON-FILL FALLBACK: {symbol.Value} p={non_fill_prob:.1%} -> market")
+                        return algo.MarketOrder(symbol, quantity, tag=f"{tag}_NonFillFallback")
                 return None
         # Fall through to limit order logic for both live and backtest
         sec = algo.Securities[symbol]

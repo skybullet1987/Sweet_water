@@ -14,25 +14,23 @@ class RealisticCryptoSlippage:
     argument" when constructing the instance.
 
     Backtest realism additions:
-    - base_slippage_pct 0.50% calibrated for small-cap Kraken altcoin execution.
-    - volume_impact_factor raised for harsher market-impact assumptions.
-    - max_slippage_pct raised to 8.0% for realistic altcoin cost tails.
-    - Synthetic spread floors doubled vs prior values to match real Kraken spreads.
-    - Synthetic spread floor applied when bid/ask unavailable (typical in backtest).
+    - baseline slippage calibrated for believable default backtests.
+    - optional stress multipliers for spread/slippage/impact for harsher scenarios.
+    - synthetic spread floor applied when bid/ask unavailable (typical in backtest).
 
     Stress mode:
     - stress_mult > 1.0 scales base_slippage_pct for pessimistic robustness testing.
       Set via algo.stress_slippage_mult (default 1.0 = no stress).
     """
 
-    BASE_VOLUME_IMPACT_FACTOR = 0.60
+    BASE_VOLUME_IMPACT_FACTOR = 0.35
 
-    def __init__(self, stress_mult=1.0, spread_floor_mult=1.25, impact_mult=1.5, participation_cap=0.20):
-        base = 0.0050 * max(0.1, float(stress_mult))
+    def __init__(self, stress_mult=1.0, spread_floor_mult=1.0, impact_mult=1.0, participation_cap=0.15):
+        base = 0.0030 * max(0.1, float(stress_mult))
         self.base_slippage_pct = base
         self.spread_floor_mult = max(0.5, float(spread_floor_mult))
         self.volume_impact_factor = self.BASE_VOLUME_IMPACT_FACTOR * max(0.25, float(impact_mult))
-        self.max_slippage_pct = 0.0800
+        self.max_slippage_pct = 0.0600
         # Cap participation so single-bar outliers don't dominate stress runs.
         self.participation_cap = max(0.01, float(participation_cap))
 
@@ -43,6 +41,7 @@ class RealisticCryptoSlippage:
                 return 0
 
             slippage_pct = self.base_slippage_pct
+            spread_component = 0.0
 
             # Safely access bid/ask
             bid = getattr(asset, 'BidPrice', 0)
@@ -53,22 +52,21 @@ class RealisticCryptoSlippage:
                 mid = 0.5 * (bid + ask)
                 if mid > 0:
                     spread_cost = (ask - bid) / (2 * mid)
-                    slippage_pct += spread_cost
+                    spread_component = spread_cost
             else:
-                # Synthetic spread floor (backtest realism — raised vs prior values to
-                # better reflect typical Kraken altcoin spread regimes)
+                # Synthetic spread floor (backtest realism when bid/ask are unavailable).
                 if price < 0.01:
-                    slippage_pct += 0.0200 * self.spread_floor_mult
+                    spread_component = 0.0120 * self.spread_floor_mult
                 elif price < 0.10:
-                    slippage_pct += 0.0100 * self.spread_floor_mult
+                    spread_component = 0.0060 * self.spread_floor_mult
                 elif price < 1.0:
-                    slippage_pct += 0.0050 * self.spread_floor_mult
+                    spread_component = 0.0030 * self.spread_floor_mult
                 elif price < 10.0:
-                    slippage_pct += 0.0030 * self.spread_floor_mult
+                    spread_component = 0.0018 * self.spread_floor_mult
                 elif price < 100.0:
-                    slippage_pct += 0.0018 * self.spread_floor_mult
+                    spread_component = 0.0012 * self.spread_floor_mult
                 else:
-                    slippage_pct += 0.0012 * self.spread_floor_mult
+                    spread_component = 0.0008 * self.spread_floor_mult
 
             # Volume impact
             volume = getattr(asset, 'Volume', 0)
@@ -82,13 +80,16 @@ class RealisticCryptoSlippage:
 
             # Price tier multipliers
             if price < 0.01:
-                slippage_pct *= 5.0
+                slippage_pct *= 3.2
             elif price < 0.10:
-                slippage_pct *= 3.5
+                slippage_pct *= 2.4
             elif price < 1.0:
-                slippage_pct *= 2.5
-            elif price < 10.0:
                 slippage_pct *= 1.8
+            elif price < 10.0:
+                slippage_pct *= 1.35
+
+            # Add spread separately so spread isn't over-amplified by tier multipliers.
+            slippage_pct += spread_component
 
             # Cap slippage
             slippage_pct = min(slippage_pct, self.max_slippage_pct)

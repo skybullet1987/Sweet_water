@@ -847,9 +847,10 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 penalty = getattr(algo, 'breakout_nonfill_penalty', _BREAKOUT_NONFILL_PENALTY_DEFAULT)
                 non_fill_prob = min(non_fill_prob + penalty, 0.60)
             if random.random() < non_fill_prob:
-                # Mixed model is intentional: non-fills on passive limits are treated as
-                # adverse selection and escalated to taker execution instead of being
-                # unrealistically dropped from the backtest.
+                # Mixed model is intentional: when a maker entry misses, real execution
+                # often escalates to taker flow to avoid missing the move entirely.
+                # This preserves non-fill realism while charging harsher market costs
+                # instead of unrealistically dropping the trade from the backtest.
                 if getattr(algo, 'nonfill_market_fallback_enabled', True):
                     algo.Debug(f"BACKTEST NON-FILL FALLBACK: {symbol.Value} p={non_fill_prob:.1%} -> market")
                     return algo.MarketOrder(symbol, quantity, tag=f"{tag}_NonFillFallback")

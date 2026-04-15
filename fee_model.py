@@ -33,6 +33,7 @@ class KrakenTieredFeeModel(FeeModel):
         while self._volume_events and self._volume_events[0][0] < cutoff:
             _, old_value = self._volume_events.popleft()
             self._rolling_30d_volume -= old_value
+        self._rolling_30d_volume = max(0.0, self._rolling_30d_volume)
 
     def GetOrderFee(self, parameters):
         order = parameters.Order

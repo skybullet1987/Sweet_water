@@ -55,8 +55,8 @@ class RealisticCryptoSlippage:
                     spread_cost = (ask - bid) / (2 * mid)
                     slippage_pct += spread_cost
             else:
-                # Synthetic spread floor (backtest realism — doubled vs prior values to
-                # match real Kraken spreads which are roughly 2× the old floors)
+                # Synthetic spread floor (backtest realism — raised vs prior values to
+                # better reflect typical Kraken altcoin spread regimes)
                 if price < 0.01:
                     slippage_pct += 0.0200 * self.spread_floor_mult
                 elif price < 0.10:

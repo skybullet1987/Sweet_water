@@ -455,7 +455,7 @@ def _estimate_backtest_spread(algo, symbol):
     k = 2.0
     estimated_spread = k / (daily_dv ** 0.5)
 
-    # Floor: even the most liquid alts have >= 0.05% spread on Kraken
+    # Floor: even the most liquid alts have >= 0.07% spread on Kraken
     # Cap: don't estimate above 10% — if it's that wide, the filter will catch it
     estimated_spread = max(estimated_spread, _BACKTEST_SPREAD_FLOOR_ESTIMATE)
     estimated_spread = min(estimated_spread, 0.10)

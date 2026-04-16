@@ -51,6 +51,8 @@ def _deterministic_reject(algo, symbol, prob, salt=""):
 
 # Round-trip fee estimate for PnL tracking (Kelly/circuit-breakers). Kraken 0.25% maker + 0.40% taker = 0.65%.
 ESTIMATED_ROUND_TRIP_FEE = 0.0065  # 0.65% round-trip
+# Maximum allowed round-trip fee (5%) as a safety rail against misconfiguration.
+MAX_ROUND_TRIP_FEE = 0.05
 
 
 def get_effective_round_trip_fee(algo):
@@ -58,13 +60,17 @@ def get_effective_round_trip_fee(algo):
 
     Args:
         algo: QCAlgorithm-like instance that may expose `expected_round_trip_fees`.
+    Returns:
+        Fee percentage in [0.0, MAX_ROUND_TRIP_FEE].
     """
     try:
         fee = float(getattr(algo, 'expected_round_trip_fees', ESTIMATED_ROUND_TRIP_FEE))
-    except (AttributeError, TypeError, ValueError):
+    except (TypeError, ValueError):
         return ESTIMATED_ROUND_TRIP_FEE
     # Defensive bounds: reject invalid/unstable fee settings.
-    return max(0.0, min(fee, 0.05))
+    # 5% round-trip is intentionally far above plausible venue fees/slippage and
+    # serves only as a safety rail for accidental misconfiguration.
+    return max(0.0, min(fee, MAX_ROUND_TRIP_FEE))
 
 # STRUCTURAL blacklist: a-priori structural exclusions (not look-ahead biased).
 SYMBOL_BLACKLIST_STRUCTURAL = {

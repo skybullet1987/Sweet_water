@@ -830,12 +830,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             for s in scores:
                 s['rank_adj'] = compute_ranking_overlay(self, s)
                 s['rank_score'] = s['net_score'] + s['rank_adj']
-            scores.sort(key=lambda x: (x['rank_score'], x['symbol'].Value), reverse=True)
+            scores.sort(key=lambda x: (-x['rank_score'], x['symbol'].Value))
             if len(scores) > 1:
                 adj_str = ' '.join(f"{s['symbol'].Value}({s['net_score']:.2f}{s['rank_adj']:+.3f})" for s in scores[:3])
                 debug_limited(self, f"RANK: {adj_str}")
         else:
-            scores.sort(key=lambda x: (x['net_score'], x['symbol'].Value), reverse=True)
+            scores.sort(key=lambda x: (-x['net_score'], x['symbol'].Value))
         self._last_skip_reason = None
         execute_trend_trades(self, scores, threshold_now, effective_max_position_pct)
 

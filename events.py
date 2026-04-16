@@ -84,7 +84,7 @@ def on_order_event(algo, event):
                     # operate on net-of-fee returns (same constant as execution.py).
                     pnl = (event.FillPrice - entry) / entry - ESTIMATED_ROUND_TRIP_FEE if entry > 0 else 0
                     algo._rolling_wins.append(1 if pnl > 0 else 0)
-                    if not getattr(algo, 'disable_performance_adaptive_risk', False):
+                    if not getattr(algo, 'disable_recent_outcome_cash_mode', False):
                         algo._recent_trade_outcomes.append(1 if pnl > 0 else 0)
                     if pnl > 0:
                         algo._rolling_win_sizes.append(pnl)
@@ -154,7 +154,7 @@ def on_order_event(algo, event):
                         algo._chop_engine.register_exit(symbol, exit_tag, pnl)
                     # Finalize rich per-trade metadata (MFE/MAE, session, archetype, etc.)
                     finalize_trade_metadata_on_exit(algo, symbol, pnl)
-                    if (not getattr(algo, 'disable_performance_adaptive_risk', False)
+                    if (not getattr(algo, 'disable_recent_outcome_cash_mode', False)
                             and len(algo._recent_trade_outcomes) >= 16):
                         recent_wr = sum(algo._recent_trade_outcomes) / len(algo._recent_trade_outcomes)
                         if recent_wr < 0.15:

@@ -276,32 +276,31 @@ def compute_ranking_overlay(algo, cand):
       3. RS-vs-BTC bounded modifier                  → ±rs_rank_cap  (default ±0.05)
       4. BB compression context boost for breakouts  → +bb_compression_rank_bonus_cap
     """
-    if getattr(algo, 'disable_adaptive_ranking_memory', False):
-        return 0.0
     adj = 0.0
     factors = cand.get('factors', {})
     crypto  = cand.get('crypto')   # may be None for legacy callers
 
-    if hasattr(algo, 'pnl_by_signal_combo') and len(algo.pnl_by_signal_combo) >= 2:
-        combo_parts = []
-        if factors.get('vol_ignition',   0) >= 0.10: combo_parts.append('vol')
-        if factors.get('mean_reversion', 0) >= 0.10: combo_parts.append('mean_rev')
-        if factors.get('vwap_signal',    0) >= 0.10: combo_parts.append('vwap')
-        combo = '+'.join(combo_parts) if combo_parts else 'none'
-        combo_avgs = {c: np.mean(v) for c, v in algo.pnl_by_signal_combo.items() if len(v) >= 3}
-        if combo in combo_avgs and len(combo_avgs) >= 2:
-            all_avgs = list(combo_avgs.values())
-            overall = np.mean(all_avgs)
-            std = max(np.std(all_avgs), 1e-6)
-            z = (combo_avgs[combo] - overall) / std
-            adj += float(np.clip(z * 0.02, -algo.ranking_combo_bonus_cap, algo.ranking_combo_bonus_cap))
+    if not getattr(algo, 'disable_adaptive_ranking_memory', False):
+        if hasattr(algo, 'pnl_by_signal_combo') and len(algo.pnl_by_signal_combo) >= 2:
+            combo_parts = []
+            if factors.get('vol_ignition',   0) >= 0.10: combo_parts.append('vol')
+            if factors.get('mean_reversion', 0) >= 0.10: combo_parts.append('mean_rev')
+            if factors.get('vwap_signal',    0) >= 0.10: combo_parts.append('vwap')
+            combo = '+'.join(combo_parts) if combo_parts else 'none'
+            combo_avgs = {c: np.mean(v) for c, v in algo.pnl_by_signal_combo.items() if len(v) >= 3}
+            if combo in combo_avgs and len(combo_avgs) >= 2:
+                all_avgs = list(combo_avgs.values())
+                overall = np.mean(all_avgs)
+                std = max(np.std(all_avgs), 1e-6)
+                z = (combo_avgs[combo] - overall) / std
+                adj += float(np.clip(z * 0.02, -algo.ranking_combo_bonus_cap, algo.ranking_combo_bonus_cap))
 
-    sym_val = cand['symbol'].Value
-    if sym_val in algo._symbol_performance:
-        recent = algo._symbol_performance[sym_val]  # deque, no list copy needed
-        if len(recent) >= 3:
-            sym_avg = np.mean(recent)
-            adj += float(np.clip(sym_avg * 2.0, -algo.ranking_symbol_bonus_cap, algo.ranking_symbol_bonus_cap))
+        sym_val = cand['symbol'].Value
+        if sym_val in algo._symbol_performance:
+            recent = algo._symbol_performance[sym_val]  # deque, no list copy needed
+            if len(recent) >= 3:
+                sym_avg = np.mean(recent)
+                adj += float(np.clip(sym_avg * 2.0, -algo.ranking_symbol_bonus_cap, algo.ranking_symbol_bonus_cap))
 
     # RS-vs-BTC bounded rank modifier
     if crypto is not None:

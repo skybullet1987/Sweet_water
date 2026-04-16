@@ -211,8 +211,16 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.comparison_mode = bool(self._get_param("comparison_mode", 0.0))
         self.disable_adaptive_ranking_memory = self.comparison_mode
-        self.disable_performance_adaptive_risk = self.comparison_mode
-        self.disable_startup_grace_adjustments = self.comparison_mode
+        self.disable_recent_outcome_cash_mode = self.comparison_mode
+        self.disable_performance_review_max_position_adjustments = self.comparison_mode
+        # Comparison mode intentionally leaves these broader toggles untouched.
+        # disable_performance_adaptive_risk controls broader loss-reactive logic
+        # (e.g., Rebalance() consecutive-loss/circuit-breaker handling and
+        # entry_exec.py loss-halve size behavior);
+        # disable_startup_grace_adjustments controls post-warmup threshold/size dampening.
+        # Both can still be set independently via parameters when needed.
+        self.disable_performance_adaptive_risk = bool(self._get_param("disable_performance_adaptive_risk", 0.0))
+        self.disable_startup_grace_adjustments = bool(self._get_param("disable_startup_grace_adjustments", 0.0))
         self.comparison_fee_maker_rate = self._get_param(
             "comparison_fee_maker_rate", KrakenTieredFeeModel.FEE_TIERS[-1][1]
         )
@@ -271,11 +279,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.rs_rank_scale           = self._get_param("rs_rank_scale", 3.0)
         self.rs_rank_cap             = self._get_param("rs_rank_cap",   0.05)
         if self.comparison_mode:
-            self.ranking_overlay_enabled = False
-            self.rs_rank_overlay_enabled = False
-            self.bb_compression_rank_enabled = False
-            self._post_warmup_grace_bars = 0
-            self.Debug("Comparison mode enabled: path-dependent adaptive overlays/risk controls minimized")
+            self.Debug("Comparison mode enabled: disabling realized-PnL-memory adjustments only")
 
         # 5 & 6. Stress modes (backtest realism toggles; default = no stress)
         self.stress_spread_mult        = self._get_param("stress_spread_mult",        1.0)
@@ -400,7 +404,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
     def ReviewPerformance(self):
         if self.IsWarmingUp or len(self.trade_log) < 10: return
-        if self.disable_performance_adaptive_risk: return
+        if self.disable_performance_review_max_position_adjustments: return
         review_performance(self)
 
     def UniverseFilter(self, universe):
@@ -457,7 +461,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if daily_loss_pct < self._daily_loss_limit:
             self.Debug(f"⚠️ DAILY LOSS LIMIT: {daily_loss_pct:.2%} | Pausing trades")
             return
-        if (not self.disable_performance_adaptive_risk
+        if (not self.disable_recent_outcome_cash_mode
                 and self._cash_mode_until is not None
                 and self._cash_mode_until > self.Time):
             return
@@ -655,7 +659,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             elif btc_5bar_return > 0.02:
                 self._btc_dump_size_mult = 1.30  # 30% size boost on strong BTC momentum
         
-        if (not self.disable_performance_adaptive_risk
+        if (not self.disable_recent_outcome_cash_mode
                 and self._cash_mode_until is not None
                 and self.Time < self._cash_mode_until):
             self._log_skip("cash mode - poor recent performance")

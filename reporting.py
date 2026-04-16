@@ -7,7 +7,7 @@ import numpy as np
 
 def review_performance(algo):
     """Review recent performance and adjust max_positions accordingly."""
-    if getattr(algo, 'disable_performance_adaptive_risk', False):
+    if getattr(algo, 'disable_performance_review_max_position_adjustments', False):
         return
     if algo.IsWarmingUp or len(algo.trade_log) < 10:
         return

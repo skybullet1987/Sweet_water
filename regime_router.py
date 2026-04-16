@@ -136,6 +136,8 @@ class RegimeRouter:
         - 'chop'       — ChopEngine may open new trades
         - 'transition' — no new entries from either engine
         """
+        if len(getattr(self.algo, '_btc_sma48_window', [])) < 48:
+            return "transition"
         if self._transition_hold > 0:
             return "transition"
         return self.current_regime

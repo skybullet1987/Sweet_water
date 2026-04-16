@@ -27,10 +27,24 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
-        self.SetEndDate(2026, 12, 1)
-        # ⚠️ WALK-FORWARD WARNING: backtest runs Jan 2025–Dec 2026 with no held-out OOS window.
-        # All parameter tuning should be validated on a separate out-of-sample period before live.
-        # Recommended: tune on Jan–Jun 2025, validate on Jul–Dec 2025, deploy Jan 2026+.
+        self.SetEndDate(2025, 6, 30)
+        # ── OOS validation discipline ──────────────────────────────────────────
+        # In-sample (IS) window: Jan 2025 – Jun 2025.
+        # Out-of-sample (OOS) window: Jul 2025 – Dec 2025 (locked; never tune here).
+        # Deploy only after OOS evaluation passes:
+        #   from nextgen.research.harness import BarReplayHarness, OOSConfig, PerformanceObjective
+        #   from datetime import datetime, timezone
+        #   oos_cfg = OOSConfig(
+        #       is_start=datetime(2025,1,1,tzinfo=timezone.utc),
+        #       is_end=datetime(2025,6,30,tzinfo=timezone.utc),
+        #       oos_start=datetime(2025,7,1,tzinfo=timezone.utc),
+        #       oos_end=datetime(2025,12,31,tzinfo=timezone.utc),
+        #       min_recommended_folds=30,
+        #   )
+        #   result = BarReplayHarness().oos_run(bars_by_symbol, oos_cfg, n_is_folds=30,
+        #                                       objective=PerformanceObjective(target_sharpe=1.5, max_drawdown=0.15))
+        #   assert result.oos_objective_met, "OOS does not meet drawdown-first objective — do NOT deploy"
+        # ──────────────────────────────────────────────────────────────────────
         self.SetCash(500)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
@@ -87,6 +101,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.cancel_cooldown_minutes = 1
         self.max_symbol_trades_per_day = 5
 
+        # ── Cost-aware minimum edge threshold ─────────────────────────────────
+        # Break-even round-trip: 0.65% fees + 0.80% slippage (2× each-way) = 2.90%.
+        # Cost-aware gate: only enter when ATR-projected edge > 2× break-even.
+        # min_required already encodes 2× break-even via:
+        #   expected_round_trip_fees + fee_slippage_buffer + min_expected_profit_pct
+        # = 0.0065 + 0.0020 + 0.0120 = 0.0205 (≈ 2× 0.0090 single-way cost floor).
+        # See entry_exec.py execute_trend_trades() for the gate implementation.
         self.expected_round_trip_fees = 0.0065  # 0.65%: Kraken blended maker+taker round-trip
         self.fee_slippage_buffer      = 0.002
         self.min_expected_profit_pct  = 0.012

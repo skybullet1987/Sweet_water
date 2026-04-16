@@ -54,7 +54,11 @@ ESTIMATED_ROUND_TRIP_FEE = 0.0065  # 0.65% round-trip
 
 
 def get_effective_round_trip_fee(algo):
-    """Return configured round-trip fee estimate used for net-PnL accounting."""
+    """Return configured round-trip fee estimate used for net-PnL accounting.
+
+    Args:
+        algo: QCAlgorithm-like instance that may expose `expected_round_trip_fees`.
+    """
     try:
         fee = float(getattr(algo, 'expected_round_trip_fees', ESTIMATED_ROUND_TRIP_FEE))
     except (AttributeError, TypeError, ValueError):

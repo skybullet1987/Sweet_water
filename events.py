@@ -1,6 +1,7 @@
 # region imports
 from AlgorithmImports import *
 from execution import *
+from execution import get_effective_round_trip_fee
 from collections import deque
 from trade_quality import init_trade_excursion, finalize_trade_metadata_on_exit
 # endregion

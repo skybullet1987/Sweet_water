@@ -57,7 +57,7 @@ def get_effective_round_trip_fee(algo):
     """Return configured round-trip fee estimate used for net-PnL accounting."""
     try:
         fee = float(getattr(algo, 'expected_round_trip_fees', ESTIMATED_ROUND_TRIP_FEE))
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return ESTIMATED_ROUND_TRIP_FEE
     # Defensive bounds: reject invalid/unstable fee settings.
     return max(0.0, min(fee, 0.05))

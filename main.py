@@ -213,8 +213,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.disable_adaptive_ranking_memory = self.comparison_mode
         self.disable_recent_outcome_cash_mode = self.comparison_mode
         self.disable_performance_review_max_position_adjustments = self.comparison_mode
-        self.disable_performance_adaptive_risk = bool(self._get_param("disable_performance_adaptive_risk", 0.0))
-        self.disable_startup_grace_adjustments = bool(self._get_param("disable_startup_grace_adjustments", 0.0))
+        self.disable_performance_adaptive_risk = False
+        self.disable_startup_grace_adjustments = False
         self.comparison_fee_maker_rate = self._get_param(
             "comparison_fee_maker_rate", KrakenTieredFeeModel.FEE_TIERS[-1][1]
         )

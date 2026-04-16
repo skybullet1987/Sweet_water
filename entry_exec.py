@@ -73,6 +73,12 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
     reject_notional = 0
     success_count = 0
 
+    in_post_warmup_grace = (
+        getattr(algo, '_post_warmup_bars', 0) < getattr(algo, '_post_warmup_grace_bars', 0)
+    )
+    if in_post_warmup_grace:
+        threshold_now += 0.05
+
     for cand in candidates:
         if algo.daily_trade_count >= algo.max_daily_trades:
             break
@@ -80,6 +86,8 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
             break
         sym = cand['symbol']
         net_score = cand.get('net_score', 0.5)
+        if net_score < threshold_now:
+            continue
         if sym in algo._pending_orders and algo._pending_orders[sym] > 0:
             reject_pending_orders += 1
             continue
@@ -167,6 +175,8 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
         _s_thresh_adj, _s_size_mult, _s_spread_cap_mult = get_session_quality(
             algo, algo.Time.hour)
         size *= _s_size_mult
+        if in_post_warmup_grace:
+            size *= 0.50
 
         if algo._consecutive_loss_halve_remaining > 0:
             size *= 0.50
@@ -350,6 +360,11 @@ def run_chop_rebalance(algo):
         algo, algo.Time.hour)
     chop_threshold = (algo._chop_engine.CHOP_ENTRY_THRESHOLD
                       + max(0.0, _sess_thresh_adj))
+    in_post_warmup_grace = (
+        getattr(algo, '_post_warmup_bars', 0) < getattr(algo, '_post_warmup_grace_bars', 0)
+    )
+    if in_post_warmup_grace:
+        chop_threshold += 0.05
 
     chop_candidates = []
     for symbol in list(algo.crypto_data.keys()):
@@ -434,6 +449,8 @@ def run_chop_rebalance(algo):
         # Chop position sizing: own scale (15–25 %).
         size_frac = algo._chop_engine.calculate_position_size(score)
         size_frac *= _sess_size_mult
+        if in_post_warmup_grace:
+            size_frac *= 0.50
         if algo._consecutive_loss_halve_remaining > 0:
             size_frac *= 0.50
 

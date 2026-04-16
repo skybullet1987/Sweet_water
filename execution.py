@@ -1,6 +1,7 @@
 # region imports
 from AlgorithmImports import *
 import json
+import hashlib
 import math
 import numpy as np
 import random
@@ -24,6 +25,29 @@ def reseed_non_fill_simulation(seed):
     while preserving deterministic behaviour (default seed = 42).
     """
     random.seed(int(seed))
+
+
+def _deterministic_reject(algo, symbol, prob, salt=""):
+    """Deterministic rejection decision from (date, symbol, bar_count, salt)."""
+    prob = max(0.0, min(1.0, float(prob)))
+    if prob <= 0.0:
+        return False
+    if prob >= 1.0:
+        return True
+
+    symbol_key = symbol.Value if hasattr(symbol, 'Value') else str(symbol)
+    date_key = algo.Time.strftime("%Y-%m-%d")
+    bar_count = 0
+    try:
+        crypto = algo.crypto_data.get(symbol)
+        if crypto is not None:
+            bar_count = len(crypto.get('prices', []))
+    except Exception:
+        pass
+
+    digest = hashlib.sha256(f"{date_key}|{symbol_key}|{bar_count}|{salt}".encode("utf-8")).digest()
+    sample = int.from_bytes(digest[:8], "big") / float(1 << 64)
+    return sample < prob
 
 # Round-trip fee estimate for PnL tracking (Kelly/circuit-breakers). Kraken 0.25% maker + 0.40% taker = 0.65%.
 ESTIMATED_ROUND_TRIP_FEE = 0.0065  # 0.65% round-trip
@@ -748,8 +772,8 @@ def kelly_fraction(algo):
       half_kelly=0.125 → returns 0.5 (min floor)
     Result is clamped to [0.5, 1.5] to prevent extreme under/over-sizing.
     """
-    if len(algo._rolling_wins) < 10:
-        return 1.0
+    if len(algo._rolling_wins) < 20:
+        return 0.7
     win_rate = sum(algo._rolling_wins) / len(algo._rolling_wins)
     if win_rate <= 0 or win_rate >= 1:
         return 1.0
@@ -837,7 +861,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             if is_breakout:
                 penalty = getattr(algo, 'breakout_nonfill_penalty', _BREAKOUT_NONFILL_PENALTY_DEFAULT)
                 non_fill_prob = min(non_fill_prob + penalty, 0.60)
-            if random.random() < non_fill_prob:
+            if _deterministic_reject(algo, symbol, non_fill_prob, salt="nonfill"):
                 return None
         # Fall through to limit order logic for both live and backtest
         sec = algo.Securities[symbol]
@@ -870,7 +894,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                         if participation_rate > _QUEUE_PARTICIPATION_THRESHOLD:
                             excess = participation_rate - _QUEUE_PARTICIPATION_THRESHOLD
                             rejection_prob = min(excess * _QUEUE_REJECTION_SLOPE, _QUEUE_MAX_REJECTION_PROB)
-                            if random.random() < rejection_prob:
+                            if _deterministic_reject(algo, symbol, rejection_prob, salt="queue_bidask"):
                                 algo.Debug(
                                     f"BACKTEST QUEUE REJECT (bid/ask): {symbol.Value} "
                                     f"part={participation_rate:.1%} rej={rejection_prob:.1%}"
@@ -908,7 +932,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                         if participation_rate > _QUEUE_PARTICIPATION_THRESHOLD:
                             excess = participation_rate - _QUEUE_PARTICIPATION_THRESHOLD
                             rejection_prob = min(excess * _QUEUE_REJECTION_SLOPE, _QUEUE_MAX_REJECTION_PROB)
-                            if random.random() < rejection_prob:
+                            if _deterministic_reject(algo, symbol, rejection_prob, salt="queue_noquote"):
                                 algo.Debug(
                                     f"BACKTEST QUEUE REJECT: {symbol.Value} "
                                     f"part={participation_rate:.1%} rej={rejection_prob:.1%}"

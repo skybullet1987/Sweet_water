@@ -119,6 +119,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._symbol_entry_cooldowns = {}
         self._spread_warning_times = {}
         self._first_post_warmup   = True
+        self._post_warmup_bars    = 0
+        self._post_warmup_grace_bars = 200
         self._submitted_orders    = {}
         self._symbol_slippage_history = {}
         self._order_retries       = {}
@@ -298,7 +300,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=2)), self.VerifyOrderFills)
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.Every(timedelta(minutes=15)), self.PortfolioSanityCheck)
 
-        self.SetWarmUp(timedelta(days=5))
+        self.SetWarmUp(timedelta(days=90))
         self.SetSecurityInitializer(self.CustomSecurityInitializer)
         self.Settings.FreePortfolioValuePercentage = 0.01
         self.Settings.InsightScore = False
@@ -494,6 +496,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             sync_existing_positions(self)
             self._positions_synced = True
             self._first_post_warmup = False
+            self._post_warmup_bars = 0
             if self.kraken_status == "unknown":
                 self.kraken_status = "online"
                 self.Debug("Fallback: kraken_status set to online after warmup")
@@ -602,6 +605,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
     def Rebalance(self):
         if self.IsWarmingUp:
             return
+        self._post_warmup_bars += 1
 
         if self.Time.hour in self.skip_hours_utc:
             self._log_skip(f"skip hour {self.Time.hour} UTC")

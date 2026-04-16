@@ -20,7 +20,12 @@ class KrakenTieredFeeModel(FeeModel):
         (0,       0.0040, 0.0080),
     ]
 
-    def __init__(self):
+    def __init__(self, comparison_mode=False, fixed_maker_rate=None, fixed_taker_rate=None):
+        self._comparison_mode = bool(comparison_mode)
+        default_maker = self.FEE_TIERS[-1][1]
+        default_taker = self.FEE_TIERS[-1][2]
+        self._fixed_maker_rate = default_maker if fixed_maker_rate is None else float(fixed_maker_rate)
+        self._fixed_taker_rate = default_taker if fixed_taker_rate is None else float(fixed_taker_rate)
         self._cumulative_volume = 0.0
         self._start_time = None
 
@@ -28,16 +33,19 @@ class KrakenTieredFeeModel(FeeModel):
         order = parameters.Order
         price = parameters.Security.Price
         trade_value = order.AbsoluteQuantity * price
-        self._cumulative_volume += trade_value
-        if self._start_time is None:
-            self._start_time = order.Time
-        elapsed_days = max((order.Time - self._start_time).days, 1)
-        monthly_volume = self._cumulative_volume * 30.0 / elapsed_days
-        maker_rate, taker_rate = self.FEE_TIERS[-1][1], self.FEE_TIERS[-1][2]
-        for min_vol, maker, taker in self.FEE_TIERS:
-            if monthly_volume >= min_vol:
-                maker_rate, taker_rate = maker, taker
-                break
+        if self._comparison_mode:
+            maker_rate, taker_rate = self._fixed_maker_rate, self._fixed_taker_rate
+        else:
+            self._cumulative_volume += trade_value
+            if self._start_time is None:
+                self._start_time = order.Time
+            elapsed_days = max((order.Time - self._start_time).days, 1)
+            monthly_volume = self._cumulative_volume * 30.0 / elapsed_days
+            maker_rate, taker_rate = self.FEE_TIERS[-1][1], self.FEE_TIERS[-1][2]
+            for min_vol, maker, taker in self.FEE_TIERS:
+                if monthly_volume >= min_vol:
+                    maker_rate, taker_rate = maker, taker
+                    break
         if order.Type == OrderType.Limit:
             fee_pct = (1 - self.LIMIT_TAKER_RATIO) * maker_rate + self.LIMIT_TAKER_RATIO * taker_rate
         else:

@@ -276,6 +276,8 @@ def compute_ranking_overlay(algo, cand):
       3. RS-vs-BTC bounded modifier                  → ±rs_rank_cap  (default ±0.05)
       4. BB compression context boost for breakouts  → +bb_compression_rank_bonus_cap
     """
+    if getattr(algo, 'disable_adaptive_ranking_memory', False):
+        return 0.0
     adj = 0.0
     factors = cand.get('factors', {})
     crypto  = cand.get('crypto')   # may be None for legacy callers

@@ -84,7 +84,8 @@ def on_order_event(algo, event):
                     # operate on net-of-fee returns (same constant as execution.py).
                     pnl = (event.FillPrice - entry) / entry - ESTIMATED_ROUND_TRIP_FEE if entry > 0 else 0
                     algo._rolling_wins.append(1 if pnl > 0 else 0)
-                    algo._recent_trade_outcomes.append(1 if pnl > 0 else 0)
+                    if not getattr(algo, 'disable_performance_adaptive_risk', False):
+                        algo._recent_trade_outcomes.append(1 if pnl > 0 else 0)
                     if pnl > 0:
                         algo._rolling_win_sizes.append(pnl)
                         algo.winning_trades += 1
@@ -95,12 +96,13 @@ def on_order_event(algo, event):
                         algo.consecutive_losses += 1
                     algo.total_pnl += pnl
                     # Track per-symbol performance for penalty logic
-                    sym_val = symbol.Value
-                    if not hasattr(algo, '_symbol_performance'):
-                        algo._symbol_performance = {}
-                    if sym_val not in algo._symbol_performance:
-                        algo._symbol_performance[sym_val] = deque(maxlen=50)
-                    algo._symbol_performance[sym_val].append(pnl)
+                    if not getattr(algo, 'disable_adaptive_ranking_memory', False):
+                        sym_val = symbol.Value
+                        if not hasattr(algo, '_symbol_performance'):
+                            algo._symbol_performance = {}
+                        if sym_val not in algo._symbol_performance:
+                            algo._symbol_performance[sym_val] = deque(maxlen=50)
+                        algo._symbol_performance[sym_val].append(pnl)
                     if not hasattr(algo, 'pnl_by_tag'):
                         algo.pnl_by_tag = {}
                     if exit_tag not in algo.pnl_by_tag:
@@ -112,11 +114,12 @@ def on_order_event(algo, event):
                     signal_combo = 'unknown'
                     if hasattr(algo, '_entry_signal_combos'):
                         signal_combo = algo._entry_signal_combos.pop(symbol, 'unknown')
-                    if not hasattr(algo, 'pnl_by_signal_combo'):
-                        algo.pnl_by_signal_combo = {}
-                    if signal_combo not in algo.pnl_by_signal_combo:
-                        algo.pnl_by_signal_combo[signal_combo] = []
-                    algo.pnl_by_signal_combo[signal_combo].append(pnl)
+                    if not getattr(algo, 'disable_adaptive_ranking_memory', False):
+                        if not hasattr(algo, 'pnl_by_signal_combo'):
+                            algo.pnl_by_signal_combo = {}
+                        if signal_combo not in algo.pnl_by_signal_combo:
+                            algo.pnl_by_signal_combo[signal_combo] = []
+                        algo.pnl_by_signal_combo[signal_combo].append(pnl)
                     # Hold-time attribution
                     entry_time = algo.entry_times.get(symbol)
                     if entry_time is not None:
@@ -151,7 +154,8 @@ def on_order_event(algo, event):
                         algo._chop_engine.register_exit(symbol, exit_tag, pnl)
                     # Finalize rich per-trade metadata (MFE/MAE, session, archetype, etc.)
                     finalize_trade_metadata_on_exit(algo, symbol, pnl)
-                    if len(algo._recent_trade_outcomes) >= 16:
+                    if (not getattr(algo, 'disable_performance_adaptive_risk', False)
+                            and len(algo._recent_trade_outcomes) >= 16):
                         recent_wr = sum(algo._recent_trade_outcomes) / len(algo._recent_trade_outcomes)
                         if recent_wr < 0.15:
                             algo._cash_mode_until = algo.Time + timedelta(minutes=45)

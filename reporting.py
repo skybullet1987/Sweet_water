@@ -7,6 +7,8 @@ import numpy as np
 
 def review_performance(algo):
     """Review recent performance and adjust max_positions accordingly."""
+    if getattr(algo, 'disable_performance_adaptive_risk', False):
+        return
     if algo.IsWarmingUp or len(algo.trade_log) < 10:
         return
     
@@ -38,6 +40,8 @@ def daily_report(algo):
     avg = algo.total_pnl / total if total > 0 else 0
     algo.Debug(f"=== DAILY {algo.Time.date()} ===")
     algo.Debug(f"Portfolio: ${algo.Portfolio.TotalPortfolioValue:.2f} | Cash: ${algo.Portfolio.Cash:.2f}")
+    if getattr(algo, 'comparison_mode', False):
+        algo.Debug("Mode: comparison (path-dependent adaptive features reduced)")
     # Include regime router state in the daily header.
     router_regime = getattr(getattr(algo, '_regime_router', None), 'current_regime', 'n/a')
     algo.Debug(f"Pos: {get_actual_position_count(algo)}/{algo.base_max_positions} | {algo.market_regime} {algo.volatility_regime} {algo.market_breadth:.0%} | router:{router_regime}")

@@ -209,6 +209,21 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.last_log_time  = None
         self.base_max_positions = self.max_positions
 
+        self.comparison_mode = bool(self._get_param("comparison_mode", 0.0))
+        self.disable_adaptive_ranking_memory = self.comparison_mode
+        self.disable_performance_adaptive_risk = self.comparison_mode
+        self.disable_startup_grace_adjustments = self.comparison_mode
+        self.comparison_fee_maker_rate = self._get_param(
+            "comparison_fee_maker_rate", KrakenTieredFeeModel.FEE_TIERS[-1][1]
+        )
+        self.comparison_fee_taker_rate = self._get_param(
+            "comparison_fee_taker_rate", KrakenTieredFeeModel.FEE_TIERS[-1][2]
+        )
+        if self.comparison_mode:
+            blended_side_fee = ((1.0 - KrakenTieredFeeModel.LIMIT_TAKER_RATIO) * self.comparison_fee_maker_rate
+                                + KrakenTieredFeeModel.LIMIT_TAKER_RATIO * self.comparison_fee_taker_rate)
+            self.expected_round_trip_fees = 2.0 * blended_side_fee
+
         self.max_participation_rate = 0.02
         self.reentry_cooldown_minutes = 1
         self._btc_dump_size_mult = 1.0
@@ -255,6 +270,12 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.rs_rank_overlay_enabled = bool(self._get_param("rs_rank_overlay_enabled", 1.0))
         self.rs_rank_scale           = self._get_param("rs_rank_scale", 3.0)
         self.rs_rank_cap             = self._get_param("rs_rank_cap",   0.05)
+        if self.comparison_mode:
+            self.ranking_overlay_enabled = False
+            self.rs_rank_overlay_enabled = False
+            self.bb_compression_rank_enabled = False
+            self._post_warmup_grace_bars = 0
+            self.Debug("Comparison mode enabled: path-dependent adaptive overlays/risk controls minimized")
 
         # 5 & 6. Stress modes (backtest realism toggles; default = no stress)
         self.stress_spread_mult        = self._get_param("stress_spread_mult",        1.0)
@@ -330,7 +351,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
     def CustomSecurityInitializer(self, security):
         stress_mult = getattr(self, 'stress_slippage_mult', 1.0)
         security.SetSlippageModel(RealisticCryptoSlippage(stress_mult=stress_mult))
-        security.SetFeeModel(KrakenTieredFeeModel())
+        security.SetFeeModel(KrakenTieredFeeModel(
+            comparison_mode=self.comparison_mode,
+            fixed_maker_rate=self.comparison_fee_maker_rate,
+            fixed_taker_rate=self.comparison_fee_taker_rate
+        ))
 
     def _get_param(self, name, default):
         try:
@@ -375,6 +400,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
     def ReviewPerformance(self):
         if self.IsWarmingUp or len(self.trade_log) < 10: return
+        if self.disable_performance_adaptive_risk: return
         review_performance(self)
 
     def UniverseFilter(self, universe):
@@ -431,7 +457,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if daily_loss_pct < self._daily_loss_limit:
             self.Debug(f"⚠️ DAILY LOSS LIMIT: {daily_loss_pct:.2%} | Pausing trades")
             return
-        if self._cash_mode_until is not None and self._cash_mode_until > self.Time:
+        if (not self.disable_performance_adaptive_risk
+                and self._cash_mode_until is not None
+                and self._cash_mode_until > self.Time):
             return
         if hasattr(self, 'fear_greed_symbol') and self.fear_greed_symbol and data.ContainsKey(self.fear_greed_symbol):
             fg = data[self.fear_greed_symbol]
@@ -627,7 +655,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             elif btc_5bar_return > 0.02:
                 self._btc_dump_size_mult = 1.30  # 30% size boost on strong BTC momentum
         
-        if self._cash_mode_until is not None and self.Time < self._cash_mode_until:
+        if (not self.disable_performance_adaptive_risk
+                and self._cash_mode_until is not None
+                and self.Time < self._cash_mode_until):
             self._log_skip("cash mode - poor recent performance")
             return
 
@@ -663,25 +693,26 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.drawdown_cooldown = self.cooldown_hours
             self._log_skip(f"drawdown {dd:.1%} > limit")
             return
-        if self.consecutive_losses >= self.max_consecutive_losses:
-            self.drawdown_cooldown = 3
-            self._consecutive_loss_halve_remaining = 3
-            self.consecutive_losses = 0
-            self._log_skip("consecutive loss cooldown (5 losses)")
-            return
-        if self.consecutive_losses >= 6:
-            self._circuit_breaker_trigger_count += 1
-            backoff_hours = min(1 * (2 ** (self._circuit_breaker_trigger_count - 1)), 8)
-            self.circuit_breaker_expiry = self.Time + timedelta(hours=backoff_hours)
-            self.consecutive_losses = 0
-            self._log_skip(f"circuit breaker triggered (6 losses, {backoff_hours}h cooldown #{self._circuit_breaker_trigger_count})")
-            return
-        if self.circuit_breaker_expiry is not None and self.Time < self.circuit_breaker_expiry:
-            self._log_skip("circuit breaker active")
-            return
-        elif self.circuit_breaker_expiry is not None and self.Time >= self.circuit_breaker_expiry:
-            self._circuit_breaker_trigger_count = max(0, self._circuit_breaker_trigger_count - 1)  # decay
-            self.circuit_breaker_expiry = None
+        if not self.disable_performance_adaptive_risk:
+            if self.consecutive_losses >= self.max_consecutive_losses:
+                self.drawdown_cooldown = 3
+                self._consecutive_loss_halve_remaining = 3
+                self.consecutive_losses = 0
+                self._log_skip("consecutive loss cooldown (5 losses)")
+                return
+            if self.consecutive_losses >= 6:
+                self._circuit_breaker_trigger_count += 1
+                backoff_hours = min(1 * (2 ** (self._circuit_breaker_trigger_count - 1)), 8)
+                self.circuit_breaker_expiry = self.Time + timedelta(hours=backoff_hours)
+                self.consecutive_losses = 0
+                self._log_skip(f"circuit breaker triggered (6 losses, {backoff_hours}h cooldown #{self._circuit_breaker_trigger_count})")
+                return
+            if self.circuit_breaker_expiry is not None and self.Time < self.circuit_breaker_expiry:
+                self._log_skip("circuit breaker active")
+                return
+            elif self.circuit_breaker_expiry is not None and self.Time >= self.circuit_breaker_expiry:
+                self._circuit_breaker_trigger_count = max(0, self._circuit_breaker_trigger_count - 1)  # decay
+                self.circuit_breaker_expiry = None
         pos_count = get_actual_position_count(self)
         if pos_count >= self.max_positions:
             self._log_skip("at max positions")

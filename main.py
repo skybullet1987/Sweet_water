@@ -214,7 +214,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.disable_recent_outcome_cash_mode = self.comparison_mode
         self.disable_performance_review_max_position_adjustments = self.comparison_mode
         # Comparison mode intentionally leaves these broader toggles untouched.
-        # They can still be set independently via parameters when needed.
+        # disable_performance_adaptive_risk controls broader loss-reactive sizing/circuit logic;
+        # disable_startup_grace_adjustments controls post-warmup threshold/size dampening.
+        # Both can still be set independently via parameters when needed.
         self.disable_performance_adaptive_risk = bool(self._get_param("disable_performance_adaptive_risk", 0.0))
         self.disable_startup_grace_adjustments = bool(self._get_param("disable_startup_grace_adjustments", 0.0))
         self.comparison_fee_maker_rate = self._get_param(

@@ -1,6 +1,6 @@
 # Next-Generation Strategy Architecture Scaffold
 
-This repository now includes a **parallel modular architecture** under `/home/runner/work/Sweet_water/Sweet_water/nextgen` to start the transition toward a regime-aware, cost-aware, multi-sleeve system.
+This repository now includes a **parallel modular architecture** under `nextgen/` to start the transition toward a regime-aware, cost-aware, multi-sleeve system.
 
 ## Legacy vs nextgen
 
@@ -47,6 +47,6 @@ This repository now includes a **parallel modular architecture** under `/home/ru
 The project currently uses Python `unittest` tests for this scaffold:
 
 ```bash
-cd /home/runner/work/Sweet_water/Sweet_water
+cd <project_root>
 python -m unittest discover -s tests -p "test_*.py" -v
 ```

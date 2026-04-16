@@ -74,7 +74,8 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
     success_count = 0
 
     in_post_warmup_grace = (
-        getattr(algo, '_post_warmup_bars', 0) < getattr(algo, '_post_warmup_grace_bars', 0)
+        not getattr(algo, 'disable_startup_grace_adjustments', False)
+        and getattr(algo, '_post_warmup_bars', 0) < getattr(algo, '_post_warmup_grace_bars', 0)
     )
     if in_post_warmup_grace:
         threshold_now += 0.05
@@ -178,7 +179,8 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
         if in_post_warmup_grace:
             size *= 0.50
 
-        if algo._consecutive_loss_halve_remaining > 0:
+        if (not getattr(algo, 'disable_performance_adaptive_risk', False)
+                and algo._consecutive_loss_halve_remaining > 0):
             size *= 0.50
 
         if algo.volatility_regime == "high":
@@ -186,7 +188,8 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
 
         # Per-symbol penalty: halve size after consecutive losses
         sym_val = sym.Value
-        if sym_val in algo._symbol_performance:
+        if (not getattr(algo, 'disable_adaptive_ranking_memory', False)
+                and sym_val in algo._symbol_performance):
             recent_pnls = algo._symbol_performance[sym_val]  # deque, no list copy needed
             if len(recent_pnls) >= algo.symbol_penalty_threshold:
                 recent_losses = sum(1 for p in itertools.islice(reversed(recent_pnls), algo.symbol_penalty_threshold) if p < 0)
@@ -313,7 +316,8 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
                 is_choppy = (adx_ind is not None and adx_ind.IsReady
                              and adx_ind.Current.Value < 25)
                 algo._choppy_regime_entries[sym] = is_choppy
-                if algo._consecutive_loss_halve_remaining > 0:
+                if (not getattr(algo, 'disable_performance_adaptive_risk', False)
+                        and algo._consecutive_loss_halve_remaining > 0):
                     algo._consecutive_loss_halve_remaining -= 1
                 if algo.LiveMode:
                     algo._last_live_trade_time = algo.Time
@@ -361,7 +365,8 @@ def run_chop_rebalance(algo):
     chop_threshold = (algo._chop_engine.CHOP_ENTRY_THRESHOLD
                       + max(0.0, _sess_thresh_adj))
     in_post_warmup_grace = (
-        getattr(algo, '_post_warmup_bars', 0) < getattr(algo, '_post_warmup_grace_bars', 0)
+        not getattr(algo, 'disable_startup_grace_adjustments', False)
+        and getattr(algo, '_post_warmup_bars', 0) < getattr(algo, '_post_warmup_grace_bars', 0)
     )
     if in_post_warmup_grace:
         chop_threshold += 0.05
@@ -451,7 +456,8 @@ def run_chop_rebalance(algo):
         size_frac *= _sess_size_mult
         if in_post_warmup_grace:
             size_frac *= 0.50
-        if algo._consecutive_loss_halve_remaining > 0:
+        if (not getattr(algo, 'disable_performance_adaptive_risk', False)
+                and algo._consecutive_loss_halve_remaining > 0):
             size_frac *= 0.50
 
         val = available_cash * size_frac
@@ -499,7 +505,8 @@ def run_chop_rebalance(algo):
                 success_count += 1
                 algo.trade_count += 1
                 crypto['trade_count_today'] = crypto.get('trade_count_today', 0) + 1
-                if algo._consecutive_loss_halve_remaining > 0:
+                if (not getattr(algo, 'disable_performance_adaptive_risk', False)
+                        and algo._consecutive_loss_halve_remaining > 0):
                     algo._consecutive_loss_halve_remaining -= 1
                 algo.daily_trade_count += 1
                 if algo.LiveMode:

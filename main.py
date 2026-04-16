@@ -36,7 +36,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.entry_threshold = 0.40
         self.high_conviction_threshold = 0.50
-        self.min_signal_count = int(self._get_param("min_signal_count", 1))
+        self.min_signal_count = int(self._get_param("min_signal_count", 2))
         self.quick_take_profit = self._get_param("quick_take_profit", 0.015)  # 1.5% for 5-min scalping (was 15%)
         self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.080)  # 8%: 5% was too tight for 5-min bars
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
@@ -338,6 +338,25 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # ChopEngine provides signal scoring and risk params for sideways markets.
         self._regime_router = RegimeRouter(self)
         self._chop_engine   = ChopEngine(self)
+
+        # ── Next-gen risk engine: pre-trade sizing gate ─────────────────────
+        # Instantiated here so entry_exec.py can call
+        # algo._nextgen_risk_engine.evaluate_target() as a pre-trade gate.
+        # The config mirrors the live risk parameters set above.
+        try:
+            from nextgen.risk.engine import UnifiedRiskEngine, RiskConfig as NgRiskConfig
+            self._nextgen_risk_engine = UnifiedRiskEngine(NgRiskConfig(
+                target_portfolio_volatility=self.portfolio_vol_cap,
+                max_position_weight=self.max_position_pct,
+                max_position_risk=0.05,
+                max_gross_exposure=min(1.0, self.max_position_pct * self.max_positions),
+                max_net_exposure=min(1.0, self.max_position_pct * self.max_positions),
+                drawdown_throttle_level=0.10,
+                kill_switch_drawdown=self.max_drawdown_limit,
+            ))
+        except Exception as e:
+            self._nextgen_risk_engine = None
+            self.Debug(f"Warning: could not create nextgen risk engine - {e}")
 
         # Engine attribution: tracks which engine opened each position.
         # Values: 'trend' | 'chop'
@@ -788,12 +807,17 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             composite_score = factor_scores.get('_scalp_score', 0.0)
             net_score = composite_score
 
-            # Log vol-only candidates filtered by multi-signal gate (logging only).
+            # Multi-signal gate: require at least min_signal_count active signals.
+            # With min_signal_count=2 this blocks vol-only entries that have no
+            # mean-reversion / VWAP confirmation, reducing false breakouts.
+            # BUG FIX: the previous code only logged this condition without
+            # actually skipping the candidate (missing `continue`).
             _sig_keys = MicroScalpEngine.SIGNAL_KEYS
             if (factor_scores.get('vol_ignition', 0) >= 0.10
                     and sum(1 for k in _sig_keys if factor_scores.get(k, 0) >= 0.10) < self.min_signal_count):
                 sig_vals = ' '.join(f"{k[:4]}={factor_scores.get(k, 0):.2f}" for k in _sig_keys)
                 debug_limited(self, f"WEAK SIGNAL {symbol.Value}: {sig_vals} — skipped (need {self.min_signal_count} active signals)")
+                continue
 
             crypto['recent_net_scores'].append(net_score)
 

@@ -269,6 +269,49 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
             debug_limited(algo, f"ASEL REJECT {sym.Value}: {_asel_reason}")
             continue
 
+        # Next-gen risk engine pre-trade gate.
+        # Builds a lightweight PortfolioState from live algo state and asks
+        # UnifiedRiskEngine to approve / resize the proposed position.
+        _ng_risk = getattr(algo, '_nextgen_risk_engine', None)
+        if _ng_risk is not None:
+            try:
+                from nextgen.risk.engine import PortfolioState as NgPortfolioState, PositionState as NgPositionState
+                from nextgen.core.types import PortfolioTarget as NgPortfolioTarget
+                _total_val = algo.Portfolio.TotalPortfolioValue
+                _gross_exp = 0.0
+                _net_exp = 0.0
+                _ng_positions = {}
+                if _total_val > 0:
+                    for _kvp in algo.Portfolio:
+                        _h = _kvp.Value
+                        if abs(_h.HoldingsValue) > 0:
+                            _w = _h.HoldingsValue / _total_val
+                            _ng_positions[str(_kvp.Key)] = NgPositionState(
+                                weight=_w,
+                                annualized_volatility=algo._annualized_vol(
+                                    algo.crypto_data.get(_kvp.Key)) or 0.5,
+                            )
+                            _gross_exp += abs(_w)
+                            _net_exp += _w
+                _peak = getattr(algo, 'peak_value', _total_val) or _total_val
+                _dd = ((_peak - _total_val) / _peak) if _peak > 0 else 0.0
+                _est_vol = algo._compute_portfolio_risk_estimate()
+                _ng_state = NgPortfolioState(
+                    estimated_portfolio_volatility=_est_vol,
+                    current_drawdown=_dd,
+                    gross_exposure=_gross_exp,
+                    net_exposure=_net_exp,
+                    positions=_ng_positions,
+                )
+                _target_w = val / _total_val if _total_val > 0 else 0.0
+                _ng_target = NgPortfolioTarget(str(sym), _target_w, net_score)
+                _ng_decision = _ng_risk.evaluate_target(_ng_target, _ng_state)
+                if not _ng_decision.approved:
+                    debug_limited(algo, f"NG RISK REJECT {sym.Value}: {_ng_decision.reason_codes}")
+                    continue
+            except Exception:
+                pass  # non-fatal: fall through to legacy execution if nextgen bridge fails
+
         try:
             components = cand.get('factors', {})
             # Breakout-like entry: strong vol ignition without mean-reversion support.
@@ -311,6 +354,9 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
                 )
                 success_count += 1
                 algo.trade_count += 1
+                # Trend engine was not incrementing the daily-trade counter,
+                # meaning the max_daily_trades gate was only counting chop trades.
+                algo.daily_trade_count += 1
                 crypto['trade_count_today'] = crypto.get('trade_count_today', 0) + 1
                 adx_ind = crypto.get('adx')
                 is_choppy = (adx_ind is not None and adx_ind.IsReady

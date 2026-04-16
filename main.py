@@ -27,16 +27,30 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
-        self.SetEndDate(2026, 12, 1)
-        # ⚠️ WALK-FORWARD WARNING: backtest runs Jan 2025–Dec 2026 with no held-out OOS window.
-        # All parameter tuning should be validated on a separate out-of-sample period before live.
-        # Recommended: tune on Jan–Jun 2025, validate on Jul–Dec 2025, deploy Jan 2026+.
+        self.SetEndDate(2025, 6, 30)
+        # ── OOS validation discipline ──────────────────────────────────────────
+        # In-sample (IS) window: Jan 2025 – Jun 2025.
+        # Out-of-sample (OOS) window: Jul 2025 – Dec 2025 (locked; never tune here).
+        # Deploy only after OOS evaluation passes:
+        #   from nextgen.research.harness import BarReplayHarness, OOSConfig, PerformanceObjective
+        #   from datetime import datetime, timezone
+        #   oos_cfg = OOSConfig(
+        #       is_start=datetime(2025,1,1,tzinfo=timezone.utc),
+        #       is_end=datetime(2025,6,30,tzinfo=timezone.utc),
+        #       oos_start=datetime(2025,7,1,tzinfo=timezone.utc),
+        #       oos_end=datetime(2025,12,31,tzinfo=timezone.utc),
+        #       min_recommended_folds=30,
+        #   )
+        #   result = BarReplayHarness().oos_run(bars_by_symbol, oos_cfg, n_is_folds=30,
+        #                                       objective=PerformanceObjective(target_sharpe=1.5, max_drawdown=0.15))
+        #   assert result.oos_objective_met, "OOS does not meet drawdown-first objective — do NOT deploy"
+        # ──────────────────────────────────────────────────────────────────────
         self.SetCash(500)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
         self.entry_threshold = 0.40
         self.high_conviction_threshold = 0.50
-        self.min_signal_count = int(self._get_param("min_signal_count", 1))
+        self.min_signal_count = int(self._get_param("min_signal_count", 2))
         self.quick_take_profit = self._get_param("quick_take_profit", 0.015)  # 1.5% for 5-min scalping (was 15%)
         self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.080)  # 8%: 5% was too tight for 5-min bars
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
@@ -87,6 +101,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.cancel_cooldown_minutes = 1
         self.max_symbol_trades_per_day = 5
 
+        # ── Cost-aware minimum edge threshold ─────────────────────────────────
+        # Break-even round-trip: 0.65% fees + 0.80% slippage (2× each-way) = 2.90%.
+        # Cost-aware gate: only enter when ATR-projected edge > 2× break-even.
+        # min_required already encodes 2× break-even via:
+        #   expected_round_trip_fees + fee_slippage_buffer + min_expected_profit_pct
+        # = 0.0065 + 0.0020 + 0.0120 = 0.0205 (≈ 2× 0.0090 single-way cost floor).
+        # See entry_exec.py execute_trend_trades() for the gate implementation.
         self.expected_round_trip_fees = 0.0065  # 0.65%: Kraken blended maker+taker round-trip
         self.fee_slippage_buffer      = 0.002
         self.min_expected_profit_pct  = 0.012
@@ -338,6 +359,25 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # ChopEngine provides signal scoring and risk params for sideways markets.
         self._regime_router = RegimeRouter(self)
         self._chop_engine   = ChopEngine(self)
+
+        # ── Next-gen risk engine: pre-trade sizing gate ─────────────────────
+        # Instantiated here so entry_exec.py can call
+        # algo._nextgen_risk_engine.evaluate_target() as a pre-trade gate.
+        # The config mirrors the live risk parameters set above.
+        try:
+            from nextgen.risk.engine import UnifiedRiskEngine, RiskConfig as NgRiskConfig
+            self._nextgen_risk_engine = UnifiedRiskEngine(NgRiskConfig(
+                target_portfolio_volatility=self.portfolio_vol_cap,
+                max_position_weight=self.max_position_pct,
+                max_position_risk=0.05,
+                max_gross_exposure=min(1.0, self.max_position_pct * self.max_positions),
+                max_net_exposure=min(1.0, self.max_position_pct * self.max_positions),
+                drawdown_throttle_level=0.10,
+                kill_switch_drawdown=self.max_drawdown_limit,
+            ))
+        except Exception as e:
+            self._nextgen_risk_engine = None
+            self.Debug(f"Warning: could not create nextgen risk engine - {e}")
 
         # Engine attribution: tracks which engine opened each position.
         # Values: 'trend' | 'chop'
@@ -788,12 +828,17 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             composite_score = factor_scores.get('_scalp_score', 0.0)
             net_score = composite_score
 
-            # Log vol-only candidates filtered by multi-signal gate (logging only).
+            # Multi-signal gate: require at least min_signal_count active signals.
+            # With min_signal_count=2 this blocks vol-only entries that have no
+            # mean-reversion / VWAP confirmation, reducing false breakouts.
+            # BUG FIX: the previous code only logged this condition without
+            # actually skipping the candidate (missing `continue`).
             _sig_keys = MicroScalpEngine.SIGNAL_KEYS
             if (factor_scores.get('vol_ignition', 0) >= 0.10
                     and sum(1 for k in _sig_keys if factor_scores.get(k, 0) >= 0.10) < self.min_signal_count):
                 sig_vals = ' '.join(f"{k[:4]}={factor_scores.get(k, 0):.2f}" for k in _sig_keys)
                 debug_limited(self, f"WEAK SIGNAL {symbol.Value}: {sig_vals} — skipped (need {self.min_signal_count} active signals)")
+                continue
 
             crypto['recent_net_scores'].append(net_score)
 

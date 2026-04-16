@@ -411,7 +411,7 @@ def run_chop_rebalance(algo):
         return
 
     # Sort by score descending; take best candidate(s).
-    chop_candidates.sort(key=lambda x: x['score'], reverse=True)
+    chop_candidates.sort(key=lambda x: (x['score'], x['symbol'].Value), reverse=True)
 
     cancel_stale_new_orders(algo)
 

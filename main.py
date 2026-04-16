@@ -213,6 +213,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.disable_adaptive_ranking_memory = self.comparison_mode
         self.disable_recent_outcome_cash_mode = self.comparison_mode
         self.disable_performance_review_max_position_adjustments = self.comparison_mode
+        # Comparison mode intentionally leaves these broader toggles untouched.
+        # Only explicit realized-PnL-memory components are disabled in that mode.
         self.disable_performance_adaptive_risk = False
         self.disable_startup_grace_adjustments = False
         self.comparison_fee_maker_rate = self._get_param(

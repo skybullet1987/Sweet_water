@@ -51,6 +51,26 @@ def _deterministic_reject(algo, symbol, prob, salt=""):
 
 # Round-trip fee estimate for PnL tracking (Kelly/circuit-breakers). Kraken 0.25% maker + 0.40% taker = 0.65%.
 ESTIMATED_ROUND_TRIP_FEE = 0.0065  # 0.65% round-trip
+# Maximum allowed round-trip fee (5%) as a safety rail against misconfiguration.
+MAX_ROUND_TRIP_FEE = 0.05
+
+
+def get_effective_round_trip_fee(algo):
+    """Return configured round-trip fee estimate used for net-PnL accounting.
+
+    Args:
+        algo: QCAlgorithm-like instance that may expose `expected_round_trip_fees`.
+    Returns:
+        Fee percentage in [0.0, MAX_ROUND_TRIP_FEE].
+    """
+    try:
+        fee = float(getattr(algo, 'expected_round_trip_fees', ESTIMATED_ROUND_TRIP_FEE))
+    except (TypeError, ValueError):
+        return ESTIMATED_ROUND_TRIP_FEE
+    # Defensive bounds: reject invalid/unstable fee settings.
+    # 5% round-trip is intentionally far above plausible venue fees/slippage and
+    # serves only as a safety rail for accidental misconfiguration.
+    return max(0.0, min(fee, MAX_ROUND_TRIP_FEE))
 
 # STRUCTURAL blacklist: a-priori structural exclusions (not look-ahead biased).
 SYMBOL_BLACKLIST_STRUCTURAL = {
@@ -985,7 +1005,7 @@ def record_exit_pnl(algo, symbol, entry_price, exit_price, exit_tag="Unknown"):
         return None
     
     # Fee is a direct percentage-point reduction (matches convention in events.py).
-    pnl = (exit_price - entry_price) / entry_price - ESTIMATED_ROUND_TRIP_FEE
+    pnl = (exit_price - entry_price) / entry_price - get_effective_round_trip_fee(algo)
     algo._rolling_wins.append(1 if pnl > 0 else 0)
     if pnl > 0:
         algo._rolling_win_sizes.append(pnl)

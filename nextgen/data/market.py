@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from typing import Deque, Dict, Iterable
 
-from nextgen.core.types import Bar
+from nextgen.core.models import Bar
 
 
 class InMemoryBarStore:

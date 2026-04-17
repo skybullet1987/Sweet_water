@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Mapping, Any
 
-from nextgen.core.types import StrategyConfig
+from nextgen.core.models import StrategyConfig
 
 
 def load_strategy_config(raw: Mapping[str, Any]) -> StrategyConfig:

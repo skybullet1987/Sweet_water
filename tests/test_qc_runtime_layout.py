@@ -25,12 +25,38 @@ class QCRuntimeLayoutTests(unittest.TestCase):
             "chop_engine.py",
             "entry_exec.py",
             "alt_data.py",
-            "nextgen/core/types.py",
+            "nextgen/core/models.py",
             "nextgen/risk/engine.py",
         }
 
         missing = [f for f in expected_files if not (runtime_root / f).is_file()]
         self.assertEqual([], missing)
+
+    def test_qc_runtime_avoids_stdlib_shadowing_filenames(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        runtime_root = repo_root / "qc_runtime"
+
+        dangerous_names = {
+            "types.py",
+            "enum.py",
+            "re.py",
+            "typing.py",
+            "json.py",
+            "collections.py",
+            "dataclasses.py",
+            "pathlib.py",
+            "logging.py",
+            "time.py",
+            "statistics.py",
+            "inspect.py",
+        }
+
+        found = sorted(
+            str(path.relative_to(runtime_root))
+            for path in runtime_root.rglob("*.py")
+            if path.name in dangerous_names
+        )
+        self.assertEqual([], found)
 
 
 if __name__ == "__main__":

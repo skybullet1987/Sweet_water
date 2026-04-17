@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nextgen.core.types import FeatureOutput, RegimeState, SignalOutput
+from nextgen.core.models import FeatureOutput, RegimeState, SignalOutput
 from .utils import clamp_signal
 
 

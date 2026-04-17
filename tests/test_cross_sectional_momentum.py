@@ -4,7 +4,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
-from nextgen.core.types import FeatureOutput, RegimeState
+from nextgen.core.models import FeatureOutput, RegimeState
 from nextgen.signals.cross_sectional_momentum import CrossSectionalMomentumSleeve
 
 

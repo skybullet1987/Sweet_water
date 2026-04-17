@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping
 
-from nextgen.core.types import PortfolioTarget, RiskDecision
+from nextgen.core.models import PortfolioTarget, RiskDecision
 
 
 @dataclass(frozen=True)

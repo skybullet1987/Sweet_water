@@ -276,7 +276,7 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
         if _ng_risk is not None:
             try:
                 from nextgen.risk.engine import PortfolioState as NgPortfolioState, PositionState as NgPositionState
-                from nextgen.core.types import PortfolioTarget as NgPortfolioTarget
+                from nextgen.core.models import PortfolioTarget as NgPortfolioTarget
                 _total_val = algo.Portfolio.TotalPortfolioValue
                 _gross_exp = 0.0
                 _net_exp = 0.0

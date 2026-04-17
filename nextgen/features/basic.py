@@ -5,7 +5,7 @@ from collections import defaultdict, deque
 from datetime import UTC, datetime
 from typing import Deque, Dict, List, Optional, Tuple
 
-from nextgen.core.types import Bar, FeatureOutput
+from nextgen.core.models import Bar, FeatureOutput
 
 # Annualisation factor for 5-minute bars: 12 bars/hour × 24 h × 365 days
 _BARS_PER_YEAR_5MIN = 12 * 24 * 365

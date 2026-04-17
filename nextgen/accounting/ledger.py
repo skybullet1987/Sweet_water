@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from nextgen.core.types import FillRecord, PnLRecord
+from nextgen.core.models import FillRecord, PnLRecord
 
 
 @dataclass(frozen=True)

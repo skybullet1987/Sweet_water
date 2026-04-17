@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime
 
-from nextgen.core.types import RegimeState, SignalOutput
+from nextgen.core.models import RegimeState, SignalOutput
 from nextgen.portfolio.allocator import AllocationConfig, SignalPortfolioAllocator
 
 

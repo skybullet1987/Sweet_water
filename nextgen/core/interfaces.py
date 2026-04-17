@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol, Sequence
 
-from .types import (
+from .models import (
     Bar,
     FeatureOutput,
     PortfolioTarget,

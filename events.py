@@ -66,6 +66,12 @@ def on_order_event(algo, event):
                 algo.highest_prices[symbol] = event.FillPrice
                 algo.entry_times[symbol] = algo.Time
                 algo.daily_trade_count += 1
+                try:
+                    filled_order = algo.Transactions.GetOrderById(event.OrderId)
+                    if filled_order is not None and "[StaleEsc]" in str(getattr(filled_order, "Tag", "")):
+                        algo.stale_limit_escalation_fills = int(getattr(algo, 'stale_limit_escalation_fills', 0)) + 1
+                except Exception:
+                    pass
                 crypto = algo.crypto_data.get(symbol)
                 if crypto and len(crypto['volume']) >= 1:
                     algo.entry_volumes[symbol] = crypto['volume'][-1]

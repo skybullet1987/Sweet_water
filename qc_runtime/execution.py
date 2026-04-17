@@ -843,7 +843,19 @@ def get_slippage_penalty(algo, symbol):
         return 1.0
 
 
-def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry", is_breakout=False):
+def place_limit_or_market(
+    algo,
+    symbol,
+    quantity,
+    timeout_seconds=30,
+    tag="Entry",
+    is_breakout=False,
+    force_market=False,
+    signal_score=None,
+    signal_threshold=None,
+    signal_engine=None,
+    signal_regime=None,
+):
     """
     Place entry orders using limit orders to capture maker fees.
     In backtest: volatility-correlated non-fill simulation, then falls through
@@ -862,6 +874,9 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
     Returns the ticket from the order placement.
     """
     try:
+        if force_market:
+            return algo.MarketOrder(symbol, quantity, tag=tag)
+
         # BACKTEST REALISM: volatility-correlated non-fill simulation
         # Real non-fills are adversely selected — higher volatility = more non-fills
         # because price moves away faster. NOT random.
@@ -889,9 +904,34 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
         bid = sec.BidPrice
         ask = sec.AskPrice
 
+        def _min_tick():
+            try:
+                tick = float(sec.SymbolProperties.MinimumPriceVariation or 0.0)
+                return tick if tick > 0 else 0.0
+            except Exception:
+                return 0.0
+
+        def _estimate_spread():
+            sp = None
+            if bid > 0 and ask > 0 and ask >= bid:
+                mid_local = 0.5 * (bid + ask)
+                if mid_local > 0:
+                    sp = (ask - bid) / mid_local
+            if sp is None and not algo.LiveMode:
+                sp = _estimate_backtest_spread(algo, symbol)
+            return max(float(sp or 0.0), 0.0)
+
         if bid > 0 and ask > 0:
-            # Place limit order just above best bid – still maker, improves fill odds
-            limit_price = bid * 1.0005  # 0.05% above bid – still below mid, still maker
+            mid = 0.5 * (bid + ask)
+            spread_est = _estimate_spread()
+            offset = 0.5 * spread_est * mid
+            tick = _min_tick()
+            offset = max(offset, tick)
+            limit_price = (mid - offset) if quantity > 0 else (mid + offset)
+            if quantity > 0:
+                limit_price = min(limit_price, bid)
+            else:
+                limit_price = max(limit_price, ask)
 
             # BACKTEST: simulate queue-priority cost when bid/ask data IS available.
             # Offset (0.12%) reflects real queue priority cost on Kraken altcoins (0.10-0.20%).
@@ -930,7 +970,13 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             # No bid/ask data: use last price as limit price.
             # In backtest this would fill immediately at the limit price,
             # giving unrealistic instant maker fills without queue priority.
-            limit_price = sec.Price
+            ref_price = sec.Price
+            spread_est = _estimate_spread()
+            if ref_price > 0 and spread_est > 0:
+                offset = max(0.5 * spread_est * ref_price, _min_tick())
+                limit_price = (ref_price - offset) if quantity > 0 else (ref_price + offset)
+            else:
+                limit_price = ref_price
             if limit_price <= 0:
                 algo.Debug(f"Price unavailable for {symbol.Value}, using market order")
                 return algo.MarketOrder(symbol, quantity, tag=tag)
@@ -974,7 +1020,11 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 'quantity': quantity,  # Store signed quantity
                 'is_limit_entry': True,
                 'timeout_seconds': timeout_seconds,
-                'intent': 'entry'
+                'intent': 'entry',
+                'signal_score': signal_score,
+                'signal_threshold': signal_threshold,
+                'signal_engine': signal_engine,
+                'signal_regime': signal_regime,
             }
 
             algo.Debug(f"MAKER LIMIT: {symbol.Value} | qty={quantity} | bid=${bid:.4f} | limit=${limit_price:.4f} | timeout={timeout_seconds}s")

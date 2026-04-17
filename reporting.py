@@ -46,6 +46,10 @@ def daily_report(algo):
     router_regime = getattr(getattr(algo, '_regime_router', None), 'current_regime', 'n/a')
     algo.Debug(f"Pos: {get_actual_position_count(algo)}/{algo.base_max_positions} | {algo.market_regime} {algo.volatility_regime} {algo.market_breadth:.0%} | router:{router_regime}")
     algo.Debug(f"Trades: {total} | WR: {wr:.1%} | Avg: {avg:+.2%}")
+    stale_c = int(getattr(algo, 'stale_limit_cancels', 0))
+    stale_e = int(getattr(algo, 'stale_limit_escalations', 0))
+    stale_f = int(getattr(algo, 'stale_limit_escalation_fills', 0))
+    algo.Debug(f"Stale limits: cancels={stale_c} escalations={stale_e} escalation_fills={stale_f}")
     if algo._session_blacklist:
         algo.Debug(f"Blacklist: {len(algo._session_blacklist)}")
     for kvp in algo.Portfolio:
@@ -184,6 +188,10 @@ def final_report(algo):
     algo.Debug(f"Trades: {algo.trade_count} | WR: {wr:.1%}")
     algo.Debug(f"Final: ${algo.Portfolio.TotalPortfolioValue:.2f}")
     algo.Debug(f"PnL: {algo.total_pnl:+.2%}")
+    stale_c = int(getattr(algo, 'stale_limit_cancels', 0))
+    stale_e = int(getattr(algo, 'stale_limit_escalations', 0))
+    stale_f = int(getattr(algo, 'stale_limit_escalation_fills', 0))
+    algo.Debug(f"Stale limits: cancels={stale_c} escalations={stale_e} escalation_fills={stale_f}")
     persist_state(algo)
 
     # ── Dual-engine comparison (trend vs chop) ────────────────────────────

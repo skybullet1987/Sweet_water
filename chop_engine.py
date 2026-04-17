@@ -106,7 +106,7 @@ class ChopEngine:
 
     # Minimum ratio of take-profit to stop-loss.  Ensures TP > SL so the
     # position is not immediately stopped out on the first adverse tick.
-    TP_SL_MIN_RATIO              = 1.1   # TP must be at least 10 % larger than SL
+    TP_SL_MIN_RATIO              = 1.5   # TP must be at least 50 % larger than SL
 
     # ── Entry gate ────────────────────────────────────────────────────────
     MIN_SIGNAL_COUNT        = 2     # require at least 2 active signals (>= 0.10)
@@ -337,9 +337,9 @@ class ChopEngine:
             sl = self.CHOP_FIXED_SL
             tp = self.CHOP_FIXED_TP
 
-        # Ensure TP > SL to avoid immediately exiting on the first tick.
+        # Invariant: keep payoff asymmetry favorable (TP distance >= 1.5x stop distance).
         if tp < sl * self.TP_SL_MIN_RATIO:
-            tp = sl * 1.1
+            tp = sl * self.TP_SL_MIN_RATIO
 
         return {
             'sl':               sl,

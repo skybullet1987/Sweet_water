@@ -120,6 +120,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.stale_order_timeout_seconds      = 30
         self.live_stale_order_timeout_seconds = 60
+        self.escalate_stale_limits_to_market  = True
         self.max_concurrent_open_orders       = 8
         self.open_orders_cash_threshold       = 0.90
         self.order_fill_check_threshold_seconds = 60
@@ -183,6 +184,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.pyramid_size_pct = self._get_param("pyramid_size_pct", 1.0)
         self.trade_count      = 0
         self._pending_orders  = {}
+        self._pending_chop_signals = {}
         self._cancel_cooldowns = {}
         self._exit_cooldowns  = {}
         self._symbol_loss_cooldowns = {}
@@ -197,6 +199,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.slip_alert_duration_hours = 2
         self._bad_symbol_counts = {}
         self._recent_tickets  = deque(maxlen=25)
+        self.stale_limit_cancels = 0
+        self.stale_limit_escalations = 0
+        self.stale_limit_escalation_fills = 0
 
         self._rolling_wins      = deque(maxlen=50)
         self._rolling_win_sizes = deque(maxlen=50)
@@ -435,6 +440,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self._session_blacklist.clear()
         self._symbol_entry_cooldowns.clear()
         self._recent_entry_times.clear()
+        self._pending_chop_signals.clear()
         # Reset chop engine daily trade counts.
         self._chop_engine.reset_daily_counts()
         persist_state(self)
@@ -1073,8 +1079,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             sl = self.tight_stop_loss
             tp = self.quick_take_profit
 
-        if tp < sl * 1.2:
-            tp = sl * 1.2
+        # Invariant: keep payoff asymmetry favorable (TP distance >= 1.5x stop distance).
+        if tp < sl * 1.5:
+            tp = sl * 1.5
 
         tp_mult = 1.0
         if self._choppy_regime_entries.get(symbol, False):
@@ -1083,6 +1090,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             tp_mult *= 0.85
         tp_mult = max(tp_mult, 0.55)
         tp = tp * tp_mult
+        # Preserve the payoff invariant even after any TP multipliers are applied.
+        if tp < sl * 1.5:
+            tp = sl * 1.5
 
         trailing_activation = self.trail_activation
         trailing_stop_pct = self.trail_stop_pct

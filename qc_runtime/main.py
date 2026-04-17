@@ -23,7 +23,7 @@ import itertools
 
 class SimplifiedCryptoStrategy(QCAlgorithm):
 
-    ALGO_VERSION = "v8.5.0"  # dual-engine regime architecture
+    ALGO_VERSION = "v9.0.0"  # high-conviction trend-only architecture
 
     def Initialize(self):
         self.SetStartDate(2025, 1, 1)
@@ -48,27 +48,27 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.SetCash(500)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
-        self.entry_threshold = 0.45
-        self.high_conviction_threshold = 0.58
-        self.min_signal_count = int(self._get_param("min_signal_count", 2))
-        self.quick_take_profit = self._get_param("quick_take_profit", 0.015)  # 1.5% for 5-min scalping (was 15%)
-        self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.080)  # 8%: 5% was too tight for 5-min bars
-        self.atr_tp_mult  = self._get_param("atr_tp_mult",  4.0)
-        self.atr_sl_mult  = self._get_param("atr_sl_mult",  2.0)
-        self.trail_activation  = self._get_param("trail_activation",  0.018)
-        self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.012)
-        self.time_stop_hours   = self._get_param("time_stop_hours",   8.0)
-        self.time_stop_pnl_min = self._get_param("time_stop_pnl_min", 0.005)
-        self.atr_trail_mult             = self._get_param("atr_trail_mult",             4.0)   # was 6.0 — was too loose, gave back too much
-        self.post_partial_tp_trail_mult = self._get_param("post_partial_tp_trail_mult", 2.5)   # was 3.5 — tighter after locking profits
+        self.entry_threshold = 0.62
+        self.high_conviction_threshold = 0.74
+        self.min_signal_count = int(self._get_param("min_signal_count", 3))
+        self.quick_take_profit = self._get_param("quick_take_profit", 0.065)
+        self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.030)
+        self.atr_tp_mult  = self._get_param("atr_tp_mult",  7.0)
+        self.atr_sl_mult  = self._get_param("atr_sl_mult",  1.4)
+        self.trail_activation  = self._get_param("trail_activation",  0.030)
+        self.trail_stop_pct    = self._get_param("trail_stop_pct",    0.018)
+        self.time_stop_hours   = self._get_param("time_stop_hours",   6.0)
+        self.time_stop_pnl_min = self._get_param("time_stop_pnl_min", 0.010)
+        self.atr_trail_mult             = self._get_param("atr_trail_mult",             5.5)
+        self.post_partial_tp_trail_mult = self._get_param("post_partial_tp_trail_mult", 4.0)
         self.min_trail_hold_minutes     = int(self._get_param("min_trail_hold_minutes", 60))
 
         self.position_size_pct  = 1.0
-        self.max_positions      = 4
+        self.max_positions      = 1
         self.min_notional       = 15.0
         # NOTE: $5.50 minimum allows many tiny pyramid positions. Each pays full fee overhead.
         # Monitor position count carefully when pyramiding is enabled.
-        self.max_position_pct   = self._get_param("max_position_pct", 0.25)  # Lowered: prevents 50% single-position concentration
+        self.max_position_pct   = self._get_param("max_position_pct", 0.35)
         # NOTE: At >$5,000 capital, max_position_pct=0.50 creates $2,500+ positions.
         # Market impact becomes significant above ~$2,000 notional on low-cap alts.
         # Consider reducing max_position_pct to 0.25 at higher capital levels.
@@ -89,33 +89,33 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.max_spread_pct         = 0.005
         self.spread_median_window   = 12
         self.spread_widen_mult      = 2.0
-        self.min_dollar_volume_usd  = 50000   # $50K/5-min bar ≈ $14.4M/day
+        self.min_dollar_volume_usd  = 200000
         self.min_volume_usd         = 0  # disabled — min_capacity_usd (500K) is the binding gate; this was redundant
-        self.min_capacity_usd       = 3000000  # Min 24h USD volume for universe inclusion — capacity filter
+        self.min_capacity_usd       = 25000000
 
-        self.skip_hours_utc         = [0, 1]  # 00-01 UTC only: absolute dead zone — reduced from 5h to 2h
-        self.max_daily_trades       = 80
+        self.skip_hours_utc         = [0, 1, 2, 3]
+        self.max_daily_trades       = 8
         self.daily_trade_count      = 0
         self.last_trade_date        = None
         self.exit_cooldown_hours    = 0.5
         self.cancel_cooldown_minutes = 1
-        self.max_symbol_trades_per_day = 2
-        self.entry_cooldown_minutes = 30
-        self.entry_cluster_window_minutes = 120
-        self.max_entries_per_symbol_window = 2
-        self.entry_score_buffer = 0.05
+        self.max_symbol_trades_per_day = 1
+        self.entry_cooldown_minutes = 240
+        self.entry_cluster_window_minutes = 720
+        self.max_entries_per_symbol_window = 1
+        self.entry_score_buffer = 0.12
         self.chop_score_buffer = 0.05
 
         # ── Cost-aware minimum edge threshold ─────────────────────────────────
-        # Break-even round-trip: 0.65% fees + 0.80% slippage (2× each-way) = 2.90%.
-        # Cost-aware gate: only enter when ATR-projected edge > 2× break-even.
+        # Break-even round-trip assumption is intentionally conservative.
+        # Cost-aware gate only allows entries with a wide projected edge buffer.
         # min_required already encodes 2× break-even via:
         #   expected_round_trip_fees + fee_slippage_buffer + min_expected_profit_pct
-        # = 0.0065 + 0.0020 + 0.0120 = 0.0205 (≈ 2× 0.0090 single-way cost floor).
+        # = 0.0075 + 0.0060 + 0.0400 = 0.0535 before spread cost.
         # See entry_exec.py execute_trend_trades() for the gate implementation.
-        self.expected_round_trip_fees = 0.0065  # 0.65%: Kraken blended maker+taker round-trip
-        self.fee_slippage_buffer      = 0.004
-        self.min_expected_profit_pct  = 0.018
+        self.expected_round_trip_fees = 0.0075
+        self.fee_slippage_buffer      = 0.006
+        self.min_expected_profit_pct  = 0.040
         self.adx_min_period           = 10
 
         self.stale_order_timeout_seconds      = 30
@@ -134,7 +134,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.max_drawdown_limit    = 0.25
         self.cooldown_hours        = 6
         self.consecutive_losses    = 0
-        self.max_consecutive_losses = 8
+        self.max_consecutive_losses = 3
         self._consecutive_loss_halve_remaining = 0
         self.circuit_breaker_expiry = None
         self._circuit_breaker_trigger_count = 0
@@ -173,10 +173,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._partial_sell_symbols  = set()
         self._pyramided_symbols     = set()
         self._choppy_regime_entries = {}
-        self.partial_tp_tier1_threshold = self._get_param("partial_tp_tier1_threshold", 0.040)
-        self.partial_tp_tier1_pct       = 0.25
-        self.partial_tp_tier2_threshold = self._get_param("partial_tp_tier2_threshold", 0.080)  # +8% → sell another 25%
-        self.partial_tp_tier2_pct       = 0.25
+        self.partial_tp_tier1_threshold = self._get_param("partial_tp_tier1_threshold", 0.120)
+        self.partial_tp_tier1_pct       = 0.15
+        self.partial_tp_tier2_threshold = self._get_param("partial_tp_tier2_threshold", 0.240)
+        self.partial_tp_tier2_pct       = 0.15
         self.pyramid_enabled = bool(self._get_param("pyramid_enabled", 0.0))
         self.pyramid_threshold = self._get_param("pyramid_threshold", 0.015)
         self.pyramid_size_pct = self._get_param("pyramid_size_pct", 1.0)
@@ -260,7 +260,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.expected_round_trip_fees = 2.0 * blended_side_fee
 
         self.max_participation_rate = 0.02
-        self.reentry_cooldown_minutes = 30
+        self.reentry_cooldown_minutes = 360
         self._btc_dump_size_mult = 1.0
 
         self._symbol_performance      = {}  # values will be deque(maxlen=50) — see compute_ranking_overlay
@@ -320,7 +320,13 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # Breakout non-fill penalty (signal-aware execution realism; set to 0 to disable)
         self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.08)
 
-        self.max_universe_size = 30
+        self.max_universe_size = 8
+        self.min_top_score_gap = self._get_param("min_top_score_gap", 0.08)
+        self.core_trend_allowlist = {
+            "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD",
+            "ADAUSD", "DOGEUSD", "LINKUSD", "AVAXUSD",
+            "LTCUSD", "DOTUSD",
+        }
 
         self.kraken_status = "unknown"
         self._last_skip_reason = None
@@ -459,6 +465,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         for crypto in universe:
             ticker = crypto.Symbol.Value
             if ticker in SYMBOL_BLACKLIST or ticker in self._session_blacklist:
+                continue
+            if self.core_trend_allowlist and ticker not in self.core_trend_allowlist:
                 continue
             if not ticker.endswith("USD"):
                 continue
@@ -658,7 +666,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 continue
             try:
                 corr = np.corrcoef(new_rets, exist_rets)[0, 1]
-                if corr > 0.85:
+                if corr > 0.70:
                     return False
             except Exception:
                 continue
@@ -785,25 +793,20 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         #   'chop'       → delegate to the dedicated ChopEngine and return
         #   'transition' → suppress all new entries; only manage existing exits
         active_regime = self._regime_router.route()
-        if active_regime == "transition":
-            self._log_skip(f"regime router: transition (btc={self.market_regime})")
+        if active_regime != "trend":
+            self._log_skip(f"regime router: {active_regime} suppressed")
             return
-        if active_regime == "chop":
-            self._run_chop_rebalance()
+        if self.market_regime != "bull":
+            self._log_skip(f"market regime {self.market_regime} blocked")
             return
-        # active_regime == "trend" → fall through to existing trend engine logic.
+        if getattr(self, 'volatility_regime', "normal") == "high":
+            self._log_skip("high volatility regime blocked")
+            return
 
         count_scored = 0
         count_above_thresh = 0
         scores = []
-        threshold_now = self.entry_threshold
-        # Regime-adaptive threshold: slightly higher conviction needed in unfavorable conditions.
-        if self.market_regime == "bear":
-            threshold_now = max(threshold_now, 0.42)
-        elif self.market_regime == "sideways":
-            threshold_now = max(threshold_now, 0.38)
-        elif self.market_regime == "bull":
-            threshold_now = min(threshold_now, 0.35)  # lower bar in bull — more trades when edge is strongest
+        threshold_now = self.high_conviction_threshold
         # Regime-adaptive position size cap
         effective_max_position_pct = self.max_position_pct
         if self.market_regime == "bull":
@@ -849,15 +852,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
             crypto['recent_net_scores'].append(net_score)
 
-            # RS override: altcoins with positive RS vs BTC enter at base threshold in bear/sideways.
-            effective_threshold = threshold_now
-            if self.market_regime in ("bear", "sideways") and len(crypto.get('rs_vs_btc', [])) >= 3:
-                # Sum last 3 RS values without creating a list copy
-                recent_rs = sum(itertools.islice(reversed(crypto['rs_vs_btc']), 3))
-                if recent_rs > 0.005:
-                    effective_threshold = self.entry_threshold
-
-            if net_score >= effective_threshold:
+            if net_score >= threshold_now:
                 count_above_thresh += 1
                 scores.append({
                     'symbol': symbol,
@@ -888,6 +883,16 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 debug_limited(self, f"RANK: {adj_str}")
         else:
             scores.sort(key=lambda x: (-x['net_score'], x['symbol'].Value))
+        score_key = 'rank_score' if self.ranking_overlay_enabled else 'net_score'
+        if len(scores) == 1:
+            debug_limited(self, "single candidate accepted under high-conviction mode")
+        elif len(scores) > 1:
+            top_gap = scores[0].get(score_key, scores[0]['net_score']) - scores[1].get(score_key, scores[1]['net_score'])
+            if top_gap < self.min_top_score_gap:
+                self._log_skip(f"top candidate gap too small ({top_gap:.3f})")
+                return
+        # Intentional: trend engine now executes only the single best setup.
+        scores = scores[:1]
         self._last_skip_reason = None
         execute_trend_trades(self, scores, threshold_now, effective_max_position_pct)
 

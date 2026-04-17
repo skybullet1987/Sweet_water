@@ -793,6 +793,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         #   'chop'       → delegate to the dedicated ChopEngine and return
         #   'transition' → suppress all new entries; only manage existing exits
         active_regime = self._regime_router.route()
+        if active_regime == "chop":
+            debug_limited(self, "regime router: chop delegated")
+            self._run_chop_rebalance()
+            return
         if active_regime != "trend":
             self._log_skip(f"regime router: {active_regime} suppressed")
             return
@@ -803,8 +807,17 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self._log_skip("high volatility regime blocked")
             return
 
+        count_symbols = 0
         count_scored = 0
         count_above_thresh = 0
+        reject_blacklist = 0
+        reject_entry_cooldown = 0
+        reject_open_orders = 0
+        reject_spread = 0
+        reject_not_ready = 0
+        reject_no_factors = 0
+        reject_weak_signal = 0
+        reject_below_threshold = 0
         scores = []
         threshold_now = self.high_conviction_threshold
         # Regime-adaptive position size cap
@@ -816,22 +829,29 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self, self.Time.hour)
         threshold_now = max(0.0, threshold_now + _sess_thresh_adj)
         for symbol in list(self.crypto_data.keys()):
+            count_symbols += 1
             if symbol.Value in SYMBOL_BLACKLIST or symbol.Value in self._session_blacklist:
+                reject_blacklist += 1
                 continue
             if symbol.Value in self._symbol_entry_cooldowns and self.Time < self._symbol_entry_cooldowns[symbol.Value]:
+                reject_entry_cooldown += 1
                 continue
             if has_open_orders(self, symbol):
+                reject_open_orders += 1
                 continue
 
             if not spread_ok(self, symbol):
+                reject_spread += 1
                 continue
 
             crypto = self.crypto_data[symbol]
             if not self._is_ready(crypto):
+                reject_not_ready += 1
                 continue
 
             factor_scores = self._calculate_factor_scores(symbol, crypto)
             if not factor_scores:
+                reject_no_factors += 1
                 continue
             count_scored += 1
 
@@ -848,6 +868,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     and sum(1 for k in _sig_keys if factor_scores.get(k, 0) >= 0.10) < self.min_signal_count):
                 sig_vals = ' '.join(f"{k[:4]}={factor_scores.get(k, 0):.2f}" for k in _sig_keys)
                 debug_limited(self, f"WEAK SIGNAL {symbol.Value}: {sig_vals} — skipped (need {self.min_signal_count} active signals)")
+                reject_weak_signal += 1
                 continue
 
             crypto['recent_net_scores'].append(net_score)
@@ -862,13 +883,23 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                     'volatility': crypto['volatility'][-1] if len(crypto['volatility']) > 0 else 0.05,
                     'crypto': crypto,   # passed to compute_ranking_overlay for BB/RS context
                 })
+            else:
+                reject_below_threshold += 1
 
         try:
             cash = self.Portfolio.CashBook["USD"].Amount
         except (KeyError, AttributeError):
             cash = self.Portfolio.Cash
 
-        debug_limited(self, f"REBALANCE: {count_above_thresh}/{count_scored} above thresh={threshold_now:.2f} | cash=${cash:.2f}")
+        debug_limited(
+            self,
+            "PIPELINE trend: "
+            f"universe={count_symbols} scored={count_scored} above={count_above_thresh} "
+            f"rej[blk={reject_blacklist} cd={reject_entry_cooldown} oo={reject_open_orders} "
+            f"spr={reject_spread} nr={reject_not_ready} fac={reject_no_factors} "
+            f"weak={reject_weak_signal} thr={reject_below_threshold}] "
+            f"thresh={threshold_now:.2f} cash=${cash:.2f}"
+        )
 
         if len(scores) == 0:
             self._log_skip("no candidates passed filters")

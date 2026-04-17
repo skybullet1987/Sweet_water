@@ -61,10 +61,10 @@ class RegimeRouter:
 
     # Minimum number of consecutive bars a candidate regime must be stable before
     # committing to a flip (hysteresis guard).
-    REGIME_MIN_BARS  = 5
+    REGIME_MIN_BARS  = 3
 
     # Forced transition bars after any regime flip — allows trades to settle.
-    TRANSITION_HOLD  = 3
+    TRANSITION_HOLD  = 1
 
     # Minimum number of universe symbols with a ready ADX before we trust the
     # median (otherwise we stay in transition due to insufficient data).

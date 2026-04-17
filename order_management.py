@@ -9,6 +9,29 @@ from datetime import timedelta
 # endregion
 
 
+def _signal_still_valid_for_stale_limit(algo, symbol, order_info):
+    signal_regime = order_info.get('signal_regime')
+    current_regime = getattr(getattr(algo, '_regime_router', None), 'route', lambda: None)()
+    if signal_regime is not None and current_regime is not None and signal_regime != current_regime:
+        return False
+
+    signal_engine = order_info.get('signal_engine')
+    threshold = order_info.get('signal_threshold')
+    if threshold is None:
+        return True
+    crypto = getattr(algo, 'crypto_data', {}).get(symbol)
+    if not crypto:
+        return False
+    try:
+        if signal_engine == 'chop':
+            score, _ = algo._chop_engine.calculate_score(crypto)
+        else:
+            score, _ = algo._scoring_engine.calculate_scalp_score(crypto)
+        return float(score) >= float(threshold)
+    except Exception:
+        return False
+
+
 def cancel_stale_new_orders(algo):
     # Allow cancel gate when venue is online or unknown (fallback handled elsewhere)
     try:
@@ -37,8 +60,27 @@ def cancel_stale_new_orders(algo):
                     algo.Transactions.CancelOrder(order.Id)  # Cancel the stale order
                     continue  # Don't blacklist
                 
+                order_info = getattr(algo, '_submitted_orders', {}).get(order.Symbol, {})
+                is_limit_entry = bool(order_info.get('is_limit_entry', False))
+                escalated = False
+                if (
+                    is_limit_entry
+                    and bool(getattr(algo, 'escalate_stale_limits_to_market', True))
+                    and _signal_still_valid_for_stale_limit(algo, order.Symbol, order_info)
+                ):
+                    remaining_qty = float(getattr(order, 'Quantity', 0) - getattr(order, 'QuantityFilled', 0))
+                    if abs(remaining_qty) > 0:
+                        algo.Transactions.CancelOrder(order.Id)
+                        algo.MarketOrder(order.Symbol, remaining_qty, tag=f"{getattr(order, 'Tag', 'Entry')} [StaleEsc]")
+                        algo.stale_limit_escalations = int(getattr(algo, 'stale_limit_escalations', 0)) + 1
+                        escalated = True
+
+                if escalated:
+                    continue
+
                 algo.Transactions.CancelOrder(order.Id)
                 algo._cancel_cooldowns[order.Symbol] = algo.Time + timedelta(minutes=algo.cancel_cooldown_minutes)
+                algo.stale_limit_cancels = int(getattr(algo, 'stale_limit_cancels', 0)) + 1
                 
                 # Only blacklist stale ENTRY orders, not EXIT orders
                 # Exit orders that are stale just get cooldown to allow retry

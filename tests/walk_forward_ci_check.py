@@ -64,7 +64,11 @@ def main() -> int:
     )
     oos_wf = harness.walk_forward_run(oos_cfg, bars_by_symbol, n_folds=2)
     oos_run = harness.run(oos_cfg, bars_by_symbol)
-    oos_trade_count = harness.last_paper_session.buy_count()
+    session = harness.last_paper_session
+    oos_trade_count = session.buy_count()
+    total_orders = len(session.events)
+    cancel_count = int(getattr(session, "cancel_count", 0))
+    cancel_rate = (cancel_count / total_orders) if total_orders > 0 else 0.0
 
     baseline = json.loads(baseline_json.read_text(encoding="utf-8"))
     baseline_trades = float(baseline["oos_trade_count"])
@@ -73,6 +77,7 @@ def main() -> int:
     print(f"OOS Sharpe: {oos_wf.overall_sharpe:.4f}")
     print(f"OOS trade count: {oos_trade_count}")
     print(f"OOS total return: {oos_run.metrics['total_return']:.4f}")
+    print(f"OOS cancel rate: {cancel_rate:.4f}")
 
     if oos_wf.overall_sharpe < 0.3:
         raise SystemExit(f"OOS Sharpe {oos_wf.overall_sharpe:.4f} is below 0.3 threshold")
@@ -80,6 +85,8 @@ def main() -> int:
         raise SystemExit(
             f"OOS trade count {oos_trade_count} dropped by >50% vs baseline {baseline_trades}"
         )
+    if cancel_rate > 0.20:
+        raise SystemExit(f"OOS cancel rate {cancel_rate:.4f} exceeds 0.20 regression guard")
     return 0
 
 

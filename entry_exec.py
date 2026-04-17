@@ -79,6 +79,52 @@ def _estimate_round_trip_cost_pct(algo, sym, notional):
     return max(0.0, (fee_cost + slip_cost) / abs(notional))
 
 
+def _log_trend_reject(algo, sym, reason, score, threshold):
+    try:
+        algo.Debug(
+            f"[TrendEntry] reject symbol={sym.Value} reason={reason} "
+            f"score={float(score):.3f} threshold={float(threshold):.3f}"
+        )
+    except Exception:
+        pass
+
+
+def _get_pending_chop_signal(algo, symbol):
+    pending = getattr(algo, '_pending_chop_signals', {})
+    if not pending:
+        return None, None
+    sym_val = symbol.Value if hasattr(symbol, 'Value') else str(symbol)
+    for key, payload in list(pending.items()):
+        if payload.get('symbol') == sym_val:
+            return key, payload
+    return None, None
+
+
+def _set_pending_chop_signal(algo, symbol, direction, price, atr):
+    if not hasattr(algo, '_pending_chop_signals'):
+        algo._pending_chop_signals = {}
+    key = (symbol.Value, direction, algo.Time)
+    algo._pending_chop_signals[key] = {
+        'symbol': symbol.Value,
+        'direction': direction,
+        'signal_time': algo.Time,
+        'signal_price': float(price),
+        'atr': float(atr) if atr is not None else None,
+    }
+
+
+def _confirm_pending_chop_signal(algo, payload, current_price):
+    direction = payload.get('direction', 'long')
+    signal_price = float(payload.get('signal_price', current_price))
+    atr = payload.get('atr')
+    atr_limit_ok = (atr is None or atr <= 0) or abs(current_price - signal_price) <= float(atr)
+    if direction == 'short':
+        same_direction = current_price < signal_price
+    else:
+        same_direction = current_price > signal_price
+    return same_direction and atr_limit_ok
+
+
 def execute_trend_trades(algo, candidates, threshold_now, effective_max_position_pct):
     """
     Screen ranked candidates and place buy orders for the trend (MicroScalpEngine) regime.
@@ -125,6 +171,9 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
     reject_notional = 0
     reject_clustered_entries = 0
     success_count = 0
+    top_score = max((c.get('net_score', 0.0) for c in candidates), default=0.0)
+    top_candidates = [c for c in candidates if c.get('net_score', 0.0) == top_score]
+    top_symbol = min((c['symbol'].Value for c in top_candidates), default=None)
 
     for cand in candidates:
         if algo.daily_trade_count >= algo.max_daily_trades:
@@ -135,6 +184,7 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
         net_score = cand.get('net_score', 0.5)
         min_required_score = threshold_now + getattr(algo, 'entry_score_buffer', 0.0)
         if net_score < min_required_score:
+            _log_trend_reject(algo, sym, "score", net_score, min_required_score)
             continue
         if sym in algo._pending_orders and algo._pending_orders[sym] > 0:
             reject_pending_orders += 1
@@ -147,21 +197,27 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
             continue
         if not spread_ok(algo, sym):
             reject_spread += 1
+            _log_trend_reject(algo, sym, "spread", net_score, min_required_score)
             continue
         if sym in algo._exit_cooldowns and algo.Time < algo._exit_cooldowns[sym]:
             reject_exit_cooldown += 1
+            _log_trend_reject(algo, sym, "cooldown", net_score, min_required_score)
             continue
         if sym.Value in algo._symbol_entry_cooldowns and algo.Time < algo._symbol_entry_cooldowns[sym.Value]:
             reject_loss_cooldown += 1
+            _log_trend_reject(algo, sym, "cooldown", net_score, min_required_score)
             continue
         if sym in algo._symbol_loss_cooldowns and algo.Time < algo._symbol_loss_cooldowns[sym]:
             reject_loss_cooldown += 1
+            _log_trend_reject(algo, sym, "cooldown", net_score, min_required_score)
             continue
         if _is_symbol_trade_clustered(algo, sym):
             reject_clustered_entries += 1
+            _log_trend_reject(algo, sym, "cooldown", net_score, min_required_score)
             continue
         if not algo._check_correlation(sym):
             reject_correlation += 1
+            _log_trend_reject(algo, sym, "correlation", net_score, min_required_score)
             continue
         sec = algo.Securities[sym]
         price = sec.Price
@@ -306,6 +362,7 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
             expected_move_pct = (atr_val * algo.atr_tp_mult) / price
             min_required = algo.min_expected_profit_pct + _estimate_round_trip_cost_pct(algo, sym, val)
             if expected_move_pct < min_required:
+                _log_trend_reject(algo, sym, "cost_gate", expected_move_pct, min_required)
                 continue
 
         # Adverse-selection filter: reject overextended / late / thin-market entries.
@@ -354,6 +411,7 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
                 _ng_decision = _ng_risk.evaluate_target(_ng_target, _ng_state)
                 if not _ng_decision.approved:
                     debug_limited(algo, f"NG RISK REJECT {sym.Value}: {_ng_decision.reason_codes}")
+                    _log_trend_reject(algo, sym, "risk", net_score, min_required_score)
                     continue
                 else:
                     _adj_w = abs(float(_ng_decision.adjusted_target_weight))
@@ -384,8 +442,20 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
                 # Store original, add stress penalty, restore after call
                 _orig_penalty = getattr(algo, 'breakout_nonfill_penalty', 0.08)
                 algo.breakout_nonfill_penalty = _orig_penalty + _stress_nonfill
+            use_market = (
+                len(candidates) > 1
+                and top_symbol is not None
+                and sym.Value != top_symbol
+                and top_score > 0
+                and net_score >= top_score * 0.95
+            )
             ticket = place_limit_or_market(algo, sym, qty, timeout_seconds=30, tag="Entry",
-                                           is_breakout=is_breakout)
+                                           is_breakout=is_breakout,
+                                           force_market=use_market,
+                                           signal_score=net_score,
+                                           signal_threshold=min_required_score,
+                                           signal_engine='trend',
+                                           signal_regime=getattr(getattr(algo, '_regime_router', None), 'route', lambda: getattr(algo, 'market_regime', 'unknown'))())
             if _stress_nonfill > 0:
                 algo.breakout_nonfill_penalty = _orig_penalty
             if ticket is not None:
@@ -494,6 +564,7 @@ def run_chop_rebalance(algo):
     reject_fail_cooldown = 0
     reject_daily_cap = 0
     reject_score = 0
+    reject_confirmation = 0
     chop_candidates = []
     for symbol in list(algo.crypto_data.keys()):
         count_symbols += 1
@@ -536,6 +607,30 @@ def run_chop_rebalance(algo):
             reject_score += 1
             continue
 
+        price_now = float(crypto['prices'][-1]) if len(crypto.get('prices', [])) >= 1 else None
+        if price_now is None or price_now <= 0:
+            continue
+        atr_now = crypto['atr'].Current.Value if crypto['atr'].IsReady else None
+        pending_key, pending_payload = _get_pending_chop_signal(algo, symbol)
+        if pending_payload is None:
+            _set_pending_chop_signal(algo, symbol, 'long', price_now, atr_now)
+            reject_confirmation += 1
+            continue
+        age = (algo.Time - pending_payload.get('signal_time', algo.Time)).total_seconds()
+        if age <= 0:
+            reject_confirmation += 1
+            continue
+        if age > 360:
+            # Pending signals only live for one bar.
+            algo._pending_chop_signals.pop(pending_key, None)
+            _set_pending_chop_signal(algo, symbol, 'long', price_now, atr_now)
+            reject_confirmation += 1
+            continue
+        algo._pending_chop_signals.pop(pending_key, None)
+        if not _confirm_pending_chop_signal(algo, pending_payload, price_now):
+            reject_confirmation += 1
+            continue
+
         chop_candidates.append({
             'symbol':    symbol,
             'score':     score,
@@ -551,12 +646,15 @@ def run_chop_rebalance(algo):
             f"rej[blk={reject_blacklist} cd={reject_entry_cooldown} cluster={reject_cluster} "
             f"oo={reject_open_orders} inv={reject_invested} spr={reject_spread} "
             f"nr={reject_not_ready} fail={reject_fail_cooldown} cap={reject_daily_cap} "
-            f"score={reject_score}] thresh={chop_threshold + getattr(algo, 'chop_score_buffer', 0.0):.2f}"
+            f"score={reject_score} conf={reject_confirmation}] "
+            f"thresh={chop_threshold + getattr(algo, 'chop_score_buffer', 0.0):.2f}"
         )
         return
 
     # Sort by score descending; take best candidate(s).
     chop_candidates.sort(key=lambda x: (-x['score'], x['symbol'].Value))
+    top_score = chop_candidates[0]['score'] if chop_candidates else 0.0
+    top_symbol = chop_candidates[0]['symbol'].Value if chop_candidates else None
 
     cancel_stale_new_orders(algo)
 
@@ -629,8 +727,20 @@ def run_chop_rebalance(algo):
                 continue
 
         try:
+            use_market = (
+                len(chop_candidates) > 1
+                and top_symbol is not None
+                and sym.Value != top_symbol
+                and top_score > 0
+                and score >= top_score * 0.95
+            )
             ticket = place_limit_or_market(algo, sym, qty, timeout_seconds=30,
-                                           tag="Chop Entry")
+                                           tag="Chop Entry",
+                                           force_market=use_market,
+                                           signal_score=score,
+                                           signal_threshold=chop_threshold + getattr(algo, 'chop_score_buffer', 0.0),
+                                           signal_engine='chop',
+                                           signal_regime=getattr(getattr(algo, '_regime_router', None), 'route', lambda: getattr(algo, 'market_regime', 'unknown'))())
             if ticket is not None:
                 algo._recent_tickets.append(ticket)
                 sig_str = ' '.join(f"{k[:6]}={v:.2f}" for k, v in comps.items() if v > 0)

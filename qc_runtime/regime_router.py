@@ -86,6 +86,7 @@ class RegimeRouter:
 
         # Short history for debugging / reporting (last ~48 bars).
         self._regime_history  = deque(maxlen=48)
+        self._last_route_diag_time = None
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
@@ -135,11 +136,15 @@ class RegimeRouter:
         - 'chop'       — ChopEngine may open new trades
         - 'transition' — no new entries from either engine
         """
+        median_adx, n_ready, universe_size, min_adx_required = self._median_universe_adx_stats()
         if len(getattr(self.algo, '_btc_sma48_window', [])) < 48:
-            return "transition"
-        if self._transition_hold > 0:
-            return "transition"
-        return self.current_regime
+            regime = "transition"
+        elif self._transition_hold > 0:
+            regime = "transition"
+        else:
+            regime = self.current_regime
+        self._log_route_diagnostics_once(regime, median_adx, n_ready, universe_size, min_adx_required)
+        return regime
 
     def engine_allowed(self, engine_name: str) -> bool:
         """Return True if the named engine ('trend' or 'chop') may enter new trades."""
@@ -196,20 +201,42 @@ class RegimeRouter:
         Runs in O(n) without external libraries.
         """
         algo = self.algo
+        median_adx, n_ready, _universe_size, min_adx_symbols = self._median_universe_adx_stats()
+        if n_ready < min_adx_symbols:
+            return None
+        return median_adx
+
+    def _median_universe_adx_stats(self):
+        algo = self.algo
         adx_values = []
-        for crypto in algo.crypto_data.values():
+        for crypto in getattr(algo, 'crypto_data', {}).values():
             adx_ind = crypto.get('adx')
             if adx_ind is not None and adx_ind.IsReady:
                 adx_values.append(adx_ind.Current.Value)
-
         universe_size = len(getattr(algo, 'crypto_data', {}))
         min_adx_symbols = max(3, int(0.4 * universe_size))
-        if len(adx_values) < min_adx_symbols:
-            return None
-
+        n = len(adx_values)
+        if n == 0:
+            return None, 0, universe_size, min_adx_symbols
         adx_values.sort()
-        n   = len(adx_values)
         mid = n // 2
         if n % 2 == 0:
-            return (adx_values[mid - 1] + adx_values[mid]) / 2.0
-        return adx_values[mid]
+            median = (adx_values[mid - 1] + adx_values[mid]) / 2.0
+        else:
+            median = adx_values[mid]
+        return median, n, universe_size, min_adx_symbols
+
+    def _log_route_diagnostics_once(self, regime, median_adx, n_ready, universe_size, min_adx_required):
+        now = getattr(self.algo, 'Time', None)
+        if now is None or now == self._last_route_diag_time:
+            return
+        self._last_route_diag_time = now
+        btc_regime = getattr(self.algo, 'market_regime', 'unknown')
+        breadth = float(getattr(self.algo, 'market_breadth', 0.0) or 0.0)
+        median_str = "None" if median_adx is None else f"{float(median_adx):.2f}"
+        self.algo.Debug(
+            f"[RegimeRouter] regime={regime} btc_regime={btc_regime} "
+            f"median_adx={median_str} breadth={breadth:.2f} "
+            f"n_adx_ready={int(n_ready)} universe_size={int(universe_size)} "
+            f"min_adx_required={int(min_adx_required)}"
+        )

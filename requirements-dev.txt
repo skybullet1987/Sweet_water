@@ -1,0 +1,7 @@
+numpy
+pandas
+scipy
+scikit-learn
+arch
+hmmlearn
+TA-Lib

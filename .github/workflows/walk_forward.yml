@@ -13,5 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
       - name: Validate walk-forward fixture baseline
         run: python tests/walk_forward_ci_check.py

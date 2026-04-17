@@ -14,16 +14,30 @@ SYNC_WHITELIST = (
     "order_management.py",
     "realistic_slippage.py",
     "events.py",
-    "scoring.py",
     "strategy_core.py",
-    "trade_quality.py",
     "fee_model.py",
-    "regime_router.py",
-    "chop_engine.py",
     "entry_exec.py",
     "alt_data.py",
+    "config/__init__.py",
+    "config/strategy_config.py",
+    "features/__init__.py",
+    "features/indicators.py",
+    "features/microstructure.py",
+    "features/cross_sectional.py",
+    "regime/__init__.py",
+    "regime/hmm.py",
+    "scoring/__init__.py",
+    "scoring/rule_scorer.py",
+    "sizing/__init__.py",
+    "sizing/kelly.py",
+    "sizing/vol_target.py",
+    "universe/__init__.py",
+    "universe/dynamic.py",
+    "exits/__init__.py",
+    "exits/triple_barrier.py",
     "nextgen/__init__.py",
     "nextgen/core/__init__.py",
+    "nextgen/core/interfaces.py",
     "nextgen/core/models.py",
     "nextgen/risk/__init__.py",
     "nextgen/risk/engine.py",
@@ -46,6 +60,17 @@ def sync(check_only: bool) -> int:
             if not check_only:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
+
+    if not check_only:
+        for obsolete in (
+            "scoring.py",
+            "trade_quality.py",
+            "regime_router.py",
+            "chop_engine.py",
+        ):
+            stale = runtime_root / obsolete
+            if stale.exists():
+                stale.unlink()
 
     if check_only and out_of_sync:
         print("qc_runtime out of sync with root for:")

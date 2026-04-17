@@ -72,9 +72,11 @@ def on_order_event(algo, event):
                 # Initialise MFE/MAE excursion tracking for this trade
                 init_trade_excursion(algo, symbol, event.FillPrice)
             else:
-                if symbol in algo._partial_sell_symbols:
-                    algo._partial_sell_symbols.discard(symbol)
+                is_partial_exit_fill = symbol in algo._partial_sell_symbols and is_invested_not_dust(algo, symbol)
+                if is_partial_exit_fill:
+                    algo.Debug(f"PARTIAL EXIT FILLED: {symbol.Value} | remaining position active")
                 else:
+                    algo._partial_sell_symbols.discard(symbol)
                     order = algo.Transactions.GetOrderById(event.OrderId)
                     exit_tag = order.Tag if order and order.Tag else "Unknown"
                     entry = algo.entry_prices.get(symbol, None)

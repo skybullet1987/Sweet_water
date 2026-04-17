@@ -15,6 +15,8 @@ run_chop_rebalance(algo)
 """
 
 import itertools
+from collections import deque
+from datetime import timedelta
 from execution import (
     get_actual_position_count, has_open_orders, is_invested_not_dust,
     spread_ok, get_min_quantity, get_min_notional_usd, round_quantity,
@@ -25,6 +27,23 @@ from execution import (
 from order_management import cancel_stale_new_orders
 from trade_quality import (get_session_quality, adverse_selection_filter,
                             record_trade_metadata_on_entry)
+
+
+def _is_symbol_trade_clustered(algo, sym):
+    recent_entry_times = getattr(algo, '_recent_entry_times', None)
+    if recent_entry_times is None:
+        return False
+    history = recent_entry_times.get(sym)
+    if history is None:
+        return False
+    lookback_minutes = int(getattr(algo, 'entry_cluster_window_minutes', 0) or 0)
+    if lookback_minutes <= 0:
+        return False
+    cutoff = algo.Time - timedelta(minutes=lookback_minutes)
+    while history and history[0] < cutoff:
+        history.popleft()
+    max_entries = int(getattr(algo, 'max_entries_per_symbol_window', 0) or 0)
+    return max_entries > 0 and len(history) >= max_entries
 
 
 def execute_trend_trades(algo, candidates, threshold_now, effective_max_position_pct):
@@ -71,6 +90,7 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
     reject_min_qty_too_large = 0
     reject_dollar_volume = 0
     reject_notional = 0
+    reject_clustered_entries = 0
     success_count = 0
 
     in_post_warmup_grace = (
@@ -88,6 +108,8 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
         sym = cand['symbol']
         net_score = cand.get('net_score', 0.5)
         if net_score < threshold_now:
+            continue
+        if net_score < threshold_now + getattr(algo, 'entry_score_buffer', 0.0):
             continue
         if sym in algo._pending_orders and algo._pending_orders[sym] > 0:
             reject_pending_orders += 1
@@ -109,6 +131,9 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
             continue
         if sym in algo._symbol_loss_cooldowns and algo.Time < algo._symbol_loss_cooldowns[sym]:
             reject_loss_cooldown += 1
+            continue
+        if _is_symbol_trade_clustered(algo, sym):
+            reject_clustered_entries += 1
             continue
         if not algo._check_correlation(sym):
             reject_correlation += 1
@@ -150,10 +175,12 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
             continue
 
         atr_val = crypto['atr'].Current.Value if crypto['atr'].IsReady else None
+        current_spread = get_spread_pct(algo, sym)
         if atr_val and price > 0:
             expected_move_pct = (atr_val * algo.atr_tp_mult) / price
             min_profit_gate = algo.min_expected_profit_pct
-            min_required = algo.expected_round_trip_fees + algo.fee_slippage_buffer + min_profit_gate
+            spread_cost = max(0.0, current_spread or 0.0) * 2.0
+            min_required = algo.expected_round_trip_fees + algo.fee_slippage_buffer + min_profit_gate + spread_cost
             if expected_move_pct < min_required:
                 continue
 
@@ -204,7 +231,6 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
         size *= algo._btc_dump_size_mult
 
         # Spread penalty: linear reduction for spreads above 0.2%
-        current_spread = get_spread_pct(algo, sym)
         if current_spread is not None and current_spread > 0.002:  # > 0.2% spread
             # 1% penalty per 0.05% excess spread, floored at 50%
             spread_penalty = max(0.5, 1.0 - (current_spread - 0.002) * 20)
@@ -358,6 +384,13 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
                 # meaning the max_daily_trades gate was only counting chop trades.
                 algo.daily_trade_count += 1
                 crypto['trade_count_today'] = crypto.get('trade_count_today', 0) + 1
+                if hasattr(algo, '_symbol_entry_cooldowns'):
+                    cooldown_minutes = max(0, int(getattr(algo, 'entry_cooldown_minutes', 0) or 0))
+                    if cooldown_minutes > 0:
+                        algo._symbol_entry_cooldowns[sym.Value] = algo.Time + timedelta(minutes=cooldown_minutes)
+                if hasattr(algo, '_recent_entry_times'):
+                    history = algo._recent_entry_times.setdefault(sym, deque(maxlen=10))
+                    history.append(algo.Time)
                 adx_ind = crypto.get('adx')
                 is_choppy = (adx_ind is not None and adx_ind.IsReady
                              and adx_ind.Current.Value < 25)
@@ -375,7 +408,7 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
             break
 
     if success_count > 0 or (reject_exit_cooldown + reject_loss_cooldown) > 3:
-        debug_limited(algo, f"EXECUTE: {success_count}/{len(candidates)} | rejects: cd={reject_exit_cooldown} loss={reject_loss_cooldown} corr={reject_correlation} dv={reject_dollar_volume}")
+        debug_limited(algo, f"EXECUTE: {success_count}/{len(candidates)} | rejects: cd={reject_exit_cooldown} loss={reject_loss_cooldown} cluster={reject_clustered_entries} corr={reject_correlation} dv={reject_dollar_volume}")
 
 
 def run_chop_rebalance(algo):
@@ -423,6 +456,8 @@ def run_chop_rebalance(algo):
             continue
         if symbol.Value in algo._symbol_entry_cooldowns and algo.Time < algo._symbol_entry_cooldowns[symbol.Value]:
             continue
+        if _is_symbol_trade_clustered(algo, symbol):
+            continue
         if has_open_orders(algo, symbol):
             continue
         if is_invested_not_dust(algo, symbol):
@@ -443,7 +478,7 @@ def run_chop_rebalance(algo):
             continue
 
         score, components = algo._chop_engine.calculate_score(crypto)
-        if score < chop_threshold:
+        if score < chop_threshold + getattr(algo, 'chop_score_buffer', 0.0):
             continue
 
         chop_candidates.append({
@@ -484,6 +519,8 @@ def run_chop_rebalance(algo):
             continue
         if sym in algo._symbol_loss_cooldowns and algo.Time < algo._symbol_loss_cooldowns[sym]:
             continue
+        if _is_symbol_trade_clustered(algo, sym):
+            continue
         if not algo._check_correlation(sym):
             continue
 
@@ -522,6 +559,14 @@ def run_chop_rebalance(algo):
             continue
         if val < min_notional_usd * algo.min_notional_fee_buffer or val < algo.min_notional:
             continue
+        atr_val = crypto['atr'].Current.Value if crypto['atr'].IsReady else None
+        current_spread = get_spread_pct(algo, sym)
+        if atr_val and price > 0:
+            expected_move_pct = (atr_val * algo.atr_tp_mult) / price
+            spread_cost = max(0.0, current_spread or 0.0) * 2.0
+            min_required = algo.expected_round_trip_fees + algo.fee_slippage_buffer + algo.min_expected_profit_pct + spread_cost
+            if expected_move_pct < min_required:
+                continue
 
         try:
             ticket = place_limit_or_market(algo, sym, qty, timeout_seconds=30,
@@ -551,6 +596,13 @@ def run_chop_rebalance(algo):
                 success_count += 1
                 algo.trade_count += 1
                 crypto['trade_count_today'] = crypto.get('trade_count_today', 0) + 1
+                if hasattr(algo, '_symbol_entry_cooldowns'):
+                    cooldown_minutes = max(0, int(getattr(algo, 'entry_cooldown_minutes', 0) or 0))
+                    if cooldown_minutes > 0:
+                        algo._symbol_entry_cooldowns[sym.Value] = algo.Time + timedelta(minutes=cooldown_minutes)
+                if hasattr(algo, '_recent_entry_times'):
+                    history = algo._recent_entry_times.setdefault(sym, deque(maxlen=10))
+                    history.append(algo.Time)
                 if (not getattr(algo, 'disable_performance_adaptive_risk', False)
                         and algo._consecutive_loss_halve_remaining > 0):
                     algo._consecutive_loss_halve_remaining -= 1

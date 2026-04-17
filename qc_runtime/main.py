@@ -14,6 +14,7 @@ from fee_model import KrakenTieredFeeModel
 from regime_router import RegimeRouter
 from chop_engine import ChopEngine
 from entry_exec import execute_trend_trades, run_chop_rebalance
+from circuit_breaker import DrawdownCircuitBreaker
 from collections import deque
 import numpy as np
 import math
@@ -48,7 +49,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.SetCash(500)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
-        self.entry_threshold = 0.62
         self.high_conviction_threshold = 0.66
         self.min_signal_count = int(self._get_param("min_signal_count", 2))
         self.quick_take_profit = self._get_param("quick_take_profit", 0.065)
@@ -64,7 +64,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.min_trail_hold_minutes     = int(self._get_param("min_trail_hold_minutes", 60))
 
         self.position_size_pct  = 1.0
-        self.max_positions      = 1
+        self.max_positions      = 3
         self.min_notional       = 15.0
         # NOTE: $5.50 minimum allows many tiny pyramid positions. Each pays full fee overhead.
         # Monitor position count carefully when pyramiding is enabled.
@@ -99,11 +99,11 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.last_trade_date        = None
         self.exit_cooldown_hours    = 0.5
         self.cancel_cooldown_minutes = 1
-        self.max_symbol_trades_per_day = 1
-        self.entry_cooldown_minutes = 240
-        self.entry_cluster_window_minutes = 720
-        self.max_entries_per_symbol_window = 1
-        self.entry_score_buffer = 0.12
+        self.max_symbol_trades_per_day = 999
+        self.entry_cooldown_minutes = 60
+        self.entry_cluster_window_minutes = 0
+        self.max_entries_per_symbol_window = 0
+        self.entry_score_buffer = 0.05
         self.chop_score_buffer = 0.02
 
         # ── Cost-aware minimum edge threshold ─────────────────────────────────
@@ -163,6 +163,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.peak_value       = None
         self.drawdown_cooldown = 0
+        self._drawdown_entry_breaker = DrawdownCircuitBreaker(max_drawdown_pct=-0.10)
         self.crypto_data      = {}
         self.entry_prices     = {}
         self.highest_prices   = {}
@@ -319,9 +320,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         # Breakout non-fill penalty (signal-aware execution realism; set to 0 to disable)
         self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.08)
+        self.enable_queue_rejection = bool(self._get_param("enable_queue_rejection", 0.0))
 
         self.max_universe_size = 8
-        self.min_top_score_gap = self._get_param("min_top_score_gap", 0.08)
         self.core_trend_allowlist = {
             "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD",
             "ADAUSD", "DOGEUSD", "LINKUSD", "AVAXUSD",
@@ -732,6 +733,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self._log_skip("kraken not online")
             return
         cancel_stale_new_orders(self)
+        self._drawdown_entry_breaker.update(self)
+        if self._drawdown_entry_breaker.is_triggered():
+            self._log_skip("drawdown circuit breaker (10%) active - halt new entries")
+            return
         if self.daily_trade_count >= self.max_daily_trades:
             self._log_skip("max daily trades")
             return
@@ -799,9 +804,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             return
         if active_regime != "trend":
             self._log_skip(f"regime router: {active_regime} suppressed")
-            return
-        if self.market_regime not in ("bull", "sideways"):
-            self._log_skip(f"market regime {self.market_regime} blocked")
             return
 
         count_symbols = 0
@@ -914,14 +916,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 debug_limited(self, f"RANK: {adj_str}")
         else:
             scores.sort(key=lambda x: (-x['net_score'], x['symbol'].Value))
-        score_key = 'rank_score' if self.ranking_overlay_enabled else 'net_score'
         if len(scores) == 1:
             debug_limited(self, "single candidate accepted under high-conviction mode")
-        elif len(scores) > 1:
-            top_gap = scores[0].get(score_key, scores[0]['net_score']) - scores[1].get(score_key, scores[1]['net_score'])
-            if top_gap < self.min_top_score_gap:
-                self._log_skip(f"top candidate gap too small ({top_gap:.3f})")
-                return
         # Intentional: trend engine now executes only the single best setup.
         scores = scores[:1]
         self._last_skip_reason = None

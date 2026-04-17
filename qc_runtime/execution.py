@@ -904,23 +904,26 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                     limit_price *= (1 - adverse_offset)
                     limit_price = max(limit_price, bid)  # sell: never go below the bid
 
-                # Probabilistic rejection based on participation rate (>5% threshold).
-                crypto = algo.crypto_data.get(symbol)
-                if crypto and len(crypto.get('volume', [])) > 0:
-                    bar_volume = float(crypto['volume'][-1])
-                    bar_dollar_volume = bar_volume * float(limit_price) if limit_price > 0 else 0
-                    order_notional = abs(quantity) * float(limit_price)
-                    if bar_dollar_volume > 0:
-                        participation_rate = order_notional / bar_dollar_volume
-                        if participation_rate > _QUEUE_PARTICIPATION_THRESHOLD:
-                            excess = participation_rate - _QUEUE_PARTICIPATION_THRESHOLD
-                            rejection_prob = min(excess * _QUEUE_REJECTION_SLOPE, _QUEUE_MAX_REJECTION_PROB)
-                            if _deterministic_reject(algo, symbol, rejection_prob, salt="queue_bidask"):
-                                algo.Debug(
-                                    f"BACKTEST QUEUE REJECT (bid/ask): {symbol.Value} "
-                                    f"part={participation_rate:.1%} rej={rejection_prob:.1%}"
-                                )
-                                return None
+                # Queue rejection is temporarily disabled by default to avoid
+                # double-counting with the slippage model. Non-fill simulation and
+                # adverse queue offset remain enabled.
+                if getattr(algo, 'enable_queue_rejection', False):
+                    crypto = algo.crypto_data.get(symbol)
+                    if crypto and len(crypto.get('volume', [])) > 0:
+                        bar_volume = float(crypto['volume'][-1])
+                        bar_dollar_volume = bar_volume * float(limit_price) if limit_price > 0 else 0
+                        order_notional = abs(quantity) * float(limit_price)
+                        if bar_dollar_volume > 0:
+                            participation_rate = order_notional / bar_dollar_volume
+                            if participation_rate > _QUEUE_PARTICIPATION_THRESHOLD:
+                                excess = participation_rate - _QUEUE_PARTICIPATION_THRESHOLD
+                                rejection_prob = min(excess * _QUEUE_REJECTION_SLOPE, _QUEUE_MAX_REJECTION_PROB)
+                                if _deterministic_reject(algo, symbol, rejection_prob, salt="queue_bidask"):
+                                    algo.Debug(
+                                        f"BACKTEST QUEUE REJECT (bid/ask): {symbol.Value} "
+                                        f"part={participation_rate:.1%} rej={rejection_prob:.1%}"
+                                    )
+                                    return None
             else:
                 limit_price = min(limit_price, ask)  # live: never cross the spread
         else:
@@ -942,23 +945,23 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 else:
                     limit_price *= (1 - adverse_offset)
 
-                # Probabilistic rejection based on participation rate (>5% threshold).
-                crypto = algo.crypto_data.get(symbol)
-                if crypto and len(crypto.get('volume', [])) > 0:
-                    bar_volume = float(crypto['volume'][-1])
-                    bar_dollar_volume = bar_volume * float(limit_price) if limit_price > 0 else 0
-                    order_notional = abs(quantity) * float(limit_price)
-                    if bar_dollar_volume > 0:
-                        participation_rate = order_notional / bar_dollar_volume
-                        if participation_rate > _QUEUE_PARTICIPATION_THRESHOLD:
-                            excess = participation_rate - _QUEUE_PARTICIPATION_THRESHOLD
-                            rejection_prob = min(excess * _QUEUE_REJECTION_SLOPE, _QUEUE_MAX_REJECTION_PROB)
-                            if _deterministic_reject(algo, symbol, rejection_prob, salt="queue_noquote"):
-                                algo.Debug(
-                                    f"BACKTEST QUEUE REJECT: {symbol.Value} "
-                                    f"part={participation_rate:.1%} rej={rejection_prob:.1%}"
-                                )
-                                return None
+                if getattr(algo, 'enable_queue_rejection', False):
+                    crypto = algo.crypto_data.get(symbol)
+                    if crypto and len(crypto.get('volume', [])) > 0:
+                        bar_volume = float(crypto['volume'][-1])
+                        bar_dollar_volume = bar_volume * float(limit_price) if limit_price > 0 else 0
+                        order_notional = abs(quantity) * float(limit_price)
+                        if bar_dollar_volume > 0:
+                            participation_rate = order_notional / bar_dollar_volume
+                            if participation_rate > _QUEUE_PARTICIPATION_THRESHOLD:
+                                excess = participation_rate - _QUEUE_PARTICIPATION_THRESHOLD
+                                rejection_prob = min(excess * _QUEUE_REJECTION_SLOPE, _QUEUE_MAX_REJECTION_PROB)
+                                if _deterministic_reject(algo, symbol, rejection_prob, salt="queue_noquote"):
+                                    algo.Debug(
+                                        f"BACKTEST QUEUE REJECT: {symbol.Value} "
+                                        f"part={participation_rate:.1%} rej={rejection_prob:.1%}"
+                                    )
+                                    return None
 
         # Place maker limit order
         limit_ticket = algo.LimitOrder(symbol, quantity, limit_price, tag=tag)

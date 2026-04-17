@@ -319,6 +319,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         # Breakout non-fill penalty (signal-aware execution realism; set to 0 to disable)
         self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.08)
+        self.enable_queue_rejection = bool(self._get_param("enable_queue_rejection", 0.0))
 
         self.max_universe_size = 8
         self.core_trend_allowlist = {

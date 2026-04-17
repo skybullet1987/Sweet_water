@@ -93,13 +93,6 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
     reject_clustered_entries = 0
     success_count = 0
 
-    in_post_warmup_grace = (
-        not getattr(algo, 'disable_startup_grace_adjustments', False)
-        and getattr(algo, '_post_warmup_bars', 0) < getattr(algo, '_post_warmup_grace_bars', 0)
-    )
-    if in_post_warmup_grace:
-        threshold_now += 0.05
-
     for cand in candidates:
         if algo.daily_trade_count >= algo.max_daily_trades:
             break
@@ -202,9 +195,6 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
         _s_thresh_adj, _s_size_mult, _s_spread_cap_mult = get_session_quality(
             algo, algo.Time.hour)
         size *= _s_size_mult
-        if in_post_warmup_grace:
-            size *= 0.50
-
         if (not getattr(algo, 'disable_performance_adaptive_risk', False)
                 and algo._consecutive_loss_halve_remaining > 0):
             size *= 0.50
@@ -334,6 +324,19 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
                 if not _ng_decision.approved:
                     debug_limited(algo, f"NG RISK REJECT {sym.Value}: {_ng_decision.reason_codes}")
                     continue
+                _adj_w = abs(float(_ng_decision.adjusted_target_weight))
+                if _total_val <= 0 or _adj_w <= 0:
+                    continue
+                val = _adj_w * _total_val
+                qty = round_quantity(algo, sym, val / price)
+                if qty < min_qty:
+                    qty = round_quantity(algo, sym, min_qty)
+                val = qty * price
+                total_cost_with_fee = val * 1.006
+                if total_cost_with_fee > available_cash:
+                    continue
+                if val < min_notional_usd * algo.min_notional_fee_buffer or val < algo.min_notional or val > reserved_cash:
+                    continue
             except Exception:
                 pass  # non-fatal: fall through to legacy execution if nextgen bridge fails
 
@@ -379,9 +382,6 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
                 )
                 success_count += 1
                 algo.trade_count += 1
-                # Trend engine was not incrementing the daily-trade counter,
-                # meaning the max_daily_trades gate was only counting chop trades.
-                algo.daily_trade_count += 1
                 crypto['trade_count_today'] = crypto.get('trade_count_today', 0) + 1
                 if hasattr(algo, '_symbol_entry_cooldowns'):
                     cooldown_minutes = max(0, int(getattr(algo, 'entry_cooldown_minutes', 0) or 0))
@@ -451,13 +451,6 @@ def run_chop_rebalance(algo):
         algo, algo.Time.hour)
     chop_threshold = (algo._chop_engine.CHOP_ENTRY_THRESHOLD
                       + max(0.0, _sess_thresh_adj))
-    in_post_warmup_grace = (
-        not getattr(algo, 'disable_startup_grace_adjustments', False)
-        and getattr(algo, '_post_warmup_bars', 0) < getattr(algo, '_post_warmup_grace_bars', 0)
-    )
-    if in_post_warmup_grace:
-        chop_threshold += 0.05
-
     count_symbols = 0
     reject_blacklist = 0
     reject_entry_cooldown = 0
@@ -576,8 +569,6 @@ def run_chop_rebalance(algo):
         # Chop position sizing: own scale (15–25 %).
         size_frac = algo._chop_engine.calculate_position_size(score)
         size_frac *= _sess_size_mult
-        if in_post_warmup_grace:
-            size_frac *= 0.50
         if (not getattr(algo, 'disable_performance_adaptive_risk', False)
                 and algo._consecutive_loss_halve_remaining > 0):
             size_frac *= 0.50
@@ -645,7 +636,6 @@ def run_chop_rebalance(algo):
                 if (not getattr(algo, 'disable_performance_adaptive_risk', False)
                         and algo._consecutive_loss_halve_remaining > 0):
                     algo._consecutive_loss_halve_remaining -= 1
-                algo.daily_trade_count += 1
                 if algo.LiveMode:
                     algo._last_live_trade_time = algo.Time
         except Exception as e:

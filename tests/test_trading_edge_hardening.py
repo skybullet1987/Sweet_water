@@ -12,15 +12,13 @@ class TradingEdgeHardeningTests(unittest.TestCase):
     def test_main_and_runtime_use_stricter_trade_limits(self) -> None:
         for path in ("main.py", "qc_runtime/main.py"):
             content = self._read(path)
-            self.assertIn("self.max_positions      = 1", content)
+            self.assertIn("self.max_positions      = 3", content)
             self.assertIn("self.max_daily_trades       = 8", content)
-            self.assertIn("self.max_symbol_trades_per_day = 1", content)
-            self.assertIn("self.entry_cooldown_minutes = 240", content)
+            self.assertIn("self.max_symbol_trades_per_day = 999", content)
+            self.assertIn("self.entry_cooldown_minutes = 60", content)
             self.assertIn("self.reentry_cooldown_minutes = 360", content)
             self.assertIn("self.high_conviction_threshold = 0.66", content)
             self.assertIn("self.min_signal_count = int(self._get_param(\"min_signal_count\", 2))", content)
-            self.assertIn("if self.market_regime not in (\"bull\", \"sideways\"):", content)
-            self.assertIn("self._log_skip(f\"market regime {self.market_regime} blocked\")", content)
             self.assertIn("self.pyramid_enabled = bool(self._get_param(\"pyramid_enabled\", 0.0))", content)
 
     def test_entry_execution_contains_anti_cluster_logic(self) -> None:

@@ -64,7 +64,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.min_trail_hold_minutes     = int(self._get_param("min_trail_hold_minutes", 60))
 
         self.position_size_pct  = 1.0
-        self.max_positions      = 1
+        self.max_positions      = 3
         self.min_notional       = 15.0
         # NOTE: $5.50 minimum allows many tiny pyramid positions. Each pays full fee overhead.
         # Monitor position count carefully when pyramiding is enabled.
@@ -99,10 +99,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.last_trade_date        = None
         self.exit_cooldown_hours    = 0.5
         self.cancel_cooldown_minutes = 1
-        self.max_symbol_trades_per_day = 1
-        self.entry_cooldown_minutes = 240
-        self.entry_cluster_window_minutes = 720
-        self.max_entries_per_symbol_window = 1
+        self.max_symbol_trades_per_day = 999
+        self.entry_cooldown_minutes = 60
+        self.entry_cluster_window_minutes = 0
+        self.max_entries_per_symbol_window = 0
         self.entry_score_buffer = 0.05
         self.chop_score_buffer = 0.02
 
@@ -321,7 +321,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.08)
 
         self.max_universe_size = 8
-        self.min_top_score_gap = self._get_param("min_top_score_gap", 0.08)
         self.core_trend_allowlist = {
             "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD",
             "ADAUSD", "DOGEUSD", "LINKUSD", "AVAXUSD",
@@ -800,9 +799,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if active_regime != "trend":
             self._log_skip(f"regime router: {active_regime} suppressed")
             return
-        if self.market_regime not in ("bull", "sideways"):
-            self._log_skip(f"market regime {self.market_regime} blocked")
-            return
 
         count_symbols = 0
         count_scored = 0
@@ -914,14 +910,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
                 debug_limited(self, f"RANK: {adj_str}")
         else:
             scores.sort(key=lambda x: (-x['net_score'], x['symbol'].Value))
-        score_key = 'rank_score' if self.ranking_overlay_enabled else 'net_score'
         if len(scores) == 1:
             debug_limited(self, "single candidate accepted under high-conviction mode")
-        elif len(scores) > 1:
-            top_gap = scores[0].get(score_key, scores[0]['net_score']) - scores[1].get(score_key, scores[1]['net_score'])
-            if top_gap < self.min_top_score_gap:
-                self._log_skip(f"top candidate gap too small ({top_gap:.3f})")
-                return
         # Intentional: trend engine now executes only the single best setup.
         scores = scores[:1]
         self._last_skip_reason = None

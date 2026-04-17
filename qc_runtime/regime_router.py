@@ -66,9 +66,8 @@ class RegimeRouter:
     # Forced transition bars after any regime flip — allows trades to settle.
     TRANSITION_HOLD  = 1
 
-    # Minimum number of universe symbols with a ready ADX before we trust the
-    # median (otherwise we stay in transition due to insufficient data).
-    MIN_ADX_SYMBOLS  = 5
+    # Minimum ADX sample requirement scales with live universe size:
+    # required = max(3, int(0.4 * universe_size)).
 
     def __init__(self, algo):
         self.algo = algo
@@ -203,7 +202,9 @@ class RegimeRouter:
             if adx_ind is not None and adx_ind.IsReady:
                 adx_values.append(adx_ind.Current.Value)
 
-        if len(adx_values) < self.MIN_ADX_SYMBOLS:
+        universe_size = len(getattr(algo, 'crypto_data', {}))
+        min_adx_symbols = max(3, int(0.4 * universe_size))
+        if len(adx_values) < min_adx_symbols:
             return None
 
         adx_values.sort()

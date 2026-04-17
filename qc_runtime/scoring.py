@@ -11,7 +11,7 @@ class MicroScalpEngine:
     Simplified 3-signal scoring system with ADX regime filter.
     Strips kitchen-sink approach down to the 3 signals with proven edge.
 
-    Score: 0.0 – 0.60 max (3 signals × 0.20 each).
+    Score: 0.0 – 1.00 max (normalized from raw 0.60 signal sum).
       Gate 1: vol_ignition >= 0.10 required for any entry.
       Gate 2: at least MIN_SIGNAL_COUNT (default 2) active components required.
               Rejects vol-only entries; allows vol+mean_rev, vol+vwap, vol+mean_rev+vwap.
@@ -61,7 +61,7 @@ class MicroScalpEngine:
 
         Returns
         -------
-        (score, components) where score ∈ [0, 0.60] and components maps each
+        (score, components) where score ∈ [0, 1.00] and components maps each
         signal name to its individual contribution (0.20 max each).
 
         Gate 1: vol_ignition >= 0.10 required for any entry.
@@ -69,7 +69,8 @@ class MicroScalpEngine:
                 Rejects vol-only entries; allows vol+mean_rev, vol+vwap, or all three.
         ADX filter: ADX > 25 AND DI- > DI+ × 1.2 → return (0.0, components).
         EMA momentum cap: ema_ultra_short < ema_short → cap score at 0.30.
-        Max possible score: 0.20 (vol) + 0.20 (mean_rev) + 0.20 (vwap) = 0.60.
+        Max possible score is normalized to 1.00 from
+        0.20 (vol) + 0.20 (mean_rev) + 0.20 (vwap) = 0.60 raw.
         """
         components = {
             'vol_ignition':   0.0,
@@ -230,6 +231,7 @@ class MicroScalpEngine:
             if sum(1 for v in components.values() if v >= 0.10) < min_req:
                 score = 0.0
 
+        score = score / 0.60 if score > 0 else 0.0
         return min(score, 1.0), components
 
     # ------------------------------------------------------------------
@@ -240,11 +242,11 @@ class MicroScalpEngine:
         Conviction-scaled position sizing with vol-targeting.
 
         Base size scales linearly from 0.30 (at threshold) to 0.50 (at max score
-        of 0.60), rewarding high-confluence entries without overriding the vol
+        of 1.00), rewarding high-confluence entries without overriding the vol
         scalar that keeps per-trade risk constant across assets.
         """
         # Conviction scaling: higher score → larger base allocation.
-        max_score = 0.60
+        max_score = 1.00
         score_range = max_score - threshold
         if score_range > 0:
             conviction = max(0.0, min(1.0, (score - threshold) / score_range))

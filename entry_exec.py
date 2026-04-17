@@ -618,10 +618,11 @@ def run_chop_rebalance(algo):
             continue
         age = (algo.Time - pending_payload.get('signal_time', algo.Time)).total_seconds()
         if age <= 0:
+            algo.Debug(f"CHOP CONFIRM WAIT: {symbol.Value} pending signal is from current/future bar")
             reject_confirmation += 1
             continue
-        if age > 360:
-            # Pending signals only live for one bar.
+        if age > 300:
+            # Pending signals only live for one 5-minute bar.
             algo._pending_chop_signals.pop(pending_key, None)
             _set_pending_chop_signal(algo, symbol, 'long', price_now, atr_now)
             reject_confirmation += 1
@@ -727,6 +728,9 @@ def run_chop_rebalance(algo):
                 continue
 
         try:
+            # Passive/market split heuristic: keep the top-scoring candidate as
+            # maker and route near-top peers (within 5%) to market to reduce
+            # simultaneous stale-limit cancellations in one rebalance pass.
             use_market = (
                 len(chop_candidates) > 1
                 and top_symbol is not None

@@ -67,7 +67,7 @@ def main() -> int:
     session = harness.last_paper_session
     oos_trade_count = session.buy_count()
     total_orders = len(session.events)
-    cancel_count = int(getattr(session, "cancel_count", 0))
+    cancel_count = sum(1 for e in session.events if getattr(e, "action", "") == "CANCEL")
     cancel_rate = (cancel_count / total_orders) if total_orders > 0 else 0.0
 
     baseline = json.loads(baseline_json.read_text(encoding="utf-8"))

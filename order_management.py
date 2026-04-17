@@ -68,7 +68,12 @@ def cancel_stale_new_orders(algo):
                     and bool(getattr(algo, 'escalate_stale_limits_to_market', True))
                     and _signal_still_valid_for_stale_limit(algo, order.Symbol, order_info)
                 ):
-                    remaining_qty = float(getattr(order, 'Quantity', 0) - getattr(order, 'QuantityFilled', 0))
+                    qty = getattr(order, 'Quantity', None)
+                    qty_filled = getattr(order, 'QuantityFilled', None)
+                    if qty is not None and qty_filled is not None:
+                        remaining_qty = float(qty - qty_filled)
+                    else:
+                        remaining_qty = 0.0
                     if abs(remaining_qty) > 0:
                         algo.Transactions.CancelOrder(order.Id)
                         algo.MarketOrder(order.Symbol, remaining_qty, tag=f"{getattr(order, 'Tag', 'Entry')} [StaleEsc]")

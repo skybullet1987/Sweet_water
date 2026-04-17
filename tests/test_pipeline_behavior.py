@@ -17,18 +17,19 @@ import entry_exec
 import order_management
 
 
-class _Indicator:
-    class _Value:
-        def __init__(self, value):
-            self.Value = value
+class _IndicatorValue:
+    def __init__(self, value):
+        self.Value = value
 
+
+class _Indicator:
     class _Directional:
         def __init__(self, value):
-            self.Current = _Indicator._Value(value)
+            self.Current = _IndicatorValue(value)
 
     def __init__(self, value, ready=True):
         self.IsReady = ready
-        self.Current = self._Value(value)
+        self.Current = _IndicatorValue(value)
         self.PositiveDirectionalIndex = self._Directional(20)
         self.NegativeDirectionalIndex = self._Directional(10)
 

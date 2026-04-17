@@ -539,7 +539,7 @@ def spread_ok(algo, symbol):
             # Fall through to normal spread checks below with estimated spread
     effective_spread_cap = algo.max_spread_pct
     if algo.volatility_regime == "high" or algo.market_regime == "sideways":
-        effective_spread_cap = min(effective_spread_cap, 0.003)
+        effective_spread_cap = min(effective_spread_cap, 0.0045)
     if sp > effective_spread_cap:
         return False
     crypto = algo.crypto_data.get(symbol)

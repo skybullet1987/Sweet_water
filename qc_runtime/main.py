@@ -49,8 +49,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
         self.entry_threshold = 0.62
-        self.high_conviction_threshold = 0.74
-        self.min_signal_count = int(self._get_param("min_signal_count", 3))
+        self.high_conviction_threshold = 0.66
+        self.min_signal_count = int(self._get_param("min_signal_count", 2))
         self.quick_take_profit = self._get_param("quick_take_profit", 0.065)
         self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.030)
         self.atr_tp_mult  = self._get_param("atr_tp_mult",  7.0)
@@ -86,9 +86,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.lookback           = 48
         self.sqrt_annualization = np.sqrt(12 * 24 * 365)  # 12 five-min bars per hour
 
-        self.max_spread_pct         = 0.005
+        self.max_spread_pct         = 0.0065
         self.spread_median_window   = 12
-        self.spread_widen_mult      = 2.0
+        self.spread_widen_mult      = 2.4
         self.min_dollar_volume_usd  = 200000
         self.min_volume_usd         = 0  # disabled — min_capacity_usd (500K) is the binding gate; this was redundant
         self.min_capacity_usd       = 25000000
@@ -104,7 +104,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.entry_cluster_window_minutes = 720
         self.max_entries_per_symbol_window = 1
         self.entry_score_buffer = 0.12
-        self.chop_score_buffer = 0.05
+        self.chop_score_buffer = 0.02
 
         # ── Cost-aware minimum edge threshold ─────────────────────────────────
         # Break-even round-trip assumption is intentionally conservative.
@@ -800,11 +800,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         if active_regime != "trend":
             self._log_skip(f"regime router: {active_regime} suppressed")
             return
-        if self.market_regime != "bull":
+        if self.market_regime not in ("bull", "sideways"):
             self._log_skip(f"market regime {self.market_regime} blocked")
-            return
-        if getattr(self, 'volatility_regime', "normal") == "high":
-            self._log_skip("high volatility regime blocked")
             return
 
         count_symbols = 0
@@ -824,6 +821,9 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         effective_max_position_pct = self.max_position_pct
         if self.market_regime == "bull":
             effective_max_position_pct = min(self.max_position_pct * 1.5, 0.40)
+        if getattr(self, 'volatility_regime', "normal") == "high":
+            threshold_now += 0.03
+            effective_max_position_pct = min(effective_max_position_pct, self.max_position_pct * 0.75)
         # Session-layer threshold adjustment (additive, conservative by default).
         _sess_thresh_adj, _sess_size_mult, _sess_spread_cap_mult = get_session_quality(
             self, self.Time.hour)

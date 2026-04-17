@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Sequence
 
-from nextgen.core.types import FeatureOutput, RegimeState, SignalOutput
+from nextgen.core.models import FeatureOutput, RegimeState, SignalOutput
 from .utils import clamp_signal
 
 

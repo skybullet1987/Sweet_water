@@ -9,12 +9,13 @@ This `qc_runtime/` folder is the **only folder you need to use for QuantConnect 
 - The latest runnable/backtestable QC algorithm entrypoint (`main.py`)
 - All Python modules that `main.py` needs directly or indirectly for runtime behavior
 - A minimal `nextgen` bridge subset used by the current algorithm's optional risk gate:
-  - `nextgen/core/types.py`
+  - `nextgen/core/models.py`
   - `nextgen/risk/engine.py`
 
 ## What is NOT required for QC runtime
 You do **not** need to upload/use these for normal backtests from this runtime folder:
 - `tests/`
+- `docs/` and other documentation folders
 - `NEXTGEN_ARCHITECTURE.md`
 - the rest of the full root `nextgen/` scaffold (research/portfolio/signals/etc.)
 - other repo/dev files outside `qc_runtime/`
@@ -22,5 +23,9 @@ You do **not** need to upload/use these for normal backtests from this runtime f
 ## Is `nextgen/` required?
 - The full root `nextgen/` scaffold is **not required**.
 - Only the small bridge included inside `qc_runtime/nextgen/` is used by this algorithm path.
+
+## Build safety warning
+- Avoid stdlib-shadowing filenames (for example `types.py`, `enum.py`, `re.py`, `json.py`) in files you upload to QC.
+- These names can break QuantConnect cloud builds even when they live in folders you don't expect to execute.
 
 If you upload/sync this folder to QC, keep these files together and use `main.py` as the algorithm file.

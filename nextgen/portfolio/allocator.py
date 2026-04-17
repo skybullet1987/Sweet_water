@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
-from nextgen.core.types import PortfolioTarget, RegimeState, SignalOutput
+from nextgen.core.models import PortfolioTarget, RegimeState, SignalOutput
 
 
 def _clamp(value: float, low: float, high: float) -> float:

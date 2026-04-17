@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from nextgen.core.types import ExecutionRequest, ExecutionResult, PortfolioTarget
+from nextgen.core.models import ExecutionRequest, ExecutionResult, PortfolioTarget
 
 
 @dataclass(frozen=True)

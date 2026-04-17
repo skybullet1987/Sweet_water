@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Optional, Sequence
 
-from nextgen.core.types import FeatureOutput, RegimeState
+from nextgen.core.models import FeatureOutput, RegimeState
 
 
 def _clamp01(value: float) -> float:

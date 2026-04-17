@@ -1,6 +1,6 @@
 import unittest
 
-from nextgen.core.types import PortfolioTarget
+from nextgen.core.models import PortfolioTarget
 from nextgen.risk.engine import PortfolioState, PositionState, RiskConfig, UnifiedRiskEngine
 
 

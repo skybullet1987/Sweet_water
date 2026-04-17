@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta
 
-from nextgen.core.types import FeatureOutput
+from nextgen.core.models import FeatureOutput
 from nextgen.regime.engine import ProbabilisticRegimeEngine, RegimeEngineConfig
 
 

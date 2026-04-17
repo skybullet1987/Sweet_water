@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
-from nextgen.core.types import Bar
+from nextgen.core.models import Bar
 
 
 @dataclass(frozen=True)

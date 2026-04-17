@@ -5,7 +5,7 @@ import math
 import unittest
 from datetime import datetime, timedelta
 
-from nextgen.core.types import Bar
+from nextgen.core.models import Bar
 from nextgen.features.basic import BasicFeatureEngine
 
 

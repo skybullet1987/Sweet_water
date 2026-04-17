@@ -103,7 +103,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.entry_cooldown_minutes = 240
         self.entry_cluster_window_minutes = 720
         self.max_entries_per_symbol_window = 1
-        self.entry_score_buffer = 0.12
+        self.entry_score_buffer = 0.05
         self.chop_score_buffer = 0.02
 
         # ── Cost-aware minimum edge threshold ─────────────────────────────────

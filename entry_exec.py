@@ -408,6 +408,15 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
 
     if success_count > 0 or (reject_exit_cooldown + reject_loss_cooldown) > 3:
         debug_limited(algo, f"EXECUTE: {success_count}/{len(candidates)} | rejects: cd={reject_exit_cooldown} loss={reject_loss_cooldown} cluster={reject_clustered_entries} corr={reject_correlation} dv={reject_dollar_volume}")
+    elif len(candidates) > 0:
+        debug_limited(
+            algo,
+            f"EXECUTE: 0/{len(candidates)} | rejects: "
+            f"open={reject_open_orders} invested={reject_already_invested} "
+            f"spread={reject_spread} cd={reject_exit_cooldown} loss={reject_loss_cooldown} "
+            f"cluster={reject_clustered_entries} corr={reject_correlation} "
+            f"cash={reject_cash_reserve} dv={reject_dollar_volume} notional={reject_notional}"
+        )
 
 
 def run_chop_rebalance(algo):
@@ -449,35 +458,57 @@ def run_chop_rebalance(algo):
     if in_post_warmup_grace:
         chop_threshold += 0.05
 
+    count_symbols = 0
+    reject_blacklist = 0
+    reject_entry_cooldown = 0
+    reject_cluster = 0
+    reject_open_orders = 0
+    reject_invested = 0
+    reject_spread = 0
+    reject_not_ready = 0
+    reject_fail_cooldown = 0
+    reject_daily_cap = 0
+    reject_score = 0
     chop_candidates = []
     for symbol in list(algo.crypto_data.keys()):
+        count_symbols += 1
         if symbol.Value in SYMBOL_BLACKLIST or symbol.Value in algo._session_blacklist:
+            reject_blacklist += 1
             continue
         if symbol.Value in algo._symbol_entry_cooldowns and algo.Time < algo._symbol_entry_cooldowns[symbol.Value]:
+            reject_entry_cooldown += 1
             continue
         if _is_symbol_trade_clustered(algo, symbol):
+            reject_cluster += 1
             continue
         if has_open_orders(algo, symbol):
+            reject_open_orders += 1
             continue
         if is_invested_not_dust(algo, symbol):
+            reject_invested += 1
             continue
         if not spread_ok(algo, symbol):
+            reject_spread += 1
             continue
 
         crypto = algo.crypto_data[symbol]
         if not algo._is_ready(crypto):
+            reject_not_ready += 1
             continue
 
         # Engine coordination: skip symbols with an active chop cooldown.
         if algo._chop_engine.is_in_fail_cooldown(symbol):
+            reject_fail_cooldown += 1
             continue
 
         # Per-symbol daily cap for chop trades.
         if algo._chop_engine.daily_trade_count(symbol) >= algo._chop_engine.CHOP_MAX_TRADES_PER_SYMBOL_DAY:
+            reject_daily_cap += 1
             continue
 
         score, components = algo._chop_engine.calculate_score(crypto)
         if score < chop_threshold + getattr(algo, 'chop_score_buffer', 0.0):
+            reject_score += 1
             continue
 
         chop_candidates.append({
@@ -488,6 +519,15 @@ def run_chop_rebalance(algo):
         })
 
     if not chop_candidates:
+        debug_limited(
+            algo,
+            "CHOP PIPELINE: "
+            f"universe={count_symbols} cand=0 "
+            f"rej[blk={reject_blacklist} cd={reject_entry_cooldown} cluster={reject_cluster} "
+            f"oo={reject_open_orders} inv={reject_invested} spr={reject_spread} "
+            f"nr={reject_not_ready} fail={reject_fail_cooldown} cap={reject_daily_cap} "
+            f"score={reject_score}] thresh={chop_threshold + getattr(algo, 'chop_score_buffer', 0.0):.2f}"
+        )
         return
 
     # Sort by score descending; take best candidate(s).
@@ -619,3 +659,5 @@ def run_chop_rebalance(algo):
 
     if success_count > 0:
         debug_limited(algo, f"CHOP EXECUTE: {success_count} entries placed | regime=chop")
+    else:
+        debug_limited(algo, f"CHOP EXECUTE: 0/{len(chop_candidates)} entries placed | regime=chop")

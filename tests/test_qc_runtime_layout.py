@@ -1,4 +1,6 @@
 import unittest
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -57,6 +59,17 @@ class QCRuntimeLayoutTests(unittest.TestCase):
             if path.name in dangerous_names
         )
         self.assertEqual([], found)
+
+    def test_qc_runtime_is_in_sync_with_root_whitelist(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        sync_script = repo_root / "tools" / "sync_qc_runtime.py"
+        result = subprocess.run(
+            [sys.executable, str(sync_script), "--check"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, result.returncode, msg=result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

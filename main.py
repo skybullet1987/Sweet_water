@@ -14,6 +14,7 @@ from fee_model import KrakenTieredFeeModel
 from regime_router import RegimeRouter
 from chop_engine import ChopEngine
 from entry_exec import execute_trend_trades, run_chop_rebalance
+from circuit_breaker import DrawdownCircuitBreaker
 from collections import deque
 import numpy as np
 import math
@@ -48,7 +49,6 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.SetCash(500)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
-        self.entry_threshold = 0.62
         self.high_conviction_threshold = 0.66
         self.min_signal_count = int(self._get_param("min_signal_count", 2))
         self.quick_take_profit = self._get_param("quick_take_profit", 0.065)
@@ -163,6 +163,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
 
         self.peak_value       = None
         self.drawdown_cooldown = 0
+        self._drawdown_entry_breaker = DrawdownCircuitBreaker(max_drawdown_pct=-0.10)
         self.crypto_data      = {}
         self.entry_prices     = {}
         self.highest_prices   = {}
@@ -732,6 +733,10 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self._log_skip("kraken not online")
             return
         cancel_stale_new_orders(self)
+        self._drawdown_entry_breaker.update(self)
+        if self._drawdown_entry_breaker.is_triggered():
+            self._log_skip("drawdown circuit breaker (10%) active - halt new entries")
+            return
         if self.daily_trade_count >= self.max_daily_trades:
             self._log_skip("max daily trades")
             return

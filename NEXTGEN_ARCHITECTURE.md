@@ -6,7 +6,9 @@ This repository now includes a **parallel modular architecture** under `nextgen/
 
 - Legacy live/backtest path remains in root modules (`main.py`, `execution.py`, `scoring.py`, etc.) and is not removed.
 - New scaffold is additive and isolated in `nextgen/*`.
-- Future migration should route legacy strategy decisions through `nextgen` risk/accounting paths.
+- Live path is intentionally quarantined to only:
+  - `nextgen.risk.engine.UnifiedRiskEngine` (pre-trade risk approval/sizing)
+  - `nextgen.research.harness` (research/validation tooling)
 
 ## Implemented now
 

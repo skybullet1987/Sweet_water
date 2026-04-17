@@ -48,8 +48,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.SetCash(500)
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
-        self.entry_threshold = 0.40
-        self.high_conviction_threshold = 0.50
+        self.entry_threshold = 0.45
+        self.high_conviction_threshold = 0.58
         self.min_signal_count = int(self._get_param("min_signal_count", 2))
         self.quick_take_profit = self._get_param("quick_take_profit", 0.015)  # 1.5% for 5-min scalping (was 15%)
         self.tight_stop_loss   = self._get_param("tight_stop_loss",   0.080)  # 8%: 5% was too tight for 5-min bars
@@ -64,8 +64,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.min_trail_hold_minutes     = int(self._get_param("min_trail_hold_minutes", 60))
 
         self.position_size_pct  = 1.0
-        self.max_positions      = 6
-        self.min_notional       = 5.5
+        self.max_positions      = 4
+        self.min_notional       = 15.0
         # NOTE: $5.50 minimum allows many tiny pyramid positions. Each pays full fee overhead.
         # Monitor position count carefully when pyramiding is enabled.
         self.max_position_pct   = self._get_param("max_position_pct", 0.25)  # Lowered: prevents 50% single-position concentration
@@ -89,17 +89,22 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.max_spread_pct         = 0.005
         self.spread_median_window   = 12
         self.spread_widen_mult      = 2.0
-        self.min_dollar_volume_usd  = 15000   # $15K/5-min bar ≈ $4.3M/day; was $100K (=$28.8M/day — killed most universe symbols)
+        self.min_dollar_volume_usd  = 50000   # $50K/5-min bar ≈ $14.4M/day
         self.min_volume_usd         = 0  # disabled — min_capacity_usd (500K) is the binding gate; this was redundant
-        self.min_capacity_usd       = 500000  # Min 24h USD volume for universe inclusion — capacity filter
+        self.min_capacity_usd       = 3000000  # Min 24h USD volume for universe inclusion — capacity filter
 
         self.skip_hours_utc         = [0, 1]  # 00-01 UTC only: absolute dead zone — reduced from 5h to 2h
-        self.max_daily_trades       = 2000
+        self.max_daily_trades       = 80
         self.daily_trade_count      = 0
         self.last_trade_date        = None
-        self.exit_cooldown_hours    = 0.1
+        self.exit_cooldown_hours    = 0.5
         self.cancel_cooldown_minutes = 1
-        self.max_symbol_trades_per_day = 5
+        self.max_symbol_trades_per_day = 2
+        self.entry_cooldown_minutes = 30
+        self.entry_cluster_window_minutes = 120
+        self.max_entries_per_symbol_window = 2
+        self.entry_score_buffer = 0.05
+        self.chop_score_buffer = 0.05
 
         # ── Cost-aware minimum edge threshold ─────────────────────────────────
         # Break-even round-trip: 0.65% fees + 0.80% slippage (2× each-way) = 2.90%.
@@ -109,8 +114,8 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # = 0.0065 + 0.0020 + 0.0120 = 0.0205 (≈ 2× 0.0090 single-way cost floor).
         # See entry_exec.py execute_trend_trades() for the gate implementation.
         self.expected_round_trip_fees = 0.0065  # 0.65%: Kraken blended maker+taker round-trip
-        self.fee_slippage_buffer      = 0.002
-        self.min_expected_profit_pct  = 0.012
+        self.fee_slippage_buffer      = 0.004
+        self.min_expected_profit_pct  = 0.018
         self.adx_min_period           = 10
 
         self.stale_order_timeout_seconds      = 30
@@ -172,7 +177,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self.partial_tp_tier1_pct       = 0.25
         self.partial_tp_tier2_threshold = self._get_param("partial_tp_tier2_threshold", 0.080)  # +8% → sell another 25%
         self.partial_tp_tier2_pct       = 0.25
-        self.pyramid_enabled = bool(self._get_param("pyramid_enabled", 1.0))
+        self.pyramid_enabled = bool(self._get_param("pyramid_enabled", 0.0))
         self.pyramid_threshold = self._get_param("pyramid_threshold", 0.015)
         self.pyramid_size_pct = self._get_param("pyramid_size_pct", 1.0)
         self.trade_count      = 0
@@ -180,6 +185,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         self._cancel_cooldowns = {}
         self._exit_cooldowns  = {}
         self._symbol_loss_cooldowns = {}
+        self._recent_entry_times = {}
         self._cash_mode_until = None
         self._recent_trade_outcomes = deque(maxlen=20)
         self.trailing_grace_hours = 1
@@ -254,7 +260,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.expected_round_trip_fees = 2.0 * blended_side_fee
 
         self.max_participation_rate = 0.02
-        self.reentry_cooldown_minutes = 1
+        self.reentry_cooldown_minutes = 30
         self._btc_dump_size_mult = 1.0
 
         self._symbol_performance      = {}  # values will be deque(maxlen=50) — see compute_ranking_overlay
@@ -314,7 +320,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
         # Breakout non-fill penalty (signal-aware execution realism; set to 0 to disable)
         self.breakout_nonfill_penalty = self._get_param("breakout_nonfill_penalty", 0.08)
 
-        self.max_universe_size = 50
+        self.max_universe_size = 30
 
         self.kraken_status = "unknown"
         self._last_skip_reason = None
@@ -421,6 +427,7 @@ class SimplifiedCryptoStrategy(QCAlgorithm):
             self.Debug(f"Clearing session blacklist ({len(self._session_blacklist)} items)")
             self._session_blacklist.clear()
         self._symbol_entry_cooldowns.clear()
+        self._recent_entry_times.clear()
         # Reset chop engine daily trade counts.
         self._chop_engine.reset_daily_counts()
         persist_state(self)

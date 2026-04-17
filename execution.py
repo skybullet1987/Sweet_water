@@ -88,6 +88,7 @@ SYMBOL_BLACKLIST_STRUCTURAL = {
     "PARTIUSD", "RAREUSD", "BANANAS31USD",
     # Micro-caps / meme coins: insufficient capacity for live execution
     "SEIUSD", "WIFUSD", "BONKUSD", "PEPEUSD", "FLOKIUSD", "ORDIUSD", "TIAUSD",
+    "TRUMPUSD", "FARTCOINUSD", "MOODENGUSD", "TITCOINUSD", "FWOGUSD", "XCNUSD",
     # Forex pairs
     "EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "JPYUSD", "CADUSD", "CHFUSD", "CNYUSD", "HKDUSD", "SGDUSD",
     "SEKUSD", "NOKUSD", "DKKUSD", "KRWUSD", "TRYUSD", "ZARUSD", "MXNUSD", "INRUSD", "BRLUSD",

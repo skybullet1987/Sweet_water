@@ -1,6 +1,6 @@
-import unittest
 import subprocess
 import sys
+import unittest
 from pathlib import Path
 
 
@@ -19,14 +19,20 @@ class QCRuntimeLayoutTests(unittest.TestCase):
             "order_management.py",
             "realistic_slippage.py",
             "events.py",
-            "scoring.py",
             "strategy_core.py",
-            "trade_quality.py",
             "fee_model.py",
-            "regime_router.py",
-            "chop_engine.py",
             "entry_exec.py",
-            "alt_data.py",
+            "config/strategy_config.py",
+            "features/indicators.py",
+            "features/microstructure.py",
+            "features/cross_sectional.py",
+            "regime/hmm.py",
+            "scoring/rule_scorer.py",
+            "sizing/kelly.py",
+            "sizing/vol_target.py",
+            "universe/dynamic.py",
+            "exits/triple_barrier.py",
+            "nextgen/core/interfaces.py",
             "nextgen/core/models.py",
             "nextgen/risk/engine.py",
         }

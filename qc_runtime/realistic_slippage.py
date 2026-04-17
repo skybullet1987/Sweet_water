@@ -32,6 +32,11 @@ class RealisticCryptoSlippage:
         self.max_slippage_pct = 0.0500                 # 5% cap (was 2%)
 
     def _estimate_slippage_pct(self, price, notional, volume=0.0, bid=0.0, ask=0.0):
+        """Estimate one-way slippage as a fraction of notional.
+
+        Parameters are price/size plus optional quote and volume context, using
+        the same spread + impact logic as GetSlippageApproximation.
+        """
         if price <= 0:
             return 0.0
         slippage_pct = self.base_slippage_pct
@@ -72,6 +77,7 @@ class RealisticCryptoSlippage:
         return min(slippage_pct, self.max_slippage_pct)
 
     def estimate_slippage_bps(self, symbol, notional, price, volume=0.0, bid=0.0, ask=0.0):
+        """Estimate one-way slippage in basis points for a hypothetical order."""
         return self._estimate_slippage_pct(price, notional, volume=volume, bid=bid, ask=ask) * 10_000.0
 
     def GetSlippageApproximation(self, asset, order):

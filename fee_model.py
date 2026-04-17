@@ -30,6 +30,7 @@ class KrakenTieredFeeModel(FeeModel):
         self._start_time = None
 
     def _current_rates(self):
+        """Return current (maker_rate, taker_rate) from mode/tier state."""
         if self._comparison_mode:
             return self._fixed_maker_rate, self._fixed_taker_rate
         maker_rate, taker_rate = self.FEE_TIERS[-1][1], self.FEE_TIERS[-1][2]
@@ -40,6 +41,7 @@ class KrakenTieredFeeModel(FeeModel):
         return maker_rate, taker_rate
 
     def estimate_round_trip_cost(self, symbol, notional, is_limit=True):
+        """Estimate round-trip fee in USD for a hypothetical order notional."""
         notional = abs(float(notional or 0.0))
         if notional <= 0:
             return 0.0

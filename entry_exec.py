@@ -47,10 +47,17 @@ def _is_symbol_trade_clustered(algo, sym):
 
 
 def _estimate_round_trip_cost_pct(algo, sym, notional):
+    """Estimate round-trip cost fraction for a hypothetical order notional.
+
+    Uses the live security's FeeModel and SlippageModel when they expose
+    estimate helpers, so pre-trade gating is sourced from the same models
+    used during fill-time accounting. Returns a fraction (e.g., 0.01 = 1%).
+    """
     if notional <= 0:
         return 0.0
     sec = algo.Securities[sym]
-    fee_cost = abs(notional) * get_effective_round_trip_fee(algo)
+    fee_cost_fallback = abs(notional) * get_effective_round_trip_fee(algo)
+    fee_cost = fee_cost_fallback
     slip_cost = 0.0
 
     fee_model = getattr(sec, 'FeeModel', None)
@@ -348,19 +355,20 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
                 if not _ng_decision.approved:
                     debug_limited(algo, f"NG RISK REJECT {sym.Value}: {_ng_decision.reason_codes}")
                     continue
-                _adj_w = abs(float(_ng_decision.adjusted_target_weight))
-                if _total_val <= 0 or _adj_w <= 0:
-                    continue
-                val = _adj_w * _total_val
-                qty = round_quantity(algo, sym, val / price)
-                if qty < min_qty:
-                    qty = round_quantity(algo, sym, min_qty)
-                val = qty * price
-                total_cost_with_fee = val * 1.006
-                if total_cost_with_fee > available_cash:
-                    continue
-                if val < min_notional_usd * algo.min_notional_fee_buffer or val < algo.min_notional or val > reserved_cash:
-                    continue
+                else:
+                    _adj_w = abs(float(_ng_decision.adjusted_target_weight))
+                    if _total_val <= 0 or _adj_w <= 0:
+                        continue
+                    val = _adj_w * _total_val
+                    qty = round_quantity(algo, sym, val / price)
+                    if qty < min_qty:
+                        qty = round_quantity(algo, sym, min_qty)
+                    val = qty * price
+                    total_cost_with_fee = val * 1.006
+                    if total_cost_with_fee > available_cash:
+                        continue
+                    if val < min_notional_usd * algo.min_notional_fee_buffer or val < algo.min_notional or val > reserved_cash:
+                        continue
             except Exception:
                 pass  # non-fatal: fall through to legacy execution if nextgen bridge fails
 

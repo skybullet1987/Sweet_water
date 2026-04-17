@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 
+# Structural companion to behavioral pipeline tests in test_pipeline_behavior.py.
 
 class TradingEdgeHardeningTests(unittest.TestCase):
     def setUp(self) -> None:

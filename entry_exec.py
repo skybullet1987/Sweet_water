@@ -107,9 +107,8 @@ def execute_trend_trades(algo, candidates, threshold_now, effective_max_position
             break
         sym = cand['symbol']
         net_score = cand.get('net_score', 0.5)
-        if net_score < threshold_now:
-            continue
-        if net_score < threshold_now + getattr(algo, 'entry_score_buffer', 0.0):
+        min_required_score = threshold_now + getattr(algo, 'entry_score_buffer', 0.0)
+        if net_score < min_required_score:
             continue
         if sym in algo._pending_orders and algo._pending_orders[sym] > 0:
             reject_pending_orders += 1

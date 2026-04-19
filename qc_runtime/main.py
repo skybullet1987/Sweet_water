@@ -347,7 +347,7 @@ class SweetWaterPhase1(QCAlgorithm):
             invested = is_invested_not_dust(self, symbol)
             action = "hold"
             if invested and abs(composite_score) < float(self.config.micro_flatten_threshold):
-                if len(self.Transactions.GetOpenOrders(symbol)) == 0 and smart_liquidate(self, symbol, tag="SignalFlat"):
+                if len(self.Transactions.GetOpenOrders(symbol)) == 0 and smart_liquidate(self, symbol, tag="Flatten"):
                     action = "flatten"
             elif (
                 gate_ok

@@ -14,19 +14,26 @@ class StrategyConfig:
     starting_cash: float = 500.0
     bar_resolution: str = "Hour"
     warmup_bars: int = 200
-    universe_size: int = 8
-    signal_mode: str = "microstructure"
+    universe_size: int = 80
+    top_k: int = 8
+    signal_mode: str = "cross_sectional_momentum"
 
     # Sizing
     target_annual_vol: float = 0.30
     kelly_cap: float = 0.25
     min_position_floor_usd: float = 5.0
     max_position_pct: float = 0.30
-    max_positions: int = 3
+    max_positions: int = 8
 
     # Costs
     expected_round_trip_fees: float = 0.0065
     cost_gate_multiplier: float = 2.5
+    # cost_gate_multiplier is retained for legacy paths; edge_cost_multiplier is used by the new cross-sectional momentum gate.
+    edge_cost_multiplier: float = 2.5
+    edge_scale: float = 0.02
+    assumed_spread_bps: float = 12.0
+    assumed_slippage_bps: float = 8.0
+    min_rebalance_weight_delta: float = 0.03
 
     # Exits (ATR-scaled)
     tp_atr_mult: float = 2.0
@@ -49,6 +56,8 @@ class StrategyConfig:
     micro_flatten_threshold: float = 0.06
     max_orders_per_day: int = 6
     min_hold_hours: int = 6
+    rebalance_cadence_hours: int = 6
+    max_replacements_per_rebalance: int = 2
     sig_hold_log_every_bars: int = 24
     # Legacy knobs still consumed in risk/tests
     hmm_train_window_bars: int = 24 * 120
@@ -62,6 +71,11 @@ class StrategyConfig:
     feature_min_bars: int = 60
     regime_vol_window: int = 24
     stale_order_bars: int = 3
+    score_clip_value: float = 5.0
+    min_rv_floor: float = 1e-4
+    score_mom21_weight: float = 0.6
+    score_mom63_weight: float = 0.4
+    score_dd_penalty: float = 0.3
 
     min_qty_fallback: dict[str, float] = field(default_factory=lambda: {
         'AXSUSD': 5.0, 'SANDUSD': 10.0, 'MANAUSD': 10.0, 'ADAUSD': 10.0,

@@ -4,10 +4,13 @@ from datetime import timedelta
 from typing import Callable
 
 import pandas as pd
+from config import CONFIG
 
 REFERENCE_SYMBOLS = ("BTCUSD",)
+DEFAULT_UNIVERSE_SIZE = 80
 
 KRAKEN_SAFE_LIST = (
+    "BTCUSD",
     "ETHUSD",
     "SOLUSD",
     "XRPUSD",
@@ -16,6 +19,81 @@ KRAKEN_SAFE_LIST = (
     "LINKUSD",
     "DOTUSD",
     "AVAXUSD",
+    "ATOMUSD",
+    "ALGOUSD",
+    "XLMUSD",
+    "TRXUSD",
+    "BCHUSD",
+    "AAVEUSD",
+    "MKRUSD",
+    "UNIUSD",
+    "SUSHIUSD",
+    "COMPUSD",
+    "SNXUSD",
+    "CRVUSD",
+    "YFIUSD",
+    "1INCHUSD",
+    "GRTUSD",
+    "FTMUSD",
+    "IMXUSD",
+    "APEUSD",
+    "OPUSD",
+    "ARBUSD",
+    "NEARUSD",
+    "MANAUSD",
+    "SANDUSD",
+    "ENJUSD",
+    "BATUSD",
+    "LDOUSD",
+    "LRCUSD",
+    "KSMUSD",
+    "ETCUSD",
+    "FILUSD",
+    "EOSUSD",
+    "XTZUSD",
+    "CHZUSD",
+    "ANKRUSD",
+    "OMGUSD",
+    "OXTUSD",
+    "ZRXUSD",
+    "RENUSD",
+    "KNCUSD",
+    "BALUSD",
+    "RUNEUSD",
+    "FLOWUSD",
+    "AXSUSD",
+    "AUDIOUSD",
+    "CELOUSD",
+    "MASKUSD",
+    "ENSUSD",
+    "DYDXUSD",
+    "PEPEUSD",
+    "BONKUSD",
+    "INJUSD",
+    "SEIUSD",
+    "JUPUSD",
+    "PYTHUSD",
+    "WIFUSD",
+    "FETUSD",
+    "RNDRUSD",
+    "TIAUSD",
+    "SUIUSD",
+    "APTUSD",
+    "STRKUSD",
+    "WLDUSD",
+    "ARUSD",
+    "LPTUSD",
+    "PHAUSD",
+    "CTSIUSD",
+    "ICXUSD",
+    "ZECUSD",
+    "DASHUSD",
+    "STORJUSD",
+    "SKLUSD",
+    "MINAUSD",
+    "JASMYUSD",
+    "GMTUSD",
+    "BLURUSD",
 )
 
 
@@ -35,4 +113,6 @@ def select_universe(history_provider: Callable[[str, object, object], pd.DataFra
             continue
         liquidity.append((symbol, _median_dollar_volume(frame)))
     ranked = [s for s, _ in sorted(liquidity, key=lambda x: x[1], reverse=True)]
-    return ranked[:8]
+    configured = int(getattr(CONFIG, "universe_size", DEFAULT_UNIVERSE_SIZE) or DEFAULT_UNIVERSE_SIZE)
+    limit = max(1, min(configured, len(ranked)))
+    return ranked[:limit]

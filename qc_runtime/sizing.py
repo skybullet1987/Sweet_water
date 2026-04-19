@@ -4,6 +4,8 @@ from collections import deque
 
 from config import CONFIG, StrategyConfig
 
+BPS_TO_DECIMAL = 10_000.0
+
 
 class Sizer:
     def __init__(self, config: StrategyConfig = CONFIG) -> None:
@@ -48,15 +50,22 @@ class Sizer:
         return max(0.0, self._vol_weight(realized_vol) * kelly_mult * erc)
 
     def passes_cost_gate(self, symbol: str, score: float, notional: float, fee_model, is_limit: bool = True) -> bool:
-        _ = symbol, notional, fee_model, is_limit
-        s = abs(float(score))
-        if s <= 0:
+        _ = symbol
+        s = abs(float(score or 0.0))
+        n = abs(float(notional or 0.0))
+        if s <= 0 or n <= 0:
             return False
-        # Require expected edge to exceed cost multiplier on round-trip fees:
-        # |score|*N >= m*fee*N -> |score| >= m*fee. Rearranged below to stay monotonic
-        # around the threshold used by entry filtering.
-        threshold = self.config.score_threshold * (1.0 + self.config.cost_gate_multiplier * self.config.expected_round_trip_fees / s)
-        return s >= threshold
+        fee_cost = n * float(self.config.expected_round_trip_fees)
+        if fee_model is not None and hasattr(fee_model, "estimate_round_trip_cost"):
+            try:
+                fee_cost = float(fee_model.estimate_round_trip_cost(symbol, n, is_limit=is_limit))
+            except Exception:
+                fee_cost = n * float(self.config.expected_round_trip_fees)
+        spread_cost = n * (float(getattr(self.config, "assumed_spread_bps", 12.0)) / BPS_TO_DECIMAL)
+        slippage_cost = n * (float(getattr(self.config, "assumed_slippage_bps", 8.0)) / BPS_TO_DECIMAL)
+        total_cost_pct = (fee_cost + spread_cost + slippage_cost) / max(n, 1e-9)
+        expected_edge = s * float(getattr(self.config, "edge_scale", 0.02))
+        return expected_edge > total_cost_pct * float(getattr(self.config, "edge_cost_multiplier", 2.5))
 
 
 __all__ = ["Sizer"]

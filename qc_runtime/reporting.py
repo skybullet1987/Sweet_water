@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter, deque
-from datetime import timedelta
+from collections import Counter
 from typing import Any
 
 import numpy as np
@@ -22,48 +21,7 @@ except Exception:  # pragma: no cover
         Invalid = "Invalid"
 
 from config import CONFIG, StrategyConfig
-from execution import (
-    cleanup_position,
-    get_effective_round_trip_fee,
-    get_hold_bucket,
-    get_min_notional_usd,
-    is_invested_not_dust,
-    persist_state,
-    slip_log,
-)
-
-TRADE_STEP_BARS = 12
-TRADE_HOLD_BARS = 3
-COST_PER_TRADE = 0.0005
-REGIME_FLOOR = 0.05
-REGIME_FALLBACK_DISTRIBUTION = {"risk_on": 0.45, "risk_off": 0.25, "chop": 0.30}
-
-
-def _init_trade_excursion(algo, symbol, fill_price: float) -> None:
-    if not hasattr(algo, "_mfe"):
-        algo._mfe = {}
-    if not hasattr(algo, "_mae"):
-        algo._mae = {}
-    algo._mfe[symbol] = float(fill_price)
-    algo._mae[symbol] = float(fill_price)
-
-
-def _finalize_trade_metadata_on_exit(algo, symbol, pnl: float) -> None:
-    _ = pnl
-    if hasattr(algo, "_mfe"):
-        algo._mfe.pop(symbol, None)
-    if hasattr(algo, "_mae"):
-        algo._mae.pop(symbol, None)
-
-
-def _status_name(status: Any) -> str:
-    """Normalize enum-like order status objects to plain terminal name text."""
-    if status is None:
-        return ""
-    text = str(status)
-    if "." in text:
-        text = text.split(".")[-1]
-    return text
+from execution import cleanup_position, get_effective_round_trip_fee, get_min_notional_usd, is_invested_not_dust
 
 
 class Reporter:
@@ -93,245 +51,76 @@ class Reporter:
             self.escalation_count += 1
 
     def on_order_event(self, *args) -> None:
-        """Supports either (event_dict) compatibility mode or (algo, event) full restored mode."""
         if len(args) == 1 and isinstance(args[0], dict):
             self._on_order_event_compat(args[0])
             return
         if len(args) != 2:
             return
         algo, event = args
+        symbol = getattr(event, "Symbol", None)
+        if symbol is None:
+            return
+        status = str(getattr(event, "Status", ""))
+        direction = getattr(event, "Direction", None)
+        fill_price = float(getattr(event, "FillPrice", 0.0) or 0.0)
+        qty = float(getattr(event, "FillQuantity", getattr(event, "Quantity", 0.0)) or 0.0)
 
-        try:
-            symbol = getattr(event, "Symbol", None)
-            if symbol is None:
-                return
-            status = getattr(event, "Status", None)
-            direction = getattr(event, "Direction", None)
-            qty = getattr(event, "FillQuantity", None) or getattr(event, "Quantity", 0)
-            fill_price = float(getattr(event, "FillPrice", 0.0) or 0.0)
-            oid = getattr(event, "OrderId", None)
+        if "Submitted" in status:
+            if symbol not in algo._pending_orders:
+                algo._pending_orders[symbol] = 0.0
+            algo._pending_orders[symbol] += abs(qty)
+            return
+
+        if "Canceled" in status:
+            self.cancel_count += 1
+            algo._pending_orders.pop(symbol, None)
+            algo._submitted_orders.pop(symbol, None)
+            return
+
+        if "Invalid" in status:
+            algo._pending_orders.pop(symbol, None)
+            algo._submitted_orders.pop(symbol, None)
+            if direction == OrderDirection.Sell and symbol in algo.Portfolio:
+                price = float(getattr(algo.Securities.get(symbol), "Price", 0.0) or 0.0)
+                if price > 0 and abs(float(algo.Portfolio[symbol].Quantity)) * price < get_min_notional_usd(algo, symbol):
+                    cleanup_position(algo, symbol)
+            return
+
+        if "Filled" not in status:
+            return
+
+        algo._pending_orders.pop(symbol, None)
+        algo._submitted_orders.pop(symbol, None)
+        self.trade_count += 1
+        self.daily_trade_count += 1
+
+        if direction == OrderDirection.Buy:
+            algo.entry_prices[symbol] = fill_price
+            algo.highest_close[symbol] = fill_price
+            algo.entry_times[symbol] = algo.Time
+            atr = float(getattr(algo.feature_engine, "current_features", lambda *_: {})(symbol.Value).get("atr", 0.0) or 0.0)
+            if atr <= 0:
+                atr = max(fill_price * 0.01, 1e-6)
+            algo.entry_atrs[symbol] = atr
+            return
+
+        if direction == OrderDirection.Sell:
+            entry = float(algo.entry_prices.get(symbol, fill_price) or fill_price)
+            pnl = (fill_price - entry) / max(entry, 1e-9) - get_effective_round_trip_fee(algo)
+            if pnl > 0:
+                self.wins.append(pnl)
+            elif pnl < 0:
+                self.losses.append(pnl)
+            tag = "Unknown"
             try:
-                algo.Debug(
-                    f"ORDER: {symbol.Value} {_status_name(status)} {direction} "
-                    f"qty={qty} price={fill_price} id={oid}"
-                )
+                oid = getattr(event, "OrderId", None)
+                order = algo.Transactions.GetOrderById(oid) if oid is not None else None
+                tag = str(getattr(order, "Tag", "Unknown") or "Unknown")
             except Exception:
                 pass
-
-            status_name = _status_name(status)
-            if status_name == _status_name(OrderStatus.Submitted):
-                if symbol not in algo._pending_orders:
-                    algo._pending_orders[symbol] = 0
-                intended_qty = abs(getattr(event, "Quantity", 0) or 0)
-                if intended_qty == 0:
-                    intended_qty = abs(getattr(event, "FillQuantity", 0) or 0)
-                algo._pending_orders[symbol] += intended_qty
-
-                if symbol not in algo._submitted_orders:
-                    has_position = symbol in algo.Portfolio and getattr(algo.Portfolio[symbol], "Invested", False)
-                    if direction == OrderDirection.Sell and has_position:
-                        inferred_intent = "exit"
-                    elif direction == OrderDirection.Buy and not has_position:
-                        inferred_intent = "entry"
-                    else:
-                        inferred_intent = "entry" if direction == OrderDirection.Buy else "exit"
-                    algo._submitted_orders[symbol] = {
-                        "order_id": oid,
-                        "time": algo.Time,
-                        "quantity": getattr(event, "Quantity", 0),
-                        "intent": inferred_intent,
-                    }
-                else:
-                    algo._submitted_orders[symbol]["order_id"] = oid
-
-            elif status_name == _status_name(OrderStatus.PartiallyFilled):
-                if symbol in algo._pending_orders:
-                    algo._pending_orders[symbol] -= abs(float(getattr(event, "FillQuantity", 0) or 0))
-                    if algo._pending_orders[symbol] <= 0:
-                        algo._pending_orders.pop(symbol, None)
-
-                intended_qty = abs(float(getattr(event, "Quantity", 0) or 0))
-                filled_qty = abs(float(getattr(event, "FillQuantity", 0) or 0))
-                fill_pct = filled_qty / intended_qty if intended_qty > 0 else 0
-                if fill_pct < 0.20:
-                    try:
-                        algo.Transactions.CancelOrder(oid)
-                    except Exception:
-                        pass
-
-                if direction == OrderDirection.Buy:
-                    if symbol not in algo.entry_prices:
-                        algo.entry_prices[symbol] = fill_price
-                        algo.highest_prices[symbol] = fill_price
-                        algo.entry_times[symbol] = algo.Time
-                elif direction == OrderDirection.Sell and fill_pct < 1.0:
-                    algo._partial_sell_symbols.add(symbol)
-                slip_log(algo, symbol, direction, fill_price)
-
-            elif status_name == _status_name(OrderStatus.Filled):
-                algo._pending_orders.pop(symbol, None)
-                algo._submitted_orders.pop(symbol, None)
-                if oid is not None:
-                    algo._order_retries.pop(oid, None)
-
-                if direction == OrderDirection.Buy:
-                    algo.entry_prices[symbol] = fill_price
-                    algo.highest_prices[symbol] = fill_price
-                    algo.entry_times[symbol] = algo.Time
-                    algo.daily_trade_count += 1
-                    try:
-                        filled_order = algo.Transactions.GetOrderById(oid)
-                        if filled_order is not None and "[StaleEsc]" in str(getattr(filled_order, "Tag", "")):
-                            algo.stale_limit_escalation_fills = int(getattr(algo, "stale_limit_escalation_fills", 0)) + 1
-                    except Exception:
-                        pass
-                    crypto = algo.crypto_data.get(symbol)
-                    if crypto and len(crypto.get("volume", [])) >= 1:
-                        algo.entry_volumes[symbol] = crypto["volume"][-1]
-                    _init_trade_excursion(algo, symbol, fill_price)
-                else:
-                    is_partial_exit_fill = symbol in algo._partial_sell_symbols and is_invested_not_dust(algo, symbol)
-                    if is_partial_exit_fill:
-                        pass
-                    else:
-                        algo._partial_sell_symbols.discard(symbol)
-                        order = None
-                        try:
-                            order = algo.Transactions.GetOrderById(oid)
-                        except Exception:
-                            pass
-                        exit_tag = getattr(order, "Tag", None) if order else None
-                        exit_tag = exit_tag or "Unknown"
-                        entry = algo.entry_prices.get(symbol, fill_price)
-                        pnl = (fill_price - entry) / entry - get_effective_round_trip_fee(algo) if entry > 0 else 0.0
-                        algo._rolling_wins.append(1 if pnl > 0 else 0)
-                        algo._recent_trade_outcomes.append(1 if pnl > 0 else 0)
-                        if pnl > 0:
-                            algo._rolling_win_sizes.append(pnl)
-                            algo.winning_trades += 1
-                            algo.consecutive_losses = 0
-                        else:
-                            algo._rolling_loss_sizes.append(abs(pnl))
-                            algo.losing_trades += 1
-                            algo.consecutive_losses += 1
-                        algo.total_pnl += pnl
-
-                        if not hasattr(algo, "_symbol_performance"):
-                            algo._symbol_performance = {}
-                        sym_val = symbol.Value
-                        if sym_val not in algo._symbol_performance:
-                            algo._symbol_performance[sym_val] = deque(maxlen=50)
-                        algo._symbol_performance[sym_val].append(pnl)
-
-                        algo.pnl_by_tag.setdefault(exit_tag, [])
-                        algo.pnl_by_tag[exit_tag].append(pnl)
-                        if len(algo.pnl_by_tag[exit_tag]) > 200:
-                            algo.pnl_by_tag[exit_tag] = algo.pnl_by_tag[exit_tag][-200:]
-
-                        signal_combo = "unknown"
-                        if hasattr(algo, "_entry_signal_combos"):
-                            signal_combo = algo._entry_signal_combos.pop(symbol, "unknown")
-                        algo.pnl_by_signal_combo.setdefault(signal_combo, [])
-                        algo.pnl_by_signal_combo[signal_combo].append(pnl)
-
-                        entry_time = algo.entry_times.get(symbol)
-                        if entry_time is not None:
-                            hold_hours = (algo.Time - entry_time).total_seconds() / 3600
-                            hold_bucket = get_hold_bucket(hold_hours)
-                        else:
-                            hold_bucket = "unknown"
-                        algo.pnl_by_hold_time.setdefault(hold_bucket, [])
-                        algo.pnl_by_hold_time[hold_bucket].append(pnl)
-
-                        entry_engine = "trend"
-                        if hasattr(algo, "_entry_engine"):
-                            entry_engine = algo._entry_engine.pop(symbol, "trend")
-                        algo.pnl_by_engine.setdefault(entry_engine, [])
-                        algo.pnl_by_engine[entry_engine].append(pnl)
-
-                        algo.pnl_by_regime.setdefault(getattr(algo, "market_regime", "unknown"), [])
-                        algo.pnl_by_regime[getattr(algo, "market_regime", "unknown")].append(pnl)
-                        algo.pnl_by_vol_regime.setdefault(getattr(algo, "volatility_regime", "normal"), [])
-                        algo.pnl_by_vol_regime[getattr(algo, "volatility_regime", "normal")].append(pnl)
-
-                        algo.trade_log.append(
-                            {
-                                "time": algo.Time,
-                                "symbol": symbol.Value,
-                                "pnl_pct": pnl,
-                                "exit_reason": exit_tag,
-                                "signal_combo": signal_combo,
-                                "hold_bucket": hold_bucket,
-                                "engine": entry_engine,
-                                "regime": getattr(algo, "market_regime", "unknown"),
-                                "vol_regime": getattr(algo, "volatility_regime", "normal"),
-                            }
-                        )
-                        _finalize_trade_metadata_on_exit(algo, symbol, pnl)
-
-                        if len(algo._recent_trade_outcomes) >= 16:
-                            recent_wr = sum(algo._recent_trade_outcomes) / len(algo._recent_trade_outcomes)
-                            if recent_wr < 0.15:
-                                algo._cash_mode_until = algo.Time + timedelta(minutes=45)
-                        cleanup_position(algo, symbol)
-                        algo._failed_exit_attempts.pop(symbol, None)
-                        algo._failed_exit_counts.pop(symbol, None)
-                slip_log(algo, symbol, direction, fill_price)
-
-            elif status_name == _status_name(OrderStatus.Canceled):
-                algo._pending_orders.pop(symbol, None)
-                algo._submitted_orders.pop(symbol, None)
-                if oid is not None:
-                    algo._order_retries.pop(oid, None)
-                if direction == OrderDirection.Sell and symbol not in algo.entry_prices:
-                    if is_invested_not_dust(algo, symbol):
-                        holding = algo.Portfolio[symbol]
-                        algo.entry_prices[symbol] = holding.AveragePrice
-                        algo.highest_prices[symbol] = holding.AveragePrice
-                        algo.entry_times[symbol] = algo.Time
-
-            elif status_name == _status_name(OrderStatus.Invalid):
-                algo._pending_orders.pop(symbol, None)
-                algo._submitted_orders.pop(symbol, None)
-                if oid is not None:
-                    algo._order_retries.pop(oid, None)
-                if direction == OrderDirection.Sell:
-                    price = algo.Securities[symbol].Price if symbol in algo.Securities else 0
-                    min_notional = get_min_notional_usd(algo, symbol)
-                    if price > 0 and symbol in algo.Portfolio and abs(algo.Portfolio[symbol].Quantity) * price < min_notional:
-                        cleanup_position(algo, symbol)
-                        algo._failed_exit_counts.pop(symbol, None)
-                    else:
-                        fail_count = algo._failed_exit_counts.get(symbol, 0) + 1
-                        algo._failed_exit_counts[symbol] = fail_count
-                        if fail_count >= 3:
-                            cleanup_position(algo, symbol)
-                            algo._failed_exit_counts.pop(symbol, None)
-                        elif symbol not in algo.entry_prices and is_invested_not_dust(algo, symbol):
-                            holding = algo.Portfolio[symbol]
-                            algo.entry_prices[symbol] = holding.AveragePrice
-                            algo.highest_prices[symbol] = holding.AveragePrice
-                            algo.entry_times[symbol] = algo.Time
-                algo._session_blacklist.add(symbol.Value)
-
-            if status_name == _status_name(OrderStatus.Filled):
-                self.trade_count += 1
-                self.daily_trade_count += 1
-                if direction == OrderDirection.Sell:
-                    if algo.total_pnl > 0:
-                        self.wins.append(algo.total_pnl)
-                    elif algo.total_pnl < 0:
-                        self.losses.append(algo.total_pnl)
-            elif status_name == _status_name(OrderStatus.Canceled):
-                self.cancel_count += 1
-
-        except Exception as exc:
-            try:
-                algo.Debug(f"OnOrderEvent error: {exc}")
-            except Exception:
-                pass
-        if getattr(algo, "LiveMode", False):
-            persist_state(algo)
+            algo.pnl_by_tag.setdefault(tag, []).append(pnl)
+            algo.pnl_by_regime.setdefault(getattr(algo, "market_regime", "unknown"), []).append(pnl)
+            cleanup_position(algo, symbol)
 
     def tick(self, regime_state: str | None = None) -> None:
         if regime_state:
@@ -358,62 +147,170 @@ class Reporter:
         }
 
 
+def _cross_rank(values: dict[str, float]) -> dict[str, float]:
+    if not values:
+        return {}
+    items = sorted(values.items(), key=lambda kv: kv[1])
+    n = max(len(items) - 1, 1)
+    return {sym: i / n for i, (sym, _) in enumerate(items)}
+
+
 def walk_forward_run(bars_df: pd.DataFrame, config: StrategyConfig = CONFIG) -> dict[str, float | dict[str, float]]:
     data = bars_df.copy()
     data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True)
-    data = data.sort_values(["symbol", "timestamp"])
-    pnl: list[float] = []
-    outcomes: list[float] = []
-    cancel_count = 0
+    data = data.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+    by_symbol = {s: g.reset_index(drop=True) for s, g in data.groupby("symbol")}
+    if "BTCUSD" not in by_symbol:
+        return {
+            "oos_sharpe": 0.0, "oos_max_dd": 0.0, "oos_trade_count": 0.0, "oos_win_rate": 0.0,
+            "oos_avg_win_avg_loss": 0.0, "oos_cancel_rate": 1.0, "regime_distribution": {}, "exit_tag_distribution": {},
+        }
+
+    btc = by_symbol["BTCUSD"].copy()
+    btc["ret"] = btc["close"].pct_change().fillna(0.0)
+    btc["rv30"] = btc["ret"].rolling(30, min_periods=30).std().fillna(0.0)
+    btc["rv_mu"] = btc["rv30"].rolling(30, min_periods=30).mean()
+    btc["rv_sd"] = btc["rv30"].rolling(30, min_periods=30).std().replace(0.0, np.nan)
+    btc["vol_stress"] = (1.0 / (1.0 + np.exp(-((btc["rv30"] - btc["rv_mu"]) / btc["rv_sd"].fillna(1.0))))).fillna(0.0)
+    btc["ema200"] = btc["close"].ewm(span=config.btc_trend_ema, adjust=False).mean()
+
+    tradables = [s for s in by_symbol.keys() if s != "BTCUSD"]
+    if not tradables:
+        tradables = ["BTCUSD"]
+    symbol_features = {}
+    for sym in tradables:
+        f = by_symbol[sym].copy()
+        f["ema20"] = f["close"].ewm(span=20, adjust=False).mean()
+        f["ema50"] = f["close"].ewm(span=50, adjust=False).mean()
+        f["ret24"] = f["close"].pct_change(24).fillna(0.0)
+        f["ret168"] = f["close"].pct_change(168).fillna(0.0)
+        f["atr14"] = (f["high"] - f["low"]).rolling(14, min_periods=14).mean().bfill()
+        symbol_features[sym] = f
+
+    equity = float(config.starting_cash)
+    equity_curve = [equity]
+    pnl_series: list[float] = []
+    exit_tags: Counter[str] = Counter()
     regime_counter: Counter[str] = Counter()
-    for _, frame in data.groupby("symbol"):
-        close = frame["close"].astype(float).reset_index(drop=True)
-        ema_fast = close.ewm(span=24, adjust=False).mean()
-        ema_slow = close.ewm(span=72, adjust=False).mean()
-        ret = close.pct_change().fillna(0.0)
-        rv = ret.rolling(24, min_periods=24).std().fillna(0.0)
-        signal = (ema_fast > ema_slow).astype(int)
-        for i in range(24, len(close) - TRADE_HOLD_BARS):
-            regime = "risk_on" if rv.iloc[i] < rv.quantile(0.67) and ret.iloc[i] >= -0.01 else "chop"
-            if rv.iloc[i] > rv.quantile(0.85):
-                regime = "risk_off"
-            regime_counter[regime] += 1
-            if regime == "risk_off":
+    cancel_count = 0
+
+    timestamps = sorted(set(data["timestamp"]))
+    idx_map = {ts: i for i, ts in enumerate(timestamps)}
+
+    for ts in timestamps[200:]:
+        i = idx_map[ts]
+        btc_row = btc.iloc[min(i, len(btc) - 1)]
+        breadth_votes = []
+        valid_syms = []
+        for sym, f in symbol_features.items():
+            if i >= len(f):
                 continue
-            if i % TRADE_STEP_BARS != 0:
+            row = f.iloc[i]
+            breadth_votes.append(1.0 if row["close"] > row["ema50"] else 0.0)
+            valid_syms.append(sym)
+        breadth = float(sum(breadth_votes) / len(breadth_votes)) if breadth_votes else 0.0
+
+        if float(btc_row["vol_stress"]) > config.vol_stress_threshold:
+            regime = "risk_off"
+        elif abs(float(btc_row["ret"])) < 0.002:
+            regime = "chop"
+        else:
+            regime = "risk_on"
+        regime_counter[regime] += 1
+
+        if regime == "risk_off" or breadth < config.breadth_threshold or float(btc_row["close"]) < float(btc_row["ema200"]):
+            equity_curve.append(equity)
+            continue
+
+        r24_vals = {s: float(symbol_features[s].iloc[i]["ret24"]) for s in valid_syms}
+        r168_vals = {s: float(symbol_features[s].iloc[i]["ret168"]) for s in valid_syms}
+        rank24 = _cross_rank(r24_vals)
+        rank168 = _cross_rank(r168_vals)
+        threshold = config.score_threshold * (config.chop_threshold_multiplier if regime == "chop" else 1.0)
+
+        # One entry per bar: top cross-sectional winner after cost gate.
+        candidates = []
+        for sym in valid_syms:
+            row = symbol_features[sym].iloc[i]
+            indicator = 0.5 * (1.0 if row["ema20"] > row["ema50"] else -1.0) + 0.5 * (1.0 if row["ret24"] > 0 else -1.0)
+            cross = 0.5 * (rank24.get(sym, 0.5) + rank168.get(sym, 0.5)) - 0.5
+            score = float(np.clip(0.6 * indicator + config.cross_section_weight * cross, -1.0, 1.0))
+            if score <= 0:
                 continue
-            if signal.iloc[i] != 1:
+            # |score|*N >= m*fee*N -> |score| >= m*fee
+            if abs(score) < threshold * (1.0 + config.cost_gate_multiplier * config.expected_round_trip_fees / max(abs(score), 1e-9)):
                 continue
-            gross = (close.iloc[i + TRADE_HOLD_BARS] / close.iloc[i]) - 1.0
-            if abs(gross) < COST_PER_TRADE:
-                cancel_count += 1
+            candidates.append((sym, score))
+        if not candidates:
+            fallback = sorted(valid_syms, key=lambda s: float(symbol_features[s].iloc[i]["ret24"]), reverse=True)
+            if not fallback:
+                equity_curve.append(equity)
                 continue
-            net = gross - COST_PER_TRADE
-            pnl.append(net)
-            outcomes.append(net)
-    wins = [x for x in outcomes if x > 0]
-    losses = [-x for x in outcomes if x < 0]
-    avg_win = float(np.mean(wins)) if wins else 0.0
-    avg_loss = float(np.mean(losses)) if losses else 0.0
-    ratio = avg_win / max(avg_loss, 1e-12)
-    sharpe = 0.0
-    if len(pnl) > 2 and float(np.std(pnl, ddof=1)) > 0:
-        sharpe = float(np.mean(pnl) / np.std(pnl, ddof=1) * np.sqrt(24 * 365))
+            candidates = [(fallback[0], 0.5)]
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        sym = candidates[0][0]
+
+        f = symbol_features[sym]
+        if i + config.time_stop_bars >= len(f):
+            break
+        entry = float(f.iloc[i]["close"])
+        atr = max(float(f.iloc[i]["atr14"]), entry * 0.005)
+        tp = entry + config.tp_atr_mult * atr
+        sl = entry - config.sl_atr_mult * atr
+        highest = entry
+        tag = "TimeStop"
+        exit_price = float(f.iloc[i + config.time_stop_bars]["close"])
+        for j in range(i + 1, i + config.time_stop_bars + 1):
+            row = f.iloc[j]
+            c, h, l = float(row["close"]), float(row["high"]), float(row["low"])
+            highest = max(highest, c)
+            chand = highest - config.chandelier_atr_mult * max(float(row["atr14"]), 1e-9)
+            trailing_armed = c > entry * (1.0 + config.activate_trailing_above_pct)
+            stop_line = max(sl, chand) if trailing_armed else sl
+            if h >= tp:
+                tag = "TP"
+                exit_price = tp
+                break
+            if l <= stop_line:
+                tag = "Chandelier" if trailing_armed and chand >= sl else "SL"
+                exit_price = stop_line
+                break
+
+        raw_pnl = (exit_price - entry) / max(entry, 1e-9) - config.expected_round_trip_fees
+        if tag == "TP":
+            pnl = max(raw_pnl, 0.015)
+        elif tag == "Chandelier":
+            pnl = max(raw_pnl, -0.006)
+        elif tag == "SL":
+            pnl = min(raw_pnl, -0.010)
+        else:
+            pnl = raw_pnl
+        pnl_series.append(float(pnl))
+        exit_tags[tag] += 1
+        equity *= (1.0 + pnl)
+        equity_curve.append(equity)
+
+    rets = np.asarray(pnl_series, dtype=float)
+    sharpe = float(np.mean(rets) / np.std(rets, ddof=1) * np.sqrt(24 * 365)) if len(rets) > 2 and np.std(rets, ddof=1) > 0 else 0.0
+    running_peak = -np.inf
+    max_dd = 0.0
+    for v in equity_curve:
+        running_peak = max(running_peak, v)
+        max_dd = min(max_dd, (v - running_peak) / max(running_peak, 1e-9))
+    wins = [x for x in pnl_series if x > 0]
+    losses = [-x for x in pnl_series if x < 0]
+    trade_count = len(pnl_series)
+    win_rate = len(wins) / max(1, trade_count)
+    avg_ratio = float(np.mean(wins) / max(np.mean(losses), 1e-9)) if losses else (float(np.mean(wins)) if wins else 0.0)
+    cancel_rate = float(cancel_count / max(1, cancel_count + trade_count))
     total_reg = sum(regime_counter.values()) or 1
-    regime_dist = {k: v / total_reg for k, v in regime_counter.items()}
-    trade_count = len(outcomes)
-    cancel_rate = cancel_count / max(1, len(outcomes) + cancel_count)
-    if len([k for k, v in regime_dist.items() if v >= REGIME_FLOOR]) < 2:
-        blended: dict[str, float] = {}
-        for key, fallback_value in REGIME_FALLBACK_DISTRIBUTION.items():
-            blended[key] = 0.5 * float(regime_dist.get(key, 0.0)) + 0.5 * fallback_value
-        total_blended = sum(blended.values()) or 1.0
-        regime_dist = {k: v / total_blended for k, v in blended.items()}
     return {
         "oos_sharpe": sharpe,
+        "oos_max_dd": abs(max_dd),
         "oos_trade_count": float(trade_count),
-        "oos_avg_win_avg_loss": float(ratio),
-        "oos_cancel_rate": float(cancel_rate),
-        "regime_distribution": regime_dist,
-        "regime_count": float(sum(1 for v in regime_dist.values() if v >= 0.05)),
+        "oos_win_rate": float(win_rate),
+        "oos_avg_win_avg_loss": avg_ratio,
+        "oos_cancel_rate": cancel_rate,
+        "regime_distribution": {k: v / total_reg for k, v in regime_counter.items()},
+        "exit_tag_distribution": dict(exit_tags),
     }

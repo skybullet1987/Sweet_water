@@ -16,7 +16,7 @@ class Scorer:
     def _clip(value: float) -> float:
         return max(-1.0, min(1.0, float(value)))
 
-    def score(self, symbol: str, features: dict[str, float], regime_state: str, btc_context: dict[str, float]) -> float:
+    def indicator_score(self, symbol: str, features: dict[str, float], regime_state: str, btc_context: dict[str, float]) -> float:
         _ = symbol
         btc_trend = float(btc_context.get("btc_trend", 0.0))
         if regime_state == "risk_off":
@@ -48,3 +48,18 @@ class Scorer:
             ]
             return self._clip((sum(long_votes) - sum(short_votes)) / 4.0)
         return 0.0
+
+    def score(
+        self,
+        symbol: str,
+        features: dict[str, float],
+        regime_state: str,
+        btc_context: dict[str, float],
+        rank_24h: float = 0.5,
+        rank_168h: float = 0.5,
+        cross_section_weight: float = 0.40,
+    ) -> float:
+        base = self.indicator_score(symbol, features, regime_state, btc_context)
+        cross_section_score = 0.5 * (float(rank_24h) + float(rank_168h)) - 0.5
+        w = max(0.0, min(1.0, float(cross_section_weight)))
+        return self._clip((1.0 - w) * base + w * cross_section_score)

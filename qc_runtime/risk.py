@@ -121,7 +121,7 @@ class DrawdownCircuitBreaker:
             recovery_target = self.equity_at_trigger * (1 + self.recovery_pct)
             if current_equity >= recovery_target:
                 try:
-                    algorithm.Debug(f"BREAKER RESET: equity recovered to ${current_equity:.2f}")
+                    algorithm.Debug(f"BREAKER RESET eq=${current_equity:.2f}")
                 except Exception:
                     pass
                 self.breaker_triggered = False
@@ -135,10 +135,7 @@ class DrawdownCircuitBreaker:
                 self.trigger_equity = current_equity
                 self.equity_at_trigger = current_equity
                 try:
-                    algorithm.Debug(
-                        f"⚠️ CIRCUIT BREAKER: drawdown={drawdown:.2%}, "
-                        f"equity=${current_equity:.2f}, peak=${self.peak_equity:.2f}. Pausing new entries."
-                    )
+                    algorithm.Debug(f"BREAKER TRIP dd={drawdown:.2%} peak=${self.peak_equity:.2f} eq=${current_equity:.2f}")
                 except Exception:
                     pass
 

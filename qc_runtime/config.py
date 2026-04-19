@@ -22,8 +22,10 @@ class StrategyConfig:
     target_annual_vol: float = 0.30
     kelly_cap: float = 0.25
     min_position_floor_usd: float = 5.0
-    max_position_pct: float = 0.30
+    max_position_pct: float = 0.20
+    total_deployment_cap: float = 0.85
     max_positions: int = 10
+    post_breaker_cooldown_hours: int = 48
 
     # Costs
     expected_round_trip_fees: float = 0.0065

@@ -50,6 +50,7 @@ from execution import (
     is_invested_not_dust,
     liquidate_all_positions,
     manage_open_positions,
+    place_entry,
     place_limit_or_market,
     position_status,
     round_quantity,
@@ -92,7 +93,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self.max_participation_rate = 0.15
         self.spread_limit_pct = 0.025
 
-        self._drawdown_breaker = DrawdownCircuitBreaker(max_drawdown_pct=-0.18, max_triggered_bars=168)
+        self._drawdown_breaker = DrawdownCircuitBreaker(max_drawdown_pct=-0.12, max_triggered_bars=168)
 
         self.symbols = []
         self.reference_symbols = []
@@ -165,6 +166,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self._cancel_cooldowns = {}
         self._pending_orders = {}
         self._submitted_orders = {}
+        self._failed_escalations = {}
         self._order_retries = {}
         self._failed_exit_counts = {}
         self._partial_sell_symbols = set()
@@ -187,6 +189,11 @@ class SweetWaterPhase1(QCAlgorithm):
         self._dispersion_history = deque(maxlen=60)
         self._last_dispersion_date = None
         self._last_dispersion_log_date = None
+        self._pending_rotation_entries = []
+        self._pending_rotation_entry_time = None
+        self._breaker_disengaged_at = None
+        self._last_scored = []
+        self._last_force_exit_date = None
 
         self.position_state: dict[object, PositionState] = {}
         self.entry_volumes = {}
@@ -287,6 +294,7 @@ class SweetWaterPhase1(QCAlgorithm):
             feats["vr_regime"] = self.regime_engine.vr.regime(symbol)
             rows.append((symbol, feats, m21, m63, m90))
         if len(rows) < 4:
+            self._last_scored = []
             return []
 
         def _z(values):
@@ -322,7 +330,59 @@ class SweetWaterPhase1(QCAlgorithm):
             )
             scored.append((symbol, float(snap.get("final", 0.0)), feats))
         scored.sort(key=lambda x: x[1], reverse=True)
+        self._last_scored = list(scored)
         return scored
+
+    def _force_exit_losers(self, scored):
+        loser_floor_z = -0.5
+        exited = set()
+        holdings = self._current_holdings()
+        for sym in list(holdings):
+            score = next((s for sy, s, _ in scored if sy == sym), 0.0)
+            if score < loser_floor_z:
+                if smart_liquidate(self, sym, tag="ZScoreLoser"):
+                    self.Debug(f"FORCE_EXIT sym={sym.Value} z={score:.3f}")
+                    exited.add(sym)
+        return exited
+
+    def _process_pending_entries(self, scored_lookup=None):
+        _ = scored_lookup
+        if not getattr(self, "_pending_rotation_entries", None):
+            return
+        pending_at = getattr(self, "_pending_rotation_entry_time", None)
+        if pending_at is None:
+            self._pending_rotation_entries = []
+            return
+        if (self.Time - pending_at).total_seconds() < 3600:
+            return
+        try:
+            available_cash = float(self.Portfolio.CashBook["USD"].Amount)
+        except Exception:
+            available_cash = float(getattr(self.Portfolio, "Cash", 0.0) or 0.0)
+        equity = float(getattr(self.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
+        submitted = 0
+        for entry in self._pending_rotation_entries:
+            sym = entry["symbol"]
+            if available_cash < float(self.config.min_position_floor_usd):
+                break
+            sec = self.Securities.get(sym)
+            price = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
+            if price <= 0:
+                continue
+            desired = equity * float(entry["target_weight"])
+            notional = min(desired, available_cash * 0.95)
+            if notional < float(self.config.min_position_floor_usd):
+                continue
+            qty = round_quantity(self, sym, notional / max(price, 1e-9))
+            if qty <= 0:
+                continue
+            ticket = place_entry(self, sym, qty, tag="Rebalance:entry-deferred", signal_score=float(entry["score"]))
+            if ticket is not None:
+                available_cash -= qty * price
+                submitted += 1
+        self.Debug(f"REBAL deferred_entries submitted={submitted} of {len(self._pending_rotation_entries)}")
+        self._pending_rotation_entries = []
+        self._pending_rotation_entry_time = None
 
     def _dispersion_regime(self):
         if len(self._dispersion_history) < 20:
@@ -381,6 +441,15 @@ class SweetWaterPhase1(QCAlgorithm):
         return state, scored
 
     def _rebalance_portfolio(self, scored, risk_scale: float = 1.0):
+        breaker_disengaged_at = getattr(self, "_breaker_disengaged_at", None)
+        if breaker_disengaged_at is not None:
+            cooldown_h = float(getattr(self.config, "post_breaker_cooldown_hours", 48) or 48)
+            hrs_since = (self.Time - breaker_disengaged_at).total_seconds() / 3600.0
+            if hrs_since < cooldown_h:
+                self.Debug(f"REBAL skip reason=post_breaker_cooldown hrs={hrs_since:.1f}/{cooldown_h:.1f}")
+                return
+            self._breaker_disengaged_at = None
+
         self._last_rebalance_time = self.Time
         top_k = max(1, int(getattr(self.config, "top_k", 8) or 8))
         effective_top_k = max(1, int(round(top_k * max(0.0, float(risk_scale)))))
@@ -388,13 +457,8 @@ class SweetWaterPhase1(QCAlgorithm):
         min_hold = max(0, int(getattr(self.config, "min_hold_hours", 0)))
         min_delta = max(0.0, float(getattr(self.config, "min_rebalance_weight_delta", 0.03)))
         holdings = self._current_holdings()
-        loser_floor_z = -0.5
-        for sym in list(holdings):
-            score = next((s for sy, s, _ in scored if sy == sym), 0.0)
-            if score < loser_floor_z:
-                if smart_liquidate(self, sym, tag="ZScoreLoser"):
-                    self.Debug(f"FORCE_EXIT sym={sym.Value} z={score:.3f}")
-                holdings = [h for h in holdings if h != sym]
+        exited = self._force_exit_losers(scored)
+        holdings = [h for h in holdings if h not in exited]
         held_set = set(holdings)
         ranked = [(s, score, feats) for s, score, feats in scored if score >= 0.0]
         top = ranked[:effective_top_k]
@@ -428,18 +492,6 @@ class SweetWaterPhase1(QCAlgorithm):
             reverse=True,
         )[:effective_top_k]
         target_set = set(target_list)
-        self.Debug(
-            "REB "
-            f"top={[s.Value for s in top_symbols]} "
-            f"hold={[s.Value for s in holdings]} "
-            f"repl={[f'{a.Value}->{b.Value}' for a, b in replacements]}"
-        )
-
-        for symbol in holdings:
-            if symbol in target_set:
-                continue
-            if not smart_liquidate(self, symbol, tag="RebalanceExit"):
-                self.Debug(f"ORD_FAIL action=exit symbol={symbol.Value}")
 
         equity = float(getattr(self.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
         if equity <= 0 or not target_set:
@@ -463,6 +515,43 @@ class SweetWaterPhase1(QCAlgorithm):
         target_weights = {sym: max(0.0, float(risk_scale)) * (w / total) for sym, w in weights_raw.items()}
         for sym in list(target_weights):
             target_weights[sym] = min(target_weights[sym], float(self.config.max_position_pct))
+        total_deployment_cap = float(getattr(self.config, "total_deployment_cap", 0.85) or 0.85)
+        total_w = sum(target_weights.values())
+        if total_w > total_deployment_cap and total_w > 0:
+            scale = total_deployment_cap / total_w
+            target_weights = {sym: w * scale for sym, w in target_weights.items()}
+
+        self.Debug(
+            "REB "
+            f"top={[s.Value for s in top_symbols]} "
+            f"hold={[s.Value for s in holdings]} "
+            f"repl={[f'{a.Value}->{b.Value}' for a, b in replacements]}"
+        )
+
+        exits_submitted = False
+        for symbol in holdings:
+            if symbol in target_set:
+                continue
+            if smart_liquidate(self, symbol, tag="RebalanceExit"):
+                exits_submitted = True
+            else:
+                self.Debug(f"ORD_FAIL action=exit symbol={symbol.Value}")
+
+        if exits_submitted:
+            self._pending_rotation_entries = [
+                {"symbol": sym, "score": score, "target_weight": target_weights[sym]}
+                for sym, score, _feats in scored
+                if sym in target_set and sym not in held_set
+            ]
+            self._pending_rotation_entry_time = self.Time
+            self.Debug(f"REBAL exits_done pending_entries={len(self._pending_rotation_entries)}")
+            return
+
+        try:
+            available_cash = float(self.Portfolio.CashBook["USD"].Amount)
+        except Exception:
+            available_cash = float(getattr(self.Portfolio, "Cash", 0.0) or 0.0)
+        notional_cap = max(0.0, available_cash * 0.95)
         cost_skips = []
         for symbol in target_list:
             sec = self.Securities.get(symbol)
@@ -478,19 +567,37 @@ class SweetWaterPhase1(QCAlgorithm):
             required_delta = min_delta if symbol in held_set else (min_delta * NEW_ENTRANT_MIN_DELTA_MULTIPLIER)
             if abs(delta_w) < required_delta:
                 continue
-            notional = abs(delta_w) * equity
-            qty = round_quantity(self, symbol, notional / max(price, 1e-9))
-            if qty <= 0 or qty * price < get_min_notional_usd(self, symbol):
-                continue
             score = next((x[1] for x in ranked if x[0] == symbol), 0.0)
             fee_model = getattr(sec, "FeeModel", None)
-            if delta_w > 0 and not self.sizer.passes_cost_gate(symbol, score, notional, fee_model, is_limit=True):
-                cost_skips.append(symbol.Value)
-                continue
-            signed_qty = qty if delta_w > 0 else -qty
-            ticket = place_limit_or_market(self, symbol, signed_qty, tag="Rebalance")
+            if delta_w > 0:
+                desired_notional = equity * target_w
+                notional = min(desired_notional, notional_cap)
+                if notional < float(self.config.min_position_floor_usd):
+                    self.Debug(
+                        f"REBAL skip sym={symbol.Value} reason=cash_floor cash={available_cash:.2f} desired={desired_notional:.2f}"
+                    )
+                    continue
+                qty = round_quantity(self, symbol, notional / max(price, 1e-9))
+                if qty <= 0 or qty * price < get_min_notional_usd(self, symbol):
+                    continue
+                if not self.sizer.passes_cost_gate(symbol, score, notional, fee_model, is_limit=True):
+                    cost_skips.append(symbol.Value)
+                    continue
+                ticket = place_entry(self, symbol, qty, tag="Rebalance:entry", signal_score=score)
+                if ticket is not None:
+                    available_cash -= qty * price
+                    notional_cap = max(0.0, available_cash * 0.95)
+                    if available_cash < float(self.config.min_position_floor_usd):
+                        self.Debug("REBAL cash exhausted — defer remaining entries to next rebalance")
+                        break
+            else:
+                notional = abs(delta_w) * equity
+                qty = round_quantity(self, symbol, notional / max(price, 1e-9))
+                if qty <= 0 or qty * price < get_min_notional_usd(self, symbol):
+                    continue
+                ticket = place_limit_or_market(self, symbol, -qty, tag="Rebalance")
             if ticket is None:
-                self.Debug(f"ORD_FAIL action={'buy' if signed_qty > 0 else 'sell'} symbol={symbol.Value}")
+                self.Debug(f"ORD_FAIL action={'buy' if delta_w > 0 else 'sell'} symbol={symbol.Value}")
         if cost_skips:
             self.Debug(f"REB skip_cost_gate={cost_skips}")
 
@@ -562,13 +669,20 @@ class SweetWaterPhase1(QCAlgorithm):
         else:
             if self._breaker_liquidated:
                 self.Debug("BREAKER disengaged")
+                self._breaker_disengaged_at = self.Time
             self._breaker_liquidated = False
 
         exits = manage_open_positions(self, data)
         for sym, tag in exits:
             self.Debug(f"EXIT sym={sym.Value} tag={tag}")
 
+        self._process_pending_entries(scored_lookup=None)
+
         state, scored = self._score_candidates(data)
+        if self.Time.hour == 8 and getattr(self, "_last_scored", None):
+            if getattr(self, "_last_force_exit_date", None) != self.Time.date():
+                self._force_exit_losers(self._last_scored)
+                self._last_force_exit_date = self.Time.date()
         disp = self._dispersion_regime()
         if self._dispersion_history:
             day_key = self.Time.date() if hasattr(self, "Time") else None
@@ -613,11 +727,25 @@ class SweetWaterPhase1(QCAlgorithm):
         self.reporter.on_order_event(self, event)
         status = getattr(event, "Status", None)
         status_str = str(status).lower() if status is not None else ""
+        symbol = getattr(event, "Symbol", None)
+        is_invalid = "invalid" in status_str
+        if is_invalid:
+            if symbol is not None:
+                getattr(self, "_submitted_orders", {}).pop(symbol, None)
+                if not hasattr(self, "_failed_escalations"):
+                    self._failed_escalations = {}
+                self._failed_escalations[symbol] = self.Time
+                self.Debug(f"INVALID sym={symbol.Value} cooldown=24h")
+            return
+        is_canceled = "canceled" in status_str or "cancelled" in status_str
+        if is_canceled:
+            if symbol is not None:
+                getattr(self, "_submitted_orders", {}).pop(symbol, None)
+            return
         is_filled = "filled" in status_str and "partial" not in status_str
         if not is_filled:
             return
         self._last_trade_bar = self._bar_count
-        symbol = getattr(event, "Symbol", None)
         if symbol is None:
             return
         try:

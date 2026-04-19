@@ -34,7 +34,10 @@ class Scorer:
         dd_63d = self._clamp(float(features.get("dd_63d", 0.0) or 0.0), 0.0, 1.0)
         m21_adj = self._clamp(mom_21d / rv_21d, -clip, clip)
         m63_adj = self._clamp(mom_63d / rv_21d, -clip, clip)
-        score = self._clamp(0.6 * m21_adj + 0.4 * m63_adj - 0.3 * dd_63d, -clip, clip)
+        w21 = float(getattr(self.config, "score_mom21_weight", 0.6) or 0.6)
+        w63 = float(getattr(self.config, "score_mom63_weight", 0.4) or 0.4)
+        dd_penalty = float(getattr(self.config, "score_dd_penalty", 0.3) or 0.3)
+        score = self._clamp(w21 * m21_adj + w63 * m63_adj - dd_penalty * dd_63d, -clip, clip)
         return {
             "cvd": 0.0,
             "ofi": 0.0,

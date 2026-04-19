@@ -277,9 +277,9 @@ class FeatureEngine:
         mom_21d = float((daily_close[-1] / daily_close[-22]) - 1.0) if len(daily_close) >= 22 else 0.0
         mom_63d = float((daily_close[-1] / daily_close[-64]) - 1.0) if len(daily_close) >= 64 else 0.0
         mom_90d = float((daily_close[-1] / daily_close[-91]) - 1.0) if len(daily_close) >= 91 else 0.0
-        rv_21d = self._std(deque(list(daily_ret)[-21:], maxlen=21)) * math.sqrt(365.0) if len(daily_ret) >= 10 else 0.0
+        rv_21d = self._std(deque(list(daily_ret)[-21:], maxlen=21)) * math.sqrt(365.0) if len(daily_ret) >= 21 else 0.0
         dd_63d = 0.0
-        if len(daily_close) >= 2:
+        if len(daily_close) >= 63:
             window = list(daily_close)[-63:]
             peak = float(window[0])
             max_dd = 0.0

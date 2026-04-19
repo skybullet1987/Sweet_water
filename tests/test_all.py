@@ -360,7 +360,7 @@ class TestPhaseRequirements:
         algo.feature_engine.current_features = lambda ticker: {"mom_90d": -0.1, "vol_stress_21d": 0.2} if ticker == "BTCUSD" else orig_current(ticker)
         state, candidates = algo._score_candidates(self._make_slice(algo, symbol, 100, 101, 99, 100, btc_close=220))
         assert state == "risk_off"
-        assert len(candidates) >= 0
+        assert candidates == []
 
     def test_risk_off_when_btc_vol_stress_high(self):
         algo = self._build_algo()
@@ -371,7 +371,7 @@ class TestPhaseRequirements:
         algo.feature_engine.current_features = lambda ticker: {"mom_90d": 0.2, "vol_stress_21d": 0.95} if ticker == "BTCUSD" else orig_current(ticker)
         state, candidates = algo._score_candidates(self._make_slice(algo, symbol, 100, 101, 99.5, 100.2, btc_close=50.0))
         assert state == "risk_off"
-        assert len(candidates) >= 0
+        assert candidates == []
 
     def test_cost_gate_rejects_low_score(self):
         sizer = Sizer()
@@ -447,9 +447,9 @@ def test_rebalance_logs_are_concise():
         algo.Time = datetime(2025, 1, 7, i, tzinfo=timezone.utc)
         algo.OnData(t._make_slice(algo, symbol, 100.0, 101.0, 99.0, 100.0))
     sig_lines = [msg for msg in algo._debug_logs if msg.startswith("SIG sym=")]
-    reb_lines = [msg for msg in algo._debug_logs if msg.startswith("REB ")]
+    rebalance_lines = [msg for msg in algo._debug_logs if msg.startswith("REB ")]
     assert len(sig_lines) == 0
-    assert len(reb_lines) >= 1
+    assert len(rebalance_lines) >= 1
 
 def test_cross_section_score_orders_winners_first():
     s = Scorer()

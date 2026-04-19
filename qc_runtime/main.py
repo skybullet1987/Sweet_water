@@ -61,6 +61,9 @@ from scoring import Scorer
 from sizing import Sizer
 from universe import KRAKEN_SAFE_LIST, REFERENCE_SYMBOLS, select_universe
 
+INFINITE_HELD_HOURS = 10**9
+DEFAULT_MISSING_SCORE = -1e9
+
 
 class SweetWaterPhase1(QCAlgorithm):
     def Initialize(self):  # pragma: no cover
@@ -266,27 +269,32 @@ class SweetWaterPhase1(QCAlgorithm):
     def _score_candidates(self, data: Slice):
         btc_ret, breadth = self._ingest_data(data)
         state = self._market_regime_state(btc_ret, breadth)
+        if state == "risk_off":
+            return state, []
         scored = self._collect_scores(state, btc_ret)
         return state, scored
 
     def _rebalance_portfolio(self, scored):
         self._last_rebalance_time = self.Time
         top_k = max(1, int(getattr(self.config, "top_k", 8) or 8))
-        max_repl = max(0, int(getattr(self.config, "max_replacements_per_rebalance", 2) or 2))
-        min_hold = max(0, int(getattr(self.config, "min_hold_hours", 0) or 0))
-        min_delta = max(0.0, float(getattr(self.config, "min_rebalance_weight_delta", 0.03) or 0.03))
+        max_repl = max(0, int(getattr(self.config, "max_replacements_per_rebalance", 2)))
+        min_hold = max(0, int(getattr(self.config, "min_hold_hours", 0)))
+        min_delta = max(0.0, float(getattr(self.config, "min_rebalance_weight_delta", 0.03)))
         holdings = self._current_holdings()
         held_set = set(holdings)
         ranked = [(s, score, feats) for s, score, feats in scored if score > 0]
         top = ranked[:top_k]
         top_symbols = [s for s, _, _ in top]
         top_set = set(top_symbols)
-        losers = sorted([s for s in holdings if s not in top_set], key=lambda sym: next((x[1] for x in ranked if x[0] == sym), -1e9))
+        losers = sorted(
+            [s for s in holdings if s not in top_set],
+            key=lambda sym: next((x[1] for x in ranked if x[0] == sym), DEFAULT_MISSING_SCORE),
+        )
         entrants = [s for s in top_symbols if s not in held_set]
         replacements = []
         for loser, entrant in zip(losers[:max_repl], entrants[:max_repl]):
             pstate = self.position_state.get(loser)
-            held_hours = 10**9
+            held_hours = INFINITE_HELD_HOURS
             if pstate is not None and getattr(pstate, "entry_time", None) is not None:
                 held_hours = int((self.Time - pstate.entry_time).total_seconds() / 3600)
             if held_hours < min_hold:
@@ -300,7 +308,11 @@ class SweetWaterPhase1(QCAlgorithm):
             if len(target_set) >= top_k:
                 break
             target_set.add(sym)
-        target_list = sorted(target_set, key=lambda sym: next((x[1] for x in ranked if x[0] == sym), -1e9), reverse=True)[:top_k]
+        target_list = sorted(
+            target_set,
+            key=lambda sym: next((x[1] for x in ranked if x[0] == sym), DEFAULT_MISSING_SCORE),
+            reverse=True,
+        )[:top_k]
         target_set = set(target_list)
         self.Debug(
             "REB "

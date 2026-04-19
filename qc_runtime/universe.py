@@ -7,6 +7,7 @@ import pandas as pd
 from config import CONFIG
 
 REFERENCE_SYMBOLS = ("BTCUSD",)
+DEFAULT_UNIVERSE_SIZE = 80
 
 KRAKEN_SAFE_LIST = (
     "BTCUSD",
@@ -112,5 +113,6 @@ def select_universe(history_provider: Callable[[str, object, object], pd.DataFra
             continue
         liquidity.append((symbol, _median_dollar_volume(frame)))
     ranked = [s for s, _ in sorted(liquidity, key=lambda x: x[1], reverse=True)]
-    limit = max(1, min(int(getattr(CONFIG, "universe_size", 80) or 80), len(ranked)))
+    configured = int(getattr(CONFIG, "universe_size", DEFAULT_UNIVERSE_SIZE) or DEFAULT_UNIVERSE_SIZE)
+    limit = max(1, min(configured, len(ranked)))
     return ranked[:limit]

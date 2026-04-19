@@ -4,6 +4,8 @@ from collections import deque
 
 from config import CONFIG, StrategyConfig
 
+BPS_TO_DECIMAL = 10_000.0
+
 
 class Sizer:
     def __init__(self, config: StrategyConfig = CONFIG) -> None:
@@ -59,8 +61,8 @@ class Sizer:
                 fee_cost = float(fee_model.estimate_round_trip_cost(symbol, n, is_limit=is_limit))
             except Exception:
                 fee_cost = n * float(self.config.expected_round_trip_fees)
-        spread_cost = n * (float(getattr(self.config, "assumed_spread_bps", 12.0)) / 10_000.0)
-        slippage_cost = n * (float(getattr(self.config, "assumed_slippage_bps", 8.0)) / 10_000.0)
+        spread_cost = n * (float(getattr(self.config, "assumed_spread_bps", 12.0)) / BPS_TO_DECIMAL)
+        slippage_cost = n * (float(getattr(self.config, "assumed_slippage_bps", 8.0)) / BPS_TO_DECIMAL)
         total_cost_pct = (fee_cost + spread_cost + slippage_cost) / max(n, 1e-9)
         expected_edge = s * float(getattr(self.config, "edge_scale", 0.02))
         return expected_edge > total_cost_pct * float(getattr(self.config, "edge_cost_multiplier", 2.5))

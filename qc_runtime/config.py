@@ -28,6 +28,7 @@ class StrategyConfig:
     # Costs
     expected_round_trip_fees: float = 0.0065
     cost_gate_multiplier: float = 2.5
+    # cost_gate_multiplier is retained for legacy paths; edge_cost_multiplier is used by the new cross-sectional momentum gate.
     edge_cost_multiplier: float = 2.5
     edge_scale: float = 0.02
     assumed_spread_bps: float = 12.0
@@ -72,6 +73,9 @@ class StrategyConfig:
     stale_order_bars: int = 3
     score_clip_value: float = 5.0
     min_rv_floor: float = 1e-4
+    score_mom21_weight: float = 0.6
+    score_mom63_weight: float = 0.4
+    score_dd_penalty: float = 0.3
 
     min_qty_fallback: dict[str, float] = field(default_factory=lambda: {
         'AXSUSD': 5.0, 'SANDUSD': 10.0, 'MANAUSD': 10.0, 'ADAUSD': 10.0,

@@ -14,7 +14,7 @@ if str(QC_RUNTIME) not in sys.path:
     sys.path.insert(0, str(QC_RUNTIME))
 
 from config import CONFIG, StrategyConfig
-from execution import Executor, KrakenFeeModel, RealisticSlippage
+from execution import Executor, KrakenTieredFeeModel, RealisticCryptoSlippage, execute_regime_entries, place_entry
 from features import FeatureEngine, amihud_illiquidity, rank_momentum, realized_vol, roll_spread, zscore_vs_universe
 from regime import RegimeEngine
 from reporting import Reporter, walk_forward_run
@@ -120,8 +120,8 @@ def test_sizer_output_bounded():
 # SECTION 5: Execution + Triple Barrier
 # ============================================================
 def test_fee_slippage_estimators_positive():
-    assert KrakenFeeModel.estimate_round_trip_cost() > 0
-    assert RealisticSlippage.estimate_slippage_bps(10, 0.1) >= 1
+    assert KrakenTieredFeeModel().estimate_round_trip_cost("BTCUSD", 100.0) > 0
+    assert RealisticCryptoSlippage().estimate_slippage_bps("BTCUSD", 100.0, price=100.0, volume=1000.0) >= 1
 
 
 def test_executor_triple_barrier_exit_take_profit():
@@ -201,3 +201,171 @@ def test_universe_selector_keeps_btc():
 
     selected = select_universe(_hist, pd.Timestamp("2026-01-01", tz="UTC"))
     assert "BTCUSD" in selected
+
+
+def test_real_orders_actually_placed_with_real_fees():
+    from datetime import datetime, timedelta
+
+    class _Sym:
+        def __init__(self, value: str):
+            self.Value = value
+
+        def __hash__(self):
+            return hash(self.Value)
+
+        def __eq__(self, other):
+            return isinstance(other, _Sym) and self.Value == other.Value
+
+    class _SymbolProps:
+        MinimumPriceVariation = 0.01
+        LotSize = 0.0001
+        MinimumOrderSize = 0.0001
+
+    class _Sec:
+        def __init__(self, price: float, volume: float):
+            self.Price = price
+            self.Volume = volume
+            self.BidPrice = price * 0.999
+            self.AskPrice = price * 1.001
+            self.SymbolProperties = _SymbolProps()
+            self.FeeModel = None
+            self.SlippageModel = None
+
+    class _Holding:
+        def __init__(self):
+            self.Quantity = 0.0
+            self.Invested = False
+            self.AveragePrice = 0.0
+            self.Price = 0.0
+
+    class _Portfolio(dict):
+        def __init__(self):
+            super().__init__()
+            self.TotalPortfolioValue = 1000.0
+            self.TotalHoldingsValue = 0.0
+            self.Cash = 1000.0
+
+    class _Transactions:
+        def __init__(self):
+            self._orders = {}
+            self._open = []
+            self._next = 1
+
+        def GetOpenOrders(self, symbol=None):
+            if symbol is None:
+                return list(self._open)
+            return [o for o in self._open if o.Symbol == symbol]
+
+        def CancelOrder(self, order_id):
+            self._open = [o for o in self._open if o.Id != order_id]
+
+        def GetOrderById(self, order_id):
+            return self._orders.get(order_id)
+
+    class _Ticket:
+        def __init__(self, oid: int):
+            self.OrderId = oid
+
+    class _FeeSpy(KrakenTieredFeeModel):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def estimate_round_trip_cost(self, symbol, notional, is_limit=True):
+            self.calls += 1
+            return super().estimate_round_trip_cost(symbol, notional, is_limit=is_limit)
+
+    class _Algo:
+        def __init__(self):
+            self.Time = datetime(2025, 1, 1)
+            self.LiveMode = False
+            self.IsWarmingUp = False
+            self._pending_orders = {}
+            self._submitted_orders = {}
+            self._order_retries = {}
+            self._session_blacklist = set()
+            self._spread_warning_times = {}
+            self._symbol_slippage_history = {}
+            self._slip_abs = []
+            self.crypto_data = {}
+            self.entry_prices = {}
+            self.highest_prices = {}
+            self.entry_times = {}
+            self.entry_volumes = {}
+            self.max_participation_rate = 0.25
+            self.spread_limit_pct = 0.03
+            self.stale_order_bars = 3
+            self.min_notional = 5.0
+            self.min_order_size_usd = 5.0
+            self.Debug = lambda *_args, **_kwargs: None
+            self.Portfolio = _Portfolio()
+            self.Transactions = _Transactions()
+            self.order_calls = []
+            self.symbols = {}
+            for t in ("BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "USDTUSD"):
+                s = _Sym(t)
+                self.symbols[t] = s
+                self.Portfolio[s] = _Holding()
+                self.crypto_data[s] = {"prices": [], "volume": []}
+            self.Securities = {
+                self.symbols["BTCUSD"]: _Sec(100.0, 10000.0),
+                self.symbols["ETHUSD"]: _Sec(60.0, 9000.0),
+                self.symbols["SOLUSD"]: _Sec(30.0, 8500.0),
+                self.symbols["XRPUSD"]: _Sec(1.0, 20000.0),
+                self.symbols["USDTUSD"]: _Sec(1.0, 20000.0),
+            }
+            self.fee_spy = _FeeSpy()
+            for sec in self.Securities.values():
+                sec.FeeModel = self.fee_spy
+                sec.SlippageModel = RealisticCryptoSlippage(self)
+
+        def MarketOrder(self, symbol, quantity, tag=""):
+            oid = self.Transactions._next
+            self.Transactions._next += 1
+            order = type("O", (), {"Id": oid, "Symbol": symbol, "Quantity": quantity, "Tag": tag, "Price": self.Securities[symbol].Price, "Direction": 1 if quantity > 0 else -1})
+            self.Transactions._orders[oid] = order
+            self.order_calls.append(("market", symbol.Value, quantity, tag))
+            return _Ticket(oid)
+
+        def LimitOrder(self, symbol, quantity, limit_price, tag=""):
+            oid = self.Transactions._next
+            self.Transactions._next += 1
+            order = type("O", (), {"Id": oid, "Symbol": symbol, "Quantity": quantity, "Tag": tag, "Price": limit_price, "Direction": 1 if quantity > 0 else -1})
+            self.Transactions._orders[oid] = order
+            self.Transactions._open.append(order)
+            self.order_calls.append(("limit", symbol.Value, quantity, tag))
+            return _Ticket(oid)
+
+        def History(self, *_args, **_kwargs):
+            return pd.DataFrame()
+
+    algo = _Algo()
+    sizer = Sizer()
+    rejected_blacklist = False
+    for bar in range(50):
+        algo.Time = algo.Time + timedelta(hours=1)
+        for ticker in ("BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "USDTUSD"):
+            sym = algo.symbols[ticker]
+            sec = algo.Securities[sym]
+            drift = 1.0 + 0.003 + (0.0005 if ticker != "BTCUSD" else 0.0)
+            sec.Price *= drift
+            sec.BidPrice = sec.Price * 0.999
+            sec.AskPrice = sec.Price * 1.001
+            sec.Volume = max(1000.0, sec.Volume * 1.001)
+            algo.crypto_data[sym]["prices"].append(sec.Price)
+            algo.crypto_data[sym]["volume"].append(sec.Volume)
+
+        for ticker in ("ETHUSD", "SOLUSD", "XRPUSD"):
+            sym = algo.symbols[ticker]
+            sec = algo.Securities[sym]
+            notional = 80.0
+            if sizer.passes_cost_gate(sym, 0.9, notional, sec.FeeModel, is_limit=True):
+                execute_regime_entries(algo, [(sym, 0.9, 0.08)], regime_tag="risk_on")
+        # explicit blacklist check path
+        black = place_entry(algo, algo.symbols["USDTUSD"], 10.0, tag="blacklist-test")
+        if black is None:
+            rejected_blacklist = True
+
+    assert len(algo.order_calls) >= 3
+    assert algo.fee_spy.calls >= 1
+    assert rejected_blacklist

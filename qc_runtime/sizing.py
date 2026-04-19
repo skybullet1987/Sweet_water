@@ -76,3 +76,16 @@ class Sizer:
         sized = min(self.config.kelly_cap, kelly * max(0.5, min(2.0, vol_scale)) * min(1.0, budget))
         _ = equity
         return max(0.0, min(self.config.kelly_cap, sized))
+
+
+    def passes_cost_gate(self, symbol: str, score: float, notional: float, fee_model, is_limit: bool = True) -> bool:
+        """Reject entries where estimated round-trip fees exceed edge floor (0.4 * |score|)."""
+        _ = symbol
+        if notional <= 0 or fee_model is None:
+            return True
+        estimate_fn = getattr(fee_model, 'estimate_round_trip_cost', None)
+        if estimate_fn is None:
+            return True
+        est_cost = float(estimate_fn(symbol, notional, is_limit=is_limit))
+        edge_floor = 0.4 * abs(float(score)) * abs(float(notional))
+        return est_cost <= edge_floor

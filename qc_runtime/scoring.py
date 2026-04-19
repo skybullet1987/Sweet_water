@@ -8,6 +8,9 @@ except ModuleNotFoundError:  # pragma: no cover
 
 class Scorer:
     ADX_TREND_THRESHOLD = 25.0
+    BREADTH_PENALTY_THRESHOLD = 0.30
+    MULT_MIN = 0.4
+    MULT_MAX = 1.3
     W_CVD = 0.30
     W_OFI = 0.30
     W_VOLC = 0.20
@@ -44,7 +47,7 @@ class Scorer:
 
     @staticmethod
     def _breadth_multiplier(breadth: float) -> float:
-        return 0.7 if float(breadth) < 0.30 else 1.0
+        return 0.7 if float(breadth) < Scorer.BREADTH_PENALTY_THRESHOLD else 1.0
 
     def composite_score(self, symbol, signal_stack, regime_engine, breadth: float = 0.5) -> dict[str, float | str]:
         parts = signal_stack.component_scores(symbol)
@@ -55,7 +58,7 @@ class Scorer:
         mult *= self._vr_multiplier(vr_reg)
         mult *= self._vol_stress_multiplier(regime_engine.vol_stress, self.config.vol_stress_threshold)
         mult *= self._breadth_multiplier(breadth)
-        mult = self._clamp(mult, 0.4, 1.3)
+        mult = self._clamp(mult, self.MULT_MIN, self.MULT_MAX)
         h = regime_engine.hurst.hurst(symbol)
         hreg = regime_engine.hurst.regime(symbol)
         final = self._clip(raw * mult)

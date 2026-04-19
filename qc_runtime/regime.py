@@ -59,6 +59,10 @@ class HurstRegimeModel:
 
 
 class VarianceRatioRegimeModel:
+    MIN_EFFECTIVE_SAMPLES = 20
+    TREND_THRESHOLD = 1.05
+    MEANREV_THRESHOLD = 0.95
+
     def __init__(self, window: int = 500, min_samples: int = 120, k_short: int = 6, k_long: int = 24) -> None:
         self.window = int(window)
         self.min_samples = int(min_samples)
@@ -72,19 +76,19 @@ class VarianceRatioRegimeModel:
     def _variance_ratio(log_returns: np.ndarray, k: int) -> float:
         r = np.asarray(log_returns, dtype=float)
         n = len(r)
-        if n < max(20, int(k) + 2):
+        effective_k = int(max(2, k))
+        if n < max(VarianceRatioRegimeModel.MIN_EFFECTIVE_SAMPLES, effective_k + 2):
             return 1.0
         var1 = float(np.var(r, ddof=1))
         if not np.isfinite(var1) or var1 <= 0:
             return 1.0
-        k = int(max(2, k))
-        rolling = np.convolve(r, np.ones(k, dtype=float), mode="valid")
+        rolling = np.convolve(r, np.ones(effective_k, dtype=float), mode="valid")
         if len(rolling) < 2:
             return 1.0
         vark = float(np.var(rolling, ddof=1))
         if not np.isfinite(vark):
             return 1.0
-        return vark / (k * var1)
+        return vark / (effective_k * var1)
 
     def update(self, symbol, bar_or_tick) -> None:
         key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
@@ -107,9 +111,9 @@ class VarianceRatioRegimeModel:
 
     def regime(self, symbol) -> str:
         vr = self.variance_ratio(symbol)
-        if vr > 1.05:
+        if vr > self.TREND_THRESHOLD:
             return "trend"
-        if vr < 0.95:
+        if vr < self.MEANREV_THRESHOLD:
             return "meanrev"
         return "random"
 

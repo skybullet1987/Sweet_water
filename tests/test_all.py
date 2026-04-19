@@ -124,6 +124,10 @@ def test_fee_slippage_estimators_positive():
     assert RealisticCryptoSlippage().estimate_slippage_bps("BTCUSD", 100.0, price=100.0, volume=1000.0) >= 1
 
 
+def test_realistic_crypto_slippage_is_duck_typed_plain_class():
+    assert RealisticCryptoSlippage.__bases__ == (object,)
+
+
 def test_executor_triple_barrier_exit_take_profit():
     ex = Executor()
     ex.register_fill("ETHUSD", price=100, atr=2, side=1, bar_index=0)

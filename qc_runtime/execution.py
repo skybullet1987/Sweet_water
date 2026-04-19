@@ -13,7 +13,6 @@ try:  # pragma: no cover
     from AlgorithmImports import *  # type: ignore
     # AlgorithmImports doesn't re-export these runtime base types on QC cloud.
     from QuantConnect.Orders.Fees import FeeModel, OrderFee  # type: ignore
-    from QuantConnect.Orders.Slippage import SlippageModel  # type: ignore
     from QuantConnect.Securities import CashAmount  # type: ignore
 except Exception:  # pragma: no cover
     class _OrderDirection:
@@ -46,9 +45,6 @@ except Exception:  # pragma: no cover
             return Symbol(value)
 
     class FeeModel:
-        pass
-
-    class SlippageModel:
         pass
 
     class CashAmount:
@@ -1270,7 +1266,12 @@ class KrakenTieredFeeModel(FeeModel):
 
 
 # ----- merged from realistic_slippage.py -----
-class RealisticCryptoSlippage(SlippageModel):
+# RealisticCryptoSlippage uses QC's duck-typed Python slippage interface:
+# QC has no `SlippageModel` Python base class (only the C# `ISlippageModel`
+# interface). Implementing `GetSlippageApproximation(asset, order)` on a plain
+# class is sufficient — QC wraps it via `PythonSlippageModel` when assigned
+# through `security.SetSlippageModel(...)`.
+class RealisticCryptoSlippage:
     """Participation/spread/size-aware slippage model with deterministic helper estimates."""
 
     def __init__(self, algo=None, stress_mult=1.0):

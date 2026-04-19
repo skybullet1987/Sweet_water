@@ -121,7 +121,7 @@ class SweetWaterPhase1(QCAlgorithm):
         for ticker in initial_universe:
             sec_obj = self.AddCrypto(ticker, Resolution.Hour, Market.Kraken)
             sec_obj.FeeModel = KrakenTieredFeeModel()
-            sec_obj.SlippageModel = RealisticCryptoSlippage(self)
+            sec_obj.SetSlippageModel(RealisticCryptoSlippage(self))
             self.symbol_by_ticker[ticker] = sec_obj.Symbol
         self.symbols = [self.symbol_by_ticker[t] for t in self.symbol_by_ticker]
 
@@ -142,7 +142,7 @@ class SweetWaterPhase1(QCAlgorithm):
                 continue
             sec_obj = self.AddCrypto(ticker, Resolution.Hour, Market.Kraken)
             sec_obj.FeeModel = KrakenTieredFeeModel()
-            sec_obj.SlippageModel = RealisticCryptoSlippage(self)
+            sec_obj.SetSlippageModel(RealisticCryptoSlippage(self))
             self.symbol_by_ticker[ticker] = sec_obj.Symbol
         self.symbols = [self.symbol_by_ticker[t] for t in self.symbol_by_ticker]
 

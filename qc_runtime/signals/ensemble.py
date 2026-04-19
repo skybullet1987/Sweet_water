@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+from .btc_dominance_rotation import BtcDominanceRotationSignal
+from .cvd_divergence import CvdDivergenceSignal
+from .hurst_regime import HurstRegimeSignal
+from .order_flow_imbalance import OrderFlowImbalanceSignal
+from .stablecoin_liquidity import StablecoinLiquidityOverlay
+from .vol_cone_breakout import VolConeBreakoutSignal
+
+
+class MicrostructureSignalEnsemble:
+    def __init__(self, algo=None, tracked_symbols: list[str] | None = None) -> None:
+        self.cvd_divergence = CvdDivergenceSignal()
+        self.order_flow_imbalance = OrderFlowImbalanceSignal()
+        self.vol_cone_breakout = VolConeBreakoutSignal()
+        self.btc_dominance_rotation = BtcDominanceRotationSignal(tracked_symbols or [])
+        self.stablecoin_liquidity = StablecoinLiquidityOverlay(algo)
+        self.hurst_regime = HurstRegimeSignal(window=500)
+
+    @staticmethod
+    def _clamp(x: float) -> float:
+        return max(-1.0, min(1.0, float(x)))
+
+    def set_tracked_symbols(self, symbols: list[str]) -> None:
+        self.btc_dominance_rotation.set_tracked_symbols(symbols)
+
+    def update(self, symbol, bar_or_tick) -> None:
+        self.cvd_divergence.update(symbol, bar_or_tick)
+        self.order_flow_imbalance.update(symbol, bar_or_tick)
+        self.vol_cone_breakout.update(symbol, bar_or_tick)
+        self.btc_dominance_rotation.update(symbol, bar_or_tick)
+        self.hurst_regime.update(symbol, bar_or_tick)
+        self.stablecoin_liquidity.update(getattr(bar_or_tick, "EndTime", getattr(bar_or_tick, "Time", None)))
+
+    def component_scores(self, symbol) -> dict[str, float]:
+        return {
+            "cvd": self.cvd_divergence.score(symbol),
+            "ofi": self.order_flow_imbalance.score(symbol),
+            "volc": self.vol_cone_breakout.score(symbol),
+            "rot": self.btc_dominance_rotation.score(symbol),
+        }
+
+    def composite_score(self, symbol) -> float:
+        parts = self.component_scores(symbol)
+        raw = 0.30 * parts["cvd"] + 0.30 * parts["ofi"] + 0.20 * parts["volc"] + 0.20 * parts["rot"]
+        raw *= self.stablecoin_liquidity.multiplier()
+        if self.hurst_regime.regime(symbol) == "random":
+            return 0.0
+        return self._clamp(raw)
+
+    def init_status(self) -> dict[str, str]:
+        return {
+            "cvd": "trade-tick if available, bar fallback enabled",
+            "ofi": "quote L1" if not self.order_flow_imbalance.using_fallback() else "quote-bar fallback",
+            "vol_cone": "garman-klass",
+            "btc_rotation": "active",
+            "stablecoin_overlay": "coingecko+cache",
+            "hurst": "R/S(500)",
+        }

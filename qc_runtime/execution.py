@@ -27,7 +27,10 @@ except Exception:  # pragma: no cover
         def __init__(self, value):
             self.Value = value
 
-from config import CONFIG, StrategyConfig
+try:
+    from config import CONFIG, StrategyConfig
+except ModuleNotFoundError:  # pragma: no cover
+    from .config import CONFIG, StrategyConfig  # type: ignore
 
 
 def get_effective_round_trip_fee(algo) -> float:
@@ -99,10 +102,28 @@ def debug_limited(algo, msg: str) -> None:
         algo.log_budget = budget - 1
 
 
+def _safe_submit_order(algo, symbol, quantity: float, submit_fn):
+    qty = float(quantity or 0.0)
+    if qty == 0:
+        return None
+    current = 0.0
+    try:
+        current = float(getattr(algo.Portfolio[symbol], "Quantity", 0.0) or 0.0)
+    except Exception:
+        current = 0.0
+    if qty < 0:
+        post = current + qty
+        if current <= 0 or post < -1e-9:
+            sym = getattr(symbol, "Value", str(symbol))
+            debug_limited(algo, f"ORD key=blocked_short symbol={sym} qty={qty:.8f} hold={current:.8f}")
+            return None
+    return submit_fn()
+
+
 def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry", force_market=False, signal_score=None):
     _ = timeout_seconds, signal_score
     if force_market:
-        return algo.MarketOrder(symbol, quantity, tag=tag)
+        return _safe_submit_order(algo, symbol, quantity, lambda: algo.MarketOrder(symbol, quantity, tag=tag))
     sec = algo.Securities[symbol]
     price = float(getattr(sec, "Price", 0.0) or 0.0)
     if price <= 0:
@@ -113,7 +134,9 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
         limit_price = bid if quantity > 0 else ask
     else:
         limit_price = price
-    ticket = algo.LimitOrder(symbol, quantity, limit_price, tag=tag)
+    ticket = _safe_submit_order(algo, symbol, quantity, lambda: algo.LimitOrder(symbol, quantity, limit_price, tag=tag))
+    if ticket is None:
+        return None
     algo._submitted_orders[symbol] = {
         "order_id": ticket.OrderId,
         "time": getattr(algo, "Time", datetime.now(timezone.utc)),
@@ -170,6 +193,19 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
         return False
     ticket = place_limit_or_market(algo, symbol, -qty, tag=tag)
     return ticket is not None
+
+
+def liquidate_all_positions(algo, tag="Liquidate"):
+    closed = []
+    for item in list(getattr(algo, "Portfolio", [])):
+        symbol = getattr(item, "Key", item)
+        try:
+            qty = float(getattr(algo.Portfolio[symbol], "Quantity", 0.0) or 0.0)
+        except Exception:
+            qty = 0.0
+        if qty > 0 and smart_liquidate(algo, symbol, tag=tag):
+            closed.append(symbol)
+    return closed
 
 
 def manage_open_positions(algo, data=None):

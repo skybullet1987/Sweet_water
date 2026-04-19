@@ -35,6 +35,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from .config import CONFIG, StrategyConfig  # type: ignore
 
 POSITION_TOLERANCE = 1e-9
+DEFAULT_LAZY_ATR_PCT = 0.05
 
 
 @dataclass
@@ -447,7 +448,7 @@ def manage_open_positions(algo, data=None):
             feats = algo.feature_engine.current_features(getattr(symbol, "Value", str(symbol))) or {}
             atr = float(feats.get("atr", 0.0) or 0.0)
             if atr <= 0:
-                atr = avg_px * 0.05
+                atr = avg_px * DEFAULT_LAZY_ATR_PCT
             _position_state(algo)[symbol] = PositionState(
                 entry_price=avg_px,
                 highest_close=avg_px,
@@ -469,8 +470,8 @@ def manage_open_positions(algo, data=None):
             hours_held = (algo.Time - state.entry_time).total_seconds() / 3600.0
         else:
             hours_held = 0.0
-        TIME_STOP_HOURS = float(getattr(CONFIG, "time_stop_hours", 120.0))
-        if hours_held >= TIME_STOP_HOURS:
+        time_stop_hours = float(getattr(getattr(algo, "config", CONFIG), "time_stop_hours", 120.0))
+        if hours_held >= time_stop_hours:
             if smart_liquidate(algo, symbol, tag="TimeStop"):
                 algo.Debug(f"TIME_STOP sym={getattr(symbol,'Value',symbol)} hours={hours_held:.1f}")
                 cleanup_position(algo, symbol, record_pnl=True, exit_price=price)
@@ -478,11 +479,13 @@ def manage_open_positions(algo, data=None):
                 exits.append((symbol, "TimeStop"))
                 continue
         state.highest_close = max(state.highest_close, price)
-        sl_price = state.entry_price - float(CONFIG.sl_atr_multiplier) * state.entry_atr
+        sl_mult = float(getattr(getattr(algo, "config", CONFIG), "sl_atr_multiplier", 1.5))
+        tp_mult = float(getattr(getattr(algo, "config", CONFIG), "tp_atr_multiplier", 3.0))
+        sl_price = state.entry_price - sl_mult * state.entry_atr
         chandelier_active = (state.highest_close - state.entry_price) >= state.entry_atr
         chandelier_stop = state.highest_close - 2.0 * state.entry_atr if chandelier_active else None
         effective_stop = max(sl_price, chandelier_stop) if chandelier_stop is not None else sl_price
-        tp_price = state.entry_price + float(CONFIG.tp_atr_multiplier) * state.entry_atr
+        tp_price = state.entry_price + tp_mult * state.entry_atr
         if price <= effective_stop:
             tag = "Chandelier" if chandelier_active and chandelier_stop is not None and effective_stop == chandelier_stop else "SL"
             if smart_liquidate(algo, symbol, tag=tag):

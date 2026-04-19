@@ -11,6 +11,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     from .config import CONFIG, StrategyConfig  # type: ignore
 
+BTC_EMA_PERIOD_HOURS = 30 * 24
+
 
 class HurstRegimeModel:
     def __init__(self, window: int = 5000) -> None:
@@ -168,7 +170,7 @@ class RegimeEngine:
         self._probs = {"risk_on": 1.0, "risk_off": 0.0, "chop": 0.0}
         self.vol_stress = 0.0
         self._btc_below_ema = False
-        self._btc_close_history = deque(maxlen=720)
+        self._btc_close_history = deque(maxlen=BTC_EMA_PERIOD_HOURS)
         self._btc_above_ema30d = True
         self.hurst = HurstRegimeModel(window=5000)
         self.vr = VarianceRatioRegimeModel(window=5000, min_samples=500)
@@ -177,9 +179,9 @@ class RegimeEngine:
         if close <= 0:
             return
         self._btc_close_history.append(float(close))
-        if len(self._btc_close_history) >= 30 * 24:
+        if len(self._btc_close_history) >= BTC_EMA_PERIOD_HOURS:
             prices = list(self._btc_close_history)
-            period = 30 * 24
+            period = BTC_EMA_PERIOD_HOURS
             alpha = 2.0 / (period + 1.0)
             ema = prices[0]
             for p in prices[1:]:

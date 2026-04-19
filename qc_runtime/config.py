@@ -40,6 +40,7 @@ class StrategyConfig:
     # Exits (ATR-scaled)
     tp_atr_mult: float = 2.0
     sl_atr_mult: float = 1.0
+    # Tier-7 names used by manage_open_positions; legacy *_mult fields are retained for backward compatibility.
     tp_atr_multiplier: float = 3.0
     sl_atr_multiplier: float = 1.5
     chandelier_atr_mult: float = 3.0

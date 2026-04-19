@@ -70,6 +70,9 @@ HARD_RISK_OFF_VOL_STRESS = 0.9
 NEW_ENTRANT_MIN_DELTA_MULTIPLIER = 0.5
 NO_TRADE_HEARTBEAT_THRESHOLD_BARS = 168
 NO_TRADE_HEARTBEAT_LOG_CADENCE_BARS = 24
+PRIME_MIN_READY_SYMBOLS = 5
+NO_CHASE_MOM24_THRESHOLD = 0.15
+MIN_VOLUME_RATIO_24H_7D = 1.2
 
 
 class SweetWaterPhase1(QCAlgorithm):
@@ -265,8 +268,8 @@ class SweetWaterPhase1(QCAlgorithm):
             feats = self.feature_engine.current_features(sym.Value) or {}
             if abs(float(feats.get("mom_90d", 0.0) or 0.0)) > 1e-9:
                 ready += 1
-        if ready < 5:
-            self.Debug(f"CRITICAL prime_features mom_90d_ready={ready}/{len(symbols)} — priming may have failed!")
+        if ready < PRIME_MIN_READY_SYMBOLS:
+            self.Debug(f"CRITICAL prime_features mom_90d_ready={ready}/{len(symbols)} -- priming may have failed!")
         else:
             self.Debug(f"PRIME features symbols={primed} mom_90d_ready={ready}")
         disp_ready = len(getattr(self, "_dispersion_history", []))
@@ -389,11 +392,11 @@ class SweetWaterPhase1(QCAlgorithm):
             feats = feat_engine.current_features(getattr(sym, "Value", str(sym))) if feat_engine is not None else {}
             feats = feats or {}
             mom_24 = float(feats.get("mom_24", 0.0) or 0.0)
-            if mom_24 > 0.15:
+            if mom_24 > NO_CHASE_MOM24_THRESHOLD:
                 self.Debug(f"NO_CHASE sym={getattr(sym,'Value',sym)} mom_24={mom_24:.3f}")
                 continue
             vol_ratio = float(feats.get("vol_ratio_24h_7d", 1.0) or 1.0)
-            if vol_ratio < 1.2:
+            if vol_ratio < MIN_VOLUME_RATIO_24H_7D:
                 self.Debug(f"NO_VOLUME sym={getattr(sym,'Value',sym)} vol_ratio={vol_ratio:.2f}")
                 continue
             desired = equity * float(entry["target_weight"])
@@ -637,11 +640,11 @@ class SweetWaterPhase1(QCAlgorithm):
                 feats = feat_engine.current_features(getattr(symbol, "Value", str(symbol))) if feat_engine is not None else {}
                 feats = feats or {}
                 mom_24 = float(feats.get("mom_24", 0.0) or 0.0)
-                if mom_24 > 0.15:
+                if mom_24 > NO_CHASE_MOM24_THRESHOLD:
                     self.Debug(f"NO_CHASE sym={getattr(symbol,'Value',symbol)} mom_24={mom_24:.3f}")
                     continue
                 vol_ratio = float(feats.get("vol_ratio_24h_7d", 1.0) or 1.0)
-                if vol_ratio < 1.2:
+                if vol_ratio < MIN_VOLUME_RATIO_24H_7D:
                     self.Debug(f"NO_VOLUME sym={getattr(symbol,'Value',symbol)} vol_ratio={vol_ratio:.2f}")
                     continue
                 desired_notional = equity * target_w
@@ -662,7 +665,7 @@ class SweetWaterPhase1(QCAlgorithm):
                     available_cash -= qty * price
                     notional_cap = max(0.0, available_cash * 0.95)
                     if available_cash < float(self.config.min_position_floor_usd):
-                        self.Debug("REBAL cash exhausted — defer remaining entries to next rebalance")
+                        self.Debug("REBAL cash exhausted -- defer remaining entries to next rebalance")
                         break
             else:
                 notional = abs(delta_w) * equity
@@ -774,7 +777,7 @@ class SweetWaterPhase1(QCAlgorithm):
         if not btc_gate_open:
             gate_day = self.Time.date() if hasattr(self, "Time") else None
             if gate_day is not None and getattr(self, "_last_btc_gate_log_date", None) != gate_day:
-                self.Debug("GATE btc_below_ema30d=true — no new entries")
+                self.Debug("GATE btc_below_ema30d=true -- no new entries")
                 self._last_btc_gate_log_date = gate_day
         if state == "risk_off" or disp == "flat":
             liquidate_all_positions(self, tag="RiskOff" if state == "risk_off" else "FlatDispersion")

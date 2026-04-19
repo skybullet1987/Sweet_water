@@ -9,7 +9,7 @@ QC_RUNTIME = REPO_ROOT / "qc_runtime"
 if str(QC_RUNTIME) not in sys.path:
     sys.path.insert(0, str(QC_RUNTIME))
 
-from execution import manage_open_positions
+from execution import DEFAULT_LAZY_ATR_PCT, manage_open_positions
 
 
 class _Symbol:
@@ -53,4 +53,4 @@ def test_manage_open_positions_lazy_builds_state_with_safe_atr_default():
     assert sym in algo.position_state
     state = algo.position_state[sym]
     assert abs(state.entry_price - 100.0) < 1e-9
-    assert abs(state.entry_atr - 5.0) < 1e-9
+    assert abs(state.entry_atr - (100.0 * DEFAULT_LAZY_ATR_PCT)) < 1e-9

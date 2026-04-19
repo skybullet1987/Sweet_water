@@ -94,8 +94,9 @@ class TestPhaseRequirements:
             self.OrderId = order_id
 
     class _Slice:
-        def __init__(self, bars):
+        def __init__(self, bars, ticks=None):
             self.Bars = bars
+            self.Ticks = {} if ticks is None else ticks
 
     class _Decision:
         def __init__(self, w):
@@ -120,6 +121,7 @@ class TestPhaseRequirements:
         algo.Transactions = self._Transactions()
         algo._order_calls = []
         algo._debug_logs = []
+        algo._subscriptions = []
 
         noop = lambda *_args, **_kwargs: None
         algo.SetBrokerageModel = noop
@@ -136,6 +138,7 @@ class TestPhaseRequirements:
             sec = self._Security(symbol, price)
             algo.Securities[symbol] = sec
             algo.Portfolio[symbol] = self._Holding()
+            algo._subscriptions.append((ticker, _resolution))
             return sec
 
         algo.AddCrypto = _add_crypto
@@ -233,6 +236,18 @@ class TestPhaseRequirements:
         buys = [o for o in algo._order_calls if o[2] > 0]
         assert len(buys) == 1
 
+    def test_tick_subscriptions_disabled_in_backtest(self):
+        algo = self._build_algo()
+        algo.LiveMode = False
+        algo.Initialize()
+        assert all(str(resolution) != "Tick" for _, resolution in algo._subscriptions)
+
+    def test_tick_subscriptions_enabled_in_live_microstructure(self):
+        algo = self._build_algo()
+        algo.LiveMode = True
+        algo.Initialize()
+        assert any(str(resolution) == "Tick" for _, resolution in algo._subscriptions)
+
     def test_cash_preflight_skips(self):
         algo = self._build_algo()
         algo.Initialize()
@@ -324,6 +339,42 @@ class TestPhaseRequirements:
         execute_regime_entries(algo, [(symbol, -0.9, 0.2)], regime_tag="risk_on")
         assert all(order[2] >= 0 for order in algo._order_calls)
         assert float(algo.Portfolio[symbol].Quantity) >= qty_before
+
+    def test_warmup_updates_state_without_scoring_or_orders(self):
+        algo = self._build_algo()
+        algo.Initialize()
+        symbol = algo.symbol_by_ticker["SOLUSD"]
+        algo._debug_logs = []
+        algo.IsWarmingUp = True
+
+        algo.OnData(self._make_slice(algo, symbol, 100.0, 101.0, 99.0, 100.5))
+        assert len(algo._order_calls) == 0
+        assert not any("SIG sym=" in msg for msg in algo._debug_logs)
+        assert algo._bar_count >= 1
+
+
+def test_heartbeat_logs_every_24_bars():
+    t = TestPhaseRequirements()
+    algo = t._build_algo()
+    algo.Initialize()
+    symbol = algo.symbol_by_ticker["SOLUSD"]
+    t._warm_and_configure_single_symbol(algo, symbol)
+    algo.scorer.score = lambda *_args, **_kwargs: {
+        "cvd": 0.0,
+        "ofi": 0.0,
+        "volc": 0.0,
+        "rot": 0.0,
+        "mult": 1.0,
+        "hurst": 0.6,
+        "hurst_regime": "trend",
+        "raw": 0.0,
+        "final": 0.0,
+    }
+    algo._debug_logs = []
+    for i in range(24):
+        algo.Time = datetime(2025, 1, 4, i, tzinfo=timezone.utc)
+        algo.OnData(t._make_slice(algo, symbol, 100.0, 101.0, 99.0, 100.0))
+    assert any(msg.startswith("HB t=") for msg in algo._debug_logs)
 
 def test_cross_section_score_orders_winners_first():
     s = Scorer()

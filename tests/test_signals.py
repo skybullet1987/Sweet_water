@@ -13,7 +13,7 @@ QC_RUNTIME = REPO_ROOT / "qc_runtime"
 if str(QC_RUNTIME) not in sys.path:
     sys.path.insert(0, str(QC_RUNTIME))
 
-from features import CvdDivergenceFeature, OrderFlowImbalanceFeature, VolConeBreakoutFeature
+from features import CvdDivergenceFeature, FeatureEngine, OrderFlowImbalanceFeature, VolConeBreakoutFeature
 from regime import HurstRegimeModel, VarianceRatioRegimeModel
 
 MAX_FILE_BYTES = 60_000
@@ -113,6 +113,25 @@ def test_ofi_sign_convention_positive_bid_improves():
     sig.update(sym, _Quote(t + timedelta(minutes=1), 100.5, 12.0, 100.9, 9.0))
     event = sig._event_ofi("ETHUSD", 100.6, 15.0, 100.8, 8.0)
     assert event > 0
+
+
+def test_feature_engine_incremental_outputs_required_keys():
+    engine = FeatureEngine(signal_mode="microstructure")
+    for i in range(240):
+        px = 100.0 + 0.1 * i
+        engine.update(
+            {
+                "symbol": "BTCUSD",
+                "open": px * 0.999,
+                "high": px * 1.002,
+                "low": px * 0.998,
+                "close": px,
+                "volume": 1000.0 + i,
+            }
+        )
+    feats = engine.current_features("BTCUSD")
+    required = {"atr", "realized_vol_30", "mom_24", "mom_168", "ema20", "ema50", "ema200"}
+    assert required.issubset(feats.keys())
 
 
 def test_module_count_and_size():

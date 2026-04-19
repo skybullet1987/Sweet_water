@@ -51,6 +51,16 @@ def test_strategy_config_defaults_updated():
     assert cfg.rebalance_cadence_hours == 24
     assert cfg.vol_stress_threshold == 0.85
     assert cfg.warmup_bars == 24
+    assert cfg.max_position_pct == 0.20
+    assert cfg.total_deployment_cap == 0.85
+    assert cfg.post_breaker_cooldown_hours == 48
+
+
+def test_initialize_uses_tighter_breaker_threshold():
+    t = TestPhaseRequirements()
+    algo = t._build_algo()
+    algo.Initialize()
+    assert algo._drawdown_breaker.max_drawdown_pct == -0.12
 
 
 def test_universe_excludes_sklusd_even_if_high_liquidity(monkeypatch):

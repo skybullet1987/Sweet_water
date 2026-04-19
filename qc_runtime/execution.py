@@ -225,6 +225,21 @@ def _safe_submit_order(algo, symbol, quantity: float, submit_fn):
 def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry", force_market=False, signal_score=None):
     _ = timeout_seconds, signal_score
     quantity = float(quantity or 0.0)
+    if quantity > 0:
+        failed = getattr(algo, "_failed_escalations", {}) or {}
+        last_fail = failed.get(symbol)
+        if last_fail is not None:
+            try:
+                hours_since = (algo.Time - last_fail).total_seconds() / 3600.0
+            except Exception:
+                hours_since = 999.0
+            if hours_since < 24.0:
+                _log_once_per_hour(
+                    algo,
+                    f"esc_cooldown:{getattr(symbol, 'Value', symbol)}",
+                    f"ORD key=esc_cooldown sym={getattr(symbol, 'Value', symbol)} hrs={hours_since:.1f}",
+                )
+                return None
     abandoned_dust = getattr(algo, "_abandoned_dust", None)
     if quantity < 0 and abandoned_dust is not None and symbol in abandoned_dust:
         return None
@@ -495,15 +510,19 @@ def escalate_stale_orders(algo):
             pass
         qty = float(info.get("quantity", 0.0) or 0.0)
         intent = str(info.get("intent", "") or "")
-        if qty != 0:
-            if intent == "exit" and has_open_exit_order(algo, symbol):
-                algo._submitted_orders.pop(symbol, None)
-                continue
-            replacement = place_limit_or_market(algo, symbol, qty, tag="[StaleEsc]", force_market=True)
-            if replacement is None:
-                continue
-        else:
+        if qty == 0:
             algo._submitted_orders.pop(symbol, None)
+            continue
+        if intent == "exit" and has_open_exit_order(algo, symbol):
+            algo._submitted_orders.pop(symbol, None)
+            continue
+        replacement = place_limit_or_market(algo, symbol, qty, tag="[StaleEsc]", force_market=True)
+        algo._submitted_orders.pop(symbol, None)
+        if replacement is None:
+            if not hasattr(algo, "_failed_escalations"):
+                algo._failed_escalations = {}
+            algo._failed_escalations[symbol] = algo.Time
+            continue
         escalated.append(symbol)
     return escalated
 

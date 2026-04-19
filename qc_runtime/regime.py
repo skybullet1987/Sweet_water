@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict, deque
+from datetime import timedelta
 
 import numpy as np
 
@@ -12,11 +13,13 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 class HurstRegimeModel:
-    def __init__(self, window: int = 500) -> None:
+    def __init__(self, window: int = 5000) -> None:
         self.window = int(window)
         self._rets = defaultdict(lambda: deque(maxlen=self.window))
         self._last_close = {}
         self._h = {}
+        self._snaps = defaultdict(lambda: deque(maxlen=365))
+        self._last_snapshot_ts = {}
 
     @staticmethod
     def hurst_rs(log_returns: np.ndarray) -> float:
@@ -36,6 +39,7 @@ class HurstRegimeModel:
     def update(self, symbol, bar_or_tick) -> None:
         key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
         close = float(getattr(bar_or_tick, "Close", getattr(bar_or_tick, "Price", 0.0)) or 0.0)
+        ts = getattr(bar_or_tick, "EndTime", getattr(bar_or_tick, "Time", None))
         if close <= 0:
             return
         prev = self._last_close.get(key)
@@ -43,7 +47,13 @@ class HurstRegimeModel:
         if prev and prev > 0:
             self._rets[key].append(math.log(close / prev))
         if len(self._rets[key]) >= self.window:
-            self._h[key] = self.hurst_rs(np.array(self._rets[key], dtype=float))
+            h = self.hurst_rs(np.array(self._rets[key], dtype=float))
+            self._h[key] = h
+            if ts is not None:
+                last_ts = self._last_snapshot_ts.get(key)
+                if last_ts is None or abs((ts - last_ts).total_seconds()) >= 24 * 3600:
+                    self._snaps[key].append((ts, h))
+                    self._last_snapshot_ts[key] = ts
 
     def hurst(self, symbol) -> float:
         key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
@@ -57,13 +67,22 @@ class HurstRegimeModel:
             return "meanrev"
         return "random"
 
+    def hurst_change_30d(self, symbol) -> float:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        snaps = self._snaps.get(key, [])
+        if len(snaps) < 2:
+            return 0.0
+        target_ts = snaps[-1][0] - timedelta(days=30)
+        older = min(snaps, key=lambda s: abs((s[0] - target_ts).total_seconds()))
+        return float(snaps[-1][1] - older[1])
+
 
 class VarianceRatioRegimeModel:
     MIN_EFFECTIVE_SAMPLES = 20
     TREND_THRESHOLD = 1.05
     MEANREV_THRESHOLD = 0.95
 
-    def __init__(self, window: int = 500, min_samples: int = 120, k_short: int = 6, k_long: int = 24) -> None:
+    def __init__(self, window: int = 5000, min_samples: int = 500, k_short: int = 6, k_long: int = 24) -> None:
         self.window = int(window)
         self.min_samples = int(min_samples)
         self.k_short = int(k_short)
@@ -71,6 +90,7 @@ class VarianceRatioRegimeModel:
         self._rets = defaultdict(lambda: deque(maxlen=self.window))
         self._last_close = {}
         self._vr = {}
+        self._threshold_cache: dict[str, tuple[float, float]] = {}
 
     @staticmethod
     def _variance_ratio(log_returns: np.ndarray, k: int) -> float:
@@ -104,16 +124,38 @@ class VarianceRatioRegimeModel:
             vr_short = self._variance_ratio(r, self.k_short)
             vr_long = self._variance_ratio(r, self.k_long)
             self._vr[key] = 0.5 * (vr_short + vr_long)
+        if len(self._rets[key]) >= 1000 and key not in self._threshold_cache:
+            self.calibrate(symbol)
+
+    def calibrate(self, symbol) -> None:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        rets = self._rets.get(key)
+        if rets is None or len(rets) < 1000:
+            return
+        arr = np.asarray(rets, dtype=float)
+        series = []
+        for i in range(250, len(arr) + 1):
+            window = arr[i - 250 : i]
+            vr_short = self._variance_ratio(window, self.k_short)
+            vr_long = self._variance_ratio(window, self.k_long)
+            series.append(0.5 * (vr_short + vr_long))
+        if len(series) < 20:
+            return
+        low = float(np.percentile(series[-1000:], 30))
+        high = float(np.percentile(series[-1000:], 70))
+        self._threshold_cache[key] = (low, high)
 
     def variance_ratio(self, symbol) -> float:
         key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
         return float(self._vr.get(key, 1.0))
 
     def regime(self, symbol) -> str:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
         vr = self.variance_ratio(symbol)
-        if vr > self.TREND_THRESHOLD:
+        low, high = self._threshold_cache.get(key, (self.MEANREV_THRESHOLD, self.TREND_THRESHOLD))
+        if vr > high:
             return "trend"
-        if vr < self.MEANREV_THRESHOLD:
+        if vr < low:
             return "meanrev"
         return "random"
 
@@ -126,8 +168,8 @@ class RegimeEngine:
         self._probs = {"risk_on": 1.0, "risk_off": 0.0, "chop": 0.0}
         self.vol_stress = 0.0
         self._btc_below_ema = False
-        self.hurst = HurstRegimeModel(window=500)
-        self.vr = VarianceRatioRegimeModel(window=500, min_samples=120)
+        self.hurst = HurstRegimeModel(window=5000)
+        self.vr = VarianceRatioRegimeModel(window=5000, min_samples=500)
 
     def update(self, btc_return: float, btc_vol: float, breadth: float, btc_above_ema200: bool = False) -> None:
         self._btc_below_ema = not bool(btc_above_ema200)

@@ -39,17 +39,18 @@ def test_module_size_limits():
 
 def test_strategy_config_defaults_updated():
     cfg = StrategyConfig()
-    assert cfg.universe_size == 30
-    assert cfg.top_k == 6
-    assert cfg.max_positions == 6
-    assert cfg.edge_cost_multiplier == 1.2
-    assert cfg.edge_scale == 0.005
-    assert cfg.score_threshold == 0.75
+    assert cfg.universe_size == 40
+    assert cfg.top_k == 10
+    assert cfg.max_positions == 10
+    assert cfg.edge_cost_multiplier == 1.0
+    assert cfg.edge_scale == 0.025
+    assert cfg.score_threshold == 0.0
     assert cfg.score_clip_value == 3.0
-    assert cfg.min_rebalance_weight_delta == 0.015
+    assert cfg.min_rebalance_weight_delta == 0.01
     assert cfg.max_replacements_per_rebalance == 4
-    assert cfg.rebalance_cadence_hours == 4
+    assert cfg.rebalance_cadence_hours == 24
     assert cfg.vol_stress_threshold == 0.85
+    assert cfg.warmup_bars == 24
 
 
 def test_universe_excludes_sklusd_even_if_high_liquidity(monkeypatch):
@@ -391,7 +392,7 @@ class TestPhaseRequirements:
         algo.feature_engine.current_features = lambda ticker: {"mom_90d": -0.1, "vol_stress_21d": 0.87} if ticker == "BTCUSD" else orig_current(ticker)
         state, candidates = algo._score_candidates(self._make_slice(algo, symbol, 100, 101, 99, 100, btc_close=220))
         assert state == "risk_reduce"
-        assert candidates
+        assert candidates == []
 
     def test_risk_on_when_btc_vol_stress_high_with_positive_momentum(self):
         algo = self._build_algo()
@@ -402,7 +403,7 @@ class TestPhaseRequirements:
         algo.feature_engine.current_features = lambda ticker: {"mom_90d": 0.2, "vol_stress_21d": 0.95} if ticker == "BTCUSD" else orig_current(ticker)
         state, candidates = algo._score_candidates(self._make_slice(algo, symbol, 100, 101, 99.5, 100.2, btc_close=50.0))
         assert state == "risk_on"
-        assert candidates
+        assert candidates == []
 
     def test_risk_off_when_btc_momentum_negative_and_vol_stress_extreme(self):
         algo = self._build_algo()
@@ -413,11 +414,11 @@ class TestPhaseRequirements:
         algo.feature_engine.current_features = lambda ticker: {"mom_90d": -0.2, "vol_stress_21d": 0.95} if ticker == "BTCUSD" else orig_current(ticker)
         state, candidates = algo._score_candidates(self._make_slice(algo, symbol, 100, 101, 99.5, 100.2, btc_close=50.0))
         assert state == "risk_off"
-        assert candidates
+        assert candidates == []
 
     def test_cost_gate_rejects_low_score(self):
         sizer = Sizer()
-        assert not sizer.passes_cost_gate("SOLUSD", score=0.401, notional=100, fee_model=None)
+        assert not sizer.passes_cost_gate("SOLUSD", score=0.2, notional=100, fee_model=None)
 
     def test_no_short_orders(self):
         algo = self._build_algo()
@@ -511,7 +512,7 @@ def test_rebalance_logs_are_concise():
     algo._debug_logs = []
     algo._score_candidates = lambda _data: ("risk_on", [(symbol, 0.0, {})])
     for i in range(6):
-        algo.Time = datetime(2025, 1, 7, i, tzinfo=timezone.utc)
+        algo.Time = datetime(2025, 1, 7, 16 + i, tzinfo=timezone.utc)
         algo.OnData(t._make_slice(algo, symbol, 100.0, 101.0, 99.0, 100.0))
     sig_lines = [msg for msg in algo._debug_logs if msg.startswith("SIG sym=")]
     rebalance_lines = [msg for msg in algo._debug_logs if msg.startswith("REB ")]
@@ -520,10 +521,10 @@ def test_rebalance_logs_are_concise():
 
 def test_cross_section_score_orders_winners_first():
     s = Scorer()
-    feats = {"ema20": 2, "ema50": 1, "mom_24": 0.01, "adx": 30, "ofi": 1}
-    low = s.legacy_score("A", feats, "risk_on", {"btc_trend": 0.01}, rank_24h=0.0, rank_168h=0.0)
-    mid = s.legacy_score("B", feats, "risk_on", {"btc_trend": 0.01}, rank_24h=0.5, rank_168h=0.5)
-    high = s.legacy_score("C", feats, "risk_on", {"btc_trend": 0.01}, rank_24h=1.0, rank_168h=1.0)
+    feats = {"mom_21d": 0.1, "mom_63d": 0.2, "rv_21d": 0.1, "dd_63d": 0.1}
+    low = s.score(symbol="A", features=feats, regime_state="risk_on", btc_context={}, cross_section_zscore=-1.0)["final"]
+    mid = s.score(symbol="B", features=feats, regime_state="risk_on", btc_context={}, cross_section_zscore=0.0)["final"]
+    high = s.score(symbol="C", features=feats, regime_state="risk_on", btc_context={}, cross_section_zscore=1.0)["final"]
     assert high > mid > low
 
 

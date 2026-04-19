@@ -1334,7 +1334,7 @@ def place_entry(algo, symbol, quantity, tag='Entry', force_market=False, signal_
         quantity = round_quantity(algo, symbol, min_qty * (1 if quantity >= 0 else -1))
     min_notional = get_min_notional_usd(algo, symbol)
     if price > 0 and abs(quantity) * price < min_notional:
-        needed = estimate_min_qty(symbol, price)
+        needed = estimate_min_qty(algo, symbol)
         quantity = round_quantity(algo, symbol, max(abs(quantity), needed) * (1 if quantity >= 0 else -1))
     return place_limit_or_market(algo, symbol, quantity, tag=tag, force_market=force_market, signal_score=signal_score)
 

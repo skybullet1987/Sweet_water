@@ -57,6 +57,7 @@ def _finalize_trade_metadata_on_exit(algo, symbol, pnl: float) -> None:
 
 
 def _status_name(status: Any) -> str:
+    """Normalize enum-like order status objects to plain terminal name text."""
     if status is None:
         return ""
     text = str(status)

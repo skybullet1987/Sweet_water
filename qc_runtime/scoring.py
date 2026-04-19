@@ -25,6 +25,30 @@ class Scorer:
             "flow": 1.0 / 4.0,
         }
 
+    def cross_sectional_momentum_score(self, features: dict[str, float]) -> dict[str, float | str]:
+        rv_floor = max(float(getattr(self.config, "min_rv_floor", 1e-4) or 1e-4), 1e-9)
+        clip = max(float(getattr(self.config, "score_clip_value", 5.0) or 5.0), 1.0)
+        mom_21d = float(features.get("mom_21d", 0.0) or 0.0)
+        mom_63d = float(features.get("mom_63d", 0.0) or 0.0)
+        rv_21d = max(float(features.get("rv_21d", 0.0) or 0.0), rv_floor)
+        dd_63d = self._clamp(float(features.get("dd_63d", 0.0) or 0.0), 0.0, 1.0)
+        m21_adj = self._clamp(mom_21d / rv_21d, -clip, clip)
+        m63_adj = self._clamp(mom_63d / rv_21d, -clip, clip)
+        score = self._clamp(0.6 * m21_adj + 0.4 * m63_adj - 0.3 * dd_63d, -clip, clip)
+        return {
+            "cvd": 0.0,
+            "ofi": 0.0,
+            "volc": 0.0,
+            "rot": 0.0,
+            "mult": 1.0,
+            "raw": score,
+            "vr": 1.0,
+            "vr_regime": "daily_cs_mom",
+            "hurst": 0.5,
+            "hurst_regime": "daily_cs_mom",
+            "final": score,
+        }
+
     @staticmethod
     def _clip(value: float) -> float:
         return max(-1.0, min(1.0, float(value)))
@@ -137,7 +161,8 @@ class Scorer:
         signal_stack=None,
         regime_engine=None,
     ):
-        if self.config.signal_mode == "legacy":
+        mode = str(getattr(self.config, "signal_mode", "cross_sectional_momentum"))
+        if mode == "legacy":
             val = self.legacy_score(
                 str(getattr(symbol, "Value", symbol)),
                 features,
@@ -160,4 +185,6 @@ class Scorer:
                 "hurst_regime": "legacy",
                 "final": val,
             }
-        return self.composite_score(symbol, signal_stack, regime_engine, breadth=breadth)
+        if mode == "microstructure":
+            return self.composite_score(symbol, signal_stack, regime_engine, breadth=breadth)
+        return self.cross_sectional_momentum_score(features)

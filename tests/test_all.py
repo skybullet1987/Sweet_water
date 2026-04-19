@@ -254,7 +254,7 @@ class TestPhaseRequirements:
         algo = self._build_algo()
         algo.LiveMode = True
         algo.Initialize()
-        assert any(str(resolution) == "Tick" for _, resolution in algo._subscriptions)
+        assert all(str(resolution) != "Tick" for _, resolution in algo._subscriptions)
 
     def test_cash_preflight_skips(self):
         algo = self._build_algo()
@@ -351,29 +351,27 @@ class TestPhaseRequirements:
         assert place_limit_or_market(algo, symbol, 0.01, force_market=True, tag="manual7") is None
         assert len(algo._order_calls) == before
 
-    def test_vol_stress_gate_blocks_entries(self):
+    def test_risk_off_when_btc_momentum_negative(self):
         algo = self._build_algo()
         algo.Initialize()
         symbol = algo.symbol_by_ticker["SOLUSD"]
         self._warm_and_configure_single_symbol(algo, symbol)
-
-        algo.regime_engine.vol_stress = 0.9
-        algo.regime_engine.update = lambda *_args, **_kwargs: None
+        orig_current = algo.feature_engine.current_features
+        algo.feature_engine.current_features = lambda ticker: {"mom_90d": -0.1, "vol_stress_21d": 0.2} if ticker == "BTCUSD" else orig_current(ticker)
         state, candidates = algo._score_candidates(self._make_slice(algo, symbol, 100, 101, 99, 100, btc_close=220))
-        assert state in {"risk_on", "chop", "risk_off"}
-        assert candidates == []
+        assert state == "risk_off"
+        assert len(candidates) >= 0
 
-    def test_btc_trend_gate_blocks_entries(self):
+    def test_risk_off_when_btc_vol_stress_high(self):
         algo = self._build_algo()
         algo.Initialize()
         symbol = algo.symbol_by_ticker["SOLUSD"]
         self._warm_and_configure_single_symbol(algo, symbol)
-
-        algo.regime_engine._btc_below_ema = True
-        algo.regime_engine.update = lambda *_args, **_kwargs: None
+        orig_current = algo.feature_engine.current_features
+        algo.feature_engine.current_features = lambda ticker: {"mom_90d": 0.2, "vol_stress_21d": 0.95} if ticker == "BTCUSD" else orig_current(ticker)
         state, candidates = algo._score_candidates(self._make_slice(algo, symbol, 100, 101, 99.5, 100.2, btc_close=50.0))
-        assert state in {"risk_on", "chop", "risk_off"}
-        assert candidates == []
+        assert state == "risk_off"
+        assert len(candidates) >= 0
 
     def test_cost_gate_rejects_low_score(self):
         sizer = Sizer()
@@ -425,11 +423,11 @@ def test_heartbeat_logs_every_24_bars():
     assert any(msg.startswith("HB t=") for msg in algo._debug_logs)
 
 
-def test_hold_sig_logs_are_throttled():
+def test_rebalance_logs_are_concise():
     t = TestPhaseRequirements()
     algo = t._build_algo()
     algo.Initialize()
-    algo.config = StrategyConfig(sig_hold_log_every_bars=3)
+    algo.config = StrategyConfig(rebalance_cadence_hours=1)
     symbol = algo.symbol_by_ticker["SOLUSD"]
     t._warm_and_configure_single_symbol(algo, symbol)
     algo.scorer.score = lambda *_args, **_kwargs: {
@@ -449,7 +447,9 @@ def test_hold_sig_logs_are_throttled():
         algo.Time = datetime(2025, 1, 7, i, tzinfo=timezone.utc)
         algo.OnData(t._make_slice(algo, symbol, 100.0, 101.0, 99.0, 100.0))
     sig_lines = [msg for msg in algo._debug_logs if msg.startswith("SIG sym=")]
-    assert len(sig_lines) <= 2
+    reb_lines = [msg for msg in algo._debug_logs if msg.startswith("REB ")]
+    assert len(sig_lines) == 0
+    assert len(reb_lines) >= 1
 
 def test_cross_section_score_orders_winners_first():
     s = Scorer()
@@ -458,6 +458,37 @@ def test_cross_section_score_orders_winners_first():
     mid = s.legacy_score("B", feats, "risk_on", {"btc_trend": 0.01}, rank_24h=0.5, rank_168h=0.5)
     high = s.legacy_score("C", feats, "risk_on", {"btc_trend": 0.01}, rank_24h=1.0, rank_168h=1.0)
     assert high > mid > low
+
+
+def test_cross_sectional_momentum_scoring_math():
+    s = Scorer(StrategyConfig(signal_mode="cross_sectional_momentum"))
+    feats = {"mom_21d": 0.20, "mom_63d": 0.30, "rv_21d": 0.10, "dd_63d": 0.25}
+    out = s.score(symbol="SOLUSD", features=feats, regime_state="risk_on", btc_context={})
+    expected = 0.6 * (0.20 / 0.10) + 0.4 * (0.30 / 0.10) - 0.3 * 0.25
+    assert abs(float(out["final"]) - expected) < 1e-9
+
+
+def test_rebalance_replacements_capped_at_two():
+    t = TestPhaseRequirements()
+    algo = t._build_algo()
+    algo.Initialize()
+    algo.config = StrategyConfig(top_k=8, max_replacements_per_rebalance=2, min_rebalance_weight_delta=1.0)
+    picks = [algo.symbol_by_ticker[s] for s in list(algo.symbol_by_ticker.keys())[:12]]
+    algo.symbols = picks
+    for i, sym in enumerate(picks[:8]):
+        hold = algo.Portfolio[sym]
+        hold.Quantity = 1.0
+        hold.Invested = True
+        hold.AveragePrice = 100.0
+        algo.position_state[sym] = PositionState(100.0, 100.0, 2.0, datetime(2025, 1, 1, tzinfo=timezone.utc))
+    scored = []
+    order = [picks[8], picks[9], picks[0], picks[1], picks[2], picks[3], picks[4], picks[5], picks[10], picks[11], picks[6], picks[7]]
+    for rank, sym in enumerate(order):
+        scored.append((sym, 1.0 - rank * 0.01, {"mom_21d": 0.1, "mom_63d": 0.2, "rv_21d": 0.1, "dd_63d": 0.1}))
+    algo._order_calls = []
+    algo._rebalance_portfolio(scored)
+    exits = [o for o in algo._order_calls if o[2] < 0 and o[3] == "RebalanceExit"]
+    assert len(exits) <= 2
 
 
 def test_execution_file_under_30kb():

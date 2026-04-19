@@ -149,6 +149,9 @@ class FeatureEngine:
                 "ema20": None,
                 "ema50": None,
                 "ema200": None,
+                "daily_close": deque(maxlen=420),
+                "daily_logret": deque(maxlen=420),
+                "last_daily_bucket": None,
             }
             self._state[symbol] = state
         return state
@@ -178,6 +181,19 @@ class FeatureEngine:
         return float(prev + alpha * (value - prev))
 
     @staticmethod
+    def _clip(value: float, lo: float, hi: float) -> float:
+        return max(float(lo), min(float(hi), float(value)))
+
+    def _append_daily_close(self, state: dict[str, Any], close: float) -> None:
+        daily = state["daily_close"]
+        if daily and abs(float(daily[-1]) - float(close)) <= 1e-12:
+            return
+        prev = float(daily[-1]) if daily else None
+        daily.append(float(close))
+        if prev is not None and prev > 0 and close > 0:
+            state["daily_logret"].append(float(math.log(close / prev)))
+
+    @staticmethod
     def _parse_bar(bar: Any) -> tuple[str, dict[str, float]]:
         if isinstance(bar, dict):
             symbol = str(bar.get("symbol"))
@@ -201,6 +217,12 @@ class FeatureEngine:
         low = float(parsed["low"])
         open_ = float(parsed["open"])
         volume = float(parsed["volume"])
+
+        ts = None
+        if isinstance(bar, dict):
+            ts = bar.get("time") or bar.get("timestamp")
+        else:
+            ts = getattr(bar, "EndTime", getattr(bar, "Time", None))
 
         state["count"] += 1
         state["open"].append(open_)
@@ -226,6 +248,23 @@ class FeatureEngine:
         state["ema50"] = self._ema(state["ema50"], close, 50)
         state["ema200"] = self._ema(state["ema200"], close, 200)
 
+        daily_bucket = None
+        if ts is not None:
+            try:
+                daily_bucket = (int(ts.year), int(ts.month), int(ts.day))
+            except Exception:
+                daily_bucket = None
+        if daily_bucket is not None:
+            prev_bucket = state.get("last_daily_bucket")
+            if prev_bucket is None:
+                state["last_daily_bucket"] = daily_bucket
+            elif prev_bucket != daily_bucket:
+                if prev_close is not None and prev_close > 0:
+                    self._append_daily_close(state, prev_close)
+                state["last_daily_bucket"] = daily_bucket
+        elif state["count"] % 24 == 0:
+            self._append_daily_close(state, close)
+
         if state["count"] < 60:
             return
 
@@ -233,12 +272,45 @@ class FeatureEngine:
         mom_24 = float((close_hist[-1] / close_hist[-24]) - 1.0) if len(close_hist) >= 24 else 0.0
         mom_168 = float((close_hist[-1] / close_hist[-168]) - 1.0) if len(close_hist) >= 168 else 0.0
         realized_vol_30 = self._std(state["ret30"]) * math.sqrt(24.0 * 365.0)
+        daily_close = state["daily_close"]
+        daily_ret = state["daily_logret"]
+        mom_21d = float((daily_close[-1] / daily_close[-22]) - 1.0) if len(daily_close) >= 22 else 0.0
+        mom_63d = float((daily_close[-1] / daily_close[-64]) - 1.0) if len(daily_close) >= 64 else 0.0
+        mom_90d = float((daily_close[-1] / daily_close[-91]) - 1.0) if len(daily_close) >= 91 else 0.0
+        rv_21d = self._std(deque(list(daily_ret)[-21:], maxlen=21)) * math.sqrt(365.0) if len(daily_ret) >= 10 else 0.0
+        dd_63d = 0.0
+        if len(daily_close) >= 2:
+            window = list(daily_close)[-63:]
+            peak = float(window[0])
+            max_dd = 0.0
+            for px in window:
+                peak = max(peak, float(px))
+                if peak > 0:
+                    max_dd = max(max_dd, (peak - float(px)) / peak)
+            dd_63d = max_dd
+        vol_stress_21d = 0.0
+        if len(daily_ret) >= 63:
+            arr = np.asarray(daily_ret, dtype=float)
+            rolling = pd.Series(arr).rolling(21, min_periods=21).std().dropna()
+            if len(rolling) >= 3:
+                rv_now = float(rolling.iloc[-1])
+                mu = float(rolling.mean())
+                sd = float(rolling.std(ddof=1))
+                z = (rv_now - mu) / max(sd, 1e-9)
+                vol_stress_21d = float(1.0 / (1.0 + math.exp(-z)))
 
         features = {
             "atr": self._to_float(state["atr"], 0.0),
             "realized_vol_30": self._to_float(realized_vol_30, 0.0),
             "mom_24": self._to_float(mom_24, 0.0),
             "mom_168": self._to_float(mom_168, 0.0),
+            "mom_21d": self._clip(self._to_float(mom_21d, 0.0), -3.0, 3.0),
+            "mom_63d": self._clip(self._to_float(mom_63d, 0.0), -4.0, 4.0),
+            "mom_90d": self._clip(self._to_float(mom_90d, 0.0), -5.0, 5.0),
+            "rv_21d": self._to_float(rv_21d, 0.0),
+            "dd_63d": self._clip(self._to_float(dd_63d, 0.0), 0.0, 1.0),
+            "vol_stress_21d": self._clip(self._to_float(vol_stress_21d, 0.0), 0.0, 1.0),
+            "daily_count": float(len(daily_close)),
             "ema20": self._to_float(state["ema20"], float("nan")) if state["count"] >= 20 else float("nan"),
             "ema50": self._to_float(state["ema50"], float("nan")) if state["count"] >= 50 else float("nan"),
             "ema200": self._to_float(state["ema200"], float("nan")) if state["count"] >= 200 else float("nan"),

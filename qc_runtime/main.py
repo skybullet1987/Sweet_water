@@ -44,9 +44,13 @@ from execution import (
     debug_limited,
     execute_regime_entries,
     escalate_stale_orders,
+    get_min_notional_usd,
+    is_invested_not_dust,
     liquidate_all_positions,
     manage_open_positions,
+    place_limit_or_market,
     position_status,
+    round_quantity,
     smart_liquidate,
 )
 from features import FeatureEngine, SignalFeatureStack
@@ -161,6 +165,8 @@ class SweetWaterPhase1(QCAlgorithm):
         self._bar_count = 0
         self._last_sig_hold_log_bar = {}
         self._last_daily_summary_date = None
+        self._last_rebalance_time = None
+        self._last_regime_state = None
 
         self.position_state: dict[object, PositionState] = {}
         self.entry_volumes = {}
@@ -208,115 +214,139 @@ class SweetWaterPhase1(QCAlgorithm):
         gross = float(self.Portfolio.TotalHoldingsValue) / max(equity, 1.0)
         return equity, gross
 
-    def _score_candidates(self, data: Slice):
-        btc_ret, breadth = self._ingest_data(data)
-        btc_vol = abs(btc_ret)
-        btc_above_ema200 = True
-        for ref in self.reference_symbols:
-            feats = self.feature_engine.current_features(ref.Value)
-            if ref.Value == "BTCUSD" and feats:
-                btc_above_ema200 = feats.get("ema20", 0.0) >= feats.get("ema200", 0.0)
-                break
-        self.regime_engine.update(btc_ret, btc_vol, breadth, btc_above_ema200=btc_above_ema200)
-        state = self.regime_engine.current_state()
-        self.market_regime = state
-        self.sizer.update_returns(btc_ret)
-        entry_threshold = (
-            self.config.score_threshold * (self.config.chop_threshold_multiplier if state == "chop" else 1.0)
-            if self.config.signal_mode == "legacy"
-            else self.config.micro_entry_threshold
-        )
-        equity, gross = self._portfolio_state()
-        gate_ok = self.regime_engine.gates_pass(breadth)
-        candidates = []
-        symbol_scores = [(symbol, self.feature_engine.current_features(symbol.Value)) for symbol in self.symbols]
-        symbol_scores = [(symbol, feats) for symbol, feats in symbol_scores if feats]
-        mom24 = [float(feats.get("mom_24", 0.0)) for _, feats in symbol_scores]
-        mom168 = [float(feats.get("mom_168", 0.0)) for _, feats in symbol_scores]
-
-        def _rank(values, idx):
-            if not values:
-                return 0.5
-            v = values[idx]
-            return (sum(1 for x in values if x < v) + 0.5 * sum(1 for x in values if x == v)) / len(values)
-
-        for idx, (symbol, feats) in enumerate(symbol_scores):
+    def _collect_scores(self, regime_state: str, btc_ret: float):
+        scored = []
+        for symbol in self.symbols:
+            feats = self.feature_engine.current_features(symbol.Value)
+            if not feats:
+                continue
             snap = self.scorer.score(
                 symbol=symbol,
                 features=feats,
-                regime_state=state,
+                regime_state=regime_state,
                 btc_context={"btc_trend": btc_ret},
-                rank_24h=_rank(mom24, idx),
-                rank_168h=_rank(mom168, idx),
-                breadth=breadth,
                 signal_stack=self.signal_features,
                 regime_engine=self.regime_engine,
             )
-            composite_score = float(snap["final"])
-            action = "hold"
-            pstate = self.position_state.get(symbol)
-            bars_held = 0
+            scored.append((symbol, float(snap.get("final", 0.0)), feats))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored
+
+    def _current_holdings(self):
+        holdings = []
+        for symbol in self.symbols:
+            if is_invested_not_dust(self, symbol):
+                holdings.append(symbol)
+        return holdings
+
+    def _market_regime_state(self, btc_ret: float, breadth: float):
+        btc = self.symbol_by_ticker.get("BTCUSD")
+        feats = self.feature_engine.current_features("BTCUSD") if btc is not None else {}
+        btc_mom_90d = float(feats.get("mom_90d", 0.0) or 0.0)
+        btc_vol_stress = float(feats.get("vol_stress_21d", 1.0) or 1.0)
+        risk_on = btc_mom_90d > 0.0 and btc_vol_stress < float(self.config.vol_stress_threshold)
+        self.regime_engine.update(btc_ret, abs(btc_ret), breadth, btc_above_ema200=(btc_mom_90d > 0.0))
+        self.regime_engine.vol_stress = btc_vol_stress
+        state = "risk_on" if risk_on else "risk_off"
+        self.market_regime = state
+        if state != self._last_regime_state:
+            self.Debug(
+                f"REGIME transition from={self._last_regime_state or 'init'} to={state} "
+                f"btc_mom_90d={btc_mom_90d:+.4f} vol_stress={btc_vol_stress:.3f}"
+            )
+            self._last_regime_state = state
+        return state
+
+    def _rebalance_due(self):
+        cadence = max(1, int(getattr(self.config, "rebalance_cadence_hours", 6) or 6))
+        if self._last_rebalance_time is None:
+            return True
+        return (self.Time - self._last_rebalance_time).total_seconds() >= cadence * 3600
+
+    def _score_candidates(self, data: Slice):
+        btc_ret, breadth = self._ingest_data(data)
+        state = self._market_regime_state(btc_ret, breadth)
+        scored = self._collect_scores(state, btc_ret)
+        return state, scored
+
+    def _rebalance_portfolio(self, scored):
+        self._last_rebalance_time = self.Time
+        top_k = max(1, int(getattr(self.config, "top_k", 8) or 8))
+        max_repl = max(0, int(getattr(self.config, "max_replacements_per_rebalance", 2) or 2))
+        min_hold = max(0, int(getattr(self.config, "min_hold_hours", 0) or 0))
+        min_delta = max(0.0, float(getattr(self.config, "min_rebalance_weight_delta", 0.03) or 0.03))
+        holdings = self._current_holdings()
+        held_set = set(holdings)
+        ranked = [(s, score, feats) for s, score, feats in scored if score > 0]
+        top = ranked[:top_k]
+        top_symbols = [s for s, _, _ in top]
+        top_set = set(top_symbols)
+        losers = sorted([s for s in holdings if s not in top_set], key=lambda sym: next((x[1] for x in ranked if x[0] == sym), -1e9))
+        entrants = [s for s in top_symbols if s not in held_set]
+        replacements = []
+        for loser, entrant in zip(losers[:max_repl], entrants[:max_repl]):
+            pstate = self.position_state.get(loser)
+            held_hours = 10**9
             if pstate is not None and getattr(pstate, "entry_time", None) is not None:
-                bars_held = int((self.Time - pstate.entry_time).total_seconds() / 3600)
-            min_hold = int(getattr(self.config, "min_hold_hours", 0) or 0)
-            if position_status(self, symbol) == "long" and abs(composite_score) < float(self.config.micro_flatten_threshold):
-                if bars_held >= min_hold and smart_liquidate(self, symbol, tag="Flatten"):
-                    action = "flatten"
-            elif (
-                gate_ok
-                and position_status(self, symbol) == "flat"
-                and composite_score > 0
-                and abs(composite_score) > float(entry_threshold)
-            ):
-                atr_values = [
-                    float(self.feature_engine.current_features(sym.Value).get("atr", 1.0))
-                    for sym in self.symbols
-                    if position_status(self, sym) == "long"
-                ] or [max(float(feats.get("atr", 1.0)), 1e-6)]
-                target = self.sizer.size_for_trade(
-                    symbol.Value,
-                    composite_score,
-                    {
-                        "equity": equity,
-                        "gross_exposure": gross,
-                        "realized_vol_annual": float(feats.get("realized_vol_30", self.config.target_annual_vol)),
-                        "atr": float(feats.get("atr", 1.0)),
-                        "open_position_atrs": atr_values,
-                    },
-                )
-                decision = self.risk.evaluate(
-                    {
-                        "symbol": symbol.Value,
-                        "target_weight": target,
-                        "equity": equity,
-                        "gross_exposure": gross,
-                        "net_exposure": 0.0,
-                        "correlation": 0.0,
-                    }
-                )
-                if decision.approved:
-                    sec = self.Securities[symbol]
-                    notional = equity * abs(decision.adjusted_target_weight)
-                    fee_model = getattr(sec, "FeeModel", None)
-                    if self.sizer.passes_cost_gate(symbol, composite_score, notional, fee_model, is_limit=True):
-                        candidates.append((symbol, composite_score, decision.adjusted_target_weight))
-                        action = "enter"
-            hold_every = int(getattr(self.config, "sig_hold_log_every_bars", 24) or 24)
-            allow_hold_log = False
-            if action == "hold":
-                last = int(self._last_sig_hold_log_bar.get(symbol, -10**9))
-                if (self._bar_count - last) >= max(1, hold_every):
-                    self._last_sig_hold_log_bar[symbol] = self._bar_count
-                    allow_hold_log = True
-            if action != "hold" or allow_hold_log:
-                debug_limited(
-                    self,
-                    "SIG "
-                    f"sym={symbol.Value} cvd={float(snap['cvd']):+.2f} ofi={float(snap['ofi']):+.2f} vol={float(snap['volc']):+.2f} "
-                    f"rot={float(snap['rot']):+.2f} mult={float(snap['mult']):.2f} vr={float(snap.get('vr', 1.0)):.2f} vr_reg={snap.get('vr_regime', 'n/a')} "
-                    f"raw={float(snap['raw']):+.2f} final={composite_score:+.2f} action={action}"
-                )
-        return state, candidates
+                held_hours = int((self.Time - pstate.entry_time).total_seconds() / 3600)
+            if held_hours < min_hold:
+                continue
+            replacements.append((loser, entrant))
+        target_set = set(holdings)
+        for loser, entrant in replacements:
+            target_set.discard(loser)
+            target_set.add(entrant)
+        for sym in top_symbols:
+            if len(target_set) >= top_k:
+                break
+            target_set.add(sym)
+        target_list = sorted(target_set, key=lambda sym: next((x[1] for x in ranked if x[0] == sym), -1e9), reverse=True)[:top_k]
+        target_set = set(target_list)
+        self.Debug(
+            "REB "
+            f"top={[s.Value for s in top_symbols]} "
+            f"hold={[s.Value for s in holdings]} "
+            f"repl={[f'{a.Value}->{b.Value}' for a, b in replacements]}"
+        )
+
+        for symbol in holdings:
+            if symbol in target_set:
+                continue
+            if not smart_liquidate(self, symbol, tag="RebalanceExit"):
+                self.Debug(f"ORD_FAIL action=exit symbol={symbol.Value}")
+
+        equity = float(getattr(self.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
+        if equity <= 0 or not target_set:
+            return
+        target_w = 1.0 / len(target_set)
+        cost_skips = []
+        for symbol in target_list:
+            sec = self.Securities.get(symbol)
+            if sec is None:
+                continue
+            price = float(getattr(sec, "Price", 0.0) or 0.0)
+            if price <= 0:
+                continue
+            current_qty = float(getattr(self.Portfolio[symbol], "Quantity", 0.0) or 0.0)
+            current_w = (current_qty * price) / max(equity, 1e-9)
+            delta_w = target_w - current_w
+            if abs(delta_w) < min_delta:
+                continue
+            notional = abs(delta_w) * equity
+            qty = round_quantity(self, symbol, notional / max(price, 1e-9))
+            if qty <= 0 or qty * price < get_min_notional_usd(self, symbol):
+                continue
+            score = next((x[1] for x in ranked if x[0] == symbol), 0.0)
+            fee_model = getattr(sec, "FeeModel", None)
+            if delta_w > 0 and not self.sizer.passes_cost_gate(symbol, score, notional, fee_model, is_limit=True):
+                cost_skips.append(symbol.Value)
+                continue
+            signed_qty = qty if delta_w > 0 else -qty
+            ticket = place_limit_or_market(self, symbol, signed_qty, tag="Rebalance")
+            if ticket is None:
+                self.Debug(f"ORD_FAIL action={'buy' if signed_qty > 0 else 'sell'} symbol={symbol.Value}")
+        if cost_skips:
+            self.Debug(f"REB skip_cost_gate={cost_skips}")
 
     def _ingest_data(self, data: Slice):
         btc_ret = 0.0
@@ -381,10 +411,14 @@ class SweetWaterPhase1(QCAlgorithm):
             self.reporter.tick("breaker")
             return
 
-        state, candidates = self._score_candidates(data)
-        execute_regime_entries(self, candidates, regime_tag=state)
-
-        manage_open_positions(self, data)
+        state, scored = self._score_candidates(data)
+        if state == "risk_off":
+            liquidate_all_positions(self, tag="RiskOff")
+        if self._rebalance_due():
+            if state == "risk_on":
+                self._rebalance_portfolio(scored)
+            else:
+                self.Debug("REB risk_off cash_target=true")
 
         for escalated in escalate_stale_orders(self):
             self.reporter.on_order_event({"status": "escalated", "symbol": getattr(escalated, "Value", str(escalated))})

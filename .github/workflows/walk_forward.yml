@@ -17,6 +17,8 @@ jobs:
         run: pip install -r requirements-dev.txt pytest
       - name: Run consolidated tests
         run: pytest tests/test_all.py -v
+      - name: Smoke import execution module
+        run: python -c "from qc_runtime.execution import KrakenTieredFeeModel, RealisticCryptoSlippage; print('ok')"
       - name: Validate walk-forward gates
         run: |
           python - <<'PY'

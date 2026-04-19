@@ -11,6 +11,10 @@ import numpy as np
 
 try:  # pragma: no cover
     from AlgorithmImports import *  # type: ignore
+    # AlgorithmImports doesn't re-export these runtime base types on QC cloud.
+    from QuantConnect.Orders.Fees import FeeModel, OrderFee  # type: ignore
+    from QuantConnect.Orders.Slippage import SlippageModel  # type: ignore
+    from QuantConnect.Securities import CashAmount  # type: ignore
 except Exception:  # pragma: no cover
     class _OrderDirection:
         Buy = 1
@@ -56,7 +60,10 @@ except Exception:  # pragma: no cover
         def __init__(self, value):
             self.Value = value
 
-from config import CONFIG, StrategyConfig
+try:
+    from config import CONFIG, StrategyConfig
+except ImportError:  # pragma: no cover
+    from qc_runtime.config import CONFIG, StrategyConfig
 
 # Seed once at module load for deterministic backtests (backtest-only; non-fill simulation gated on not algo.LiveMode).
 # Default seed 42 preserves existing behaviour. Call reseed_non_fill_simulation() in Initialize to override.

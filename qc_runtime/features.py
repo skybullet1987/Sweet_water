@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import json
+import math
+import ssl
 from collections import defaultdict, deque
+from datetime import date, timedelta
 from typing import Any
+from urllib.request import urlopen
 
 import numpy as np
 import pandas as pd
@@ -187,3 +192,417 @@ class FeatureEngine:
 
     def current_features(self, symbol: str) -> dict[str, float]:
         return dict(self._features.get(symbol, {}))
+
+
+class CvdDivergenceFeature:
+    def __init__(self) -> None:
+        self._tick_state = defaultdict(lambda: {"prev_price": None, "last_sign": 1.0})
+        self._cvd_events = defaultdict(deque)
+        self._hourly = defaultdict(lambda: deque(maxlen=24 * 14))
+        self._cvd = defaultdict(float)
+        self._scores: dict[str, float] = {}
+
+    @staticmethod
+    def _clamp(x: float) -> float:
+        return max(-1.0, min(1.0, float(x)))
+
+    def _trim(self, key: str, now) -> None:
+        cutoff = now - timedelta(hours=24)
+        dq = self._cvd_events[key]
+        while dq and dq[0][0] < cutoff:
+            dq.popleft()
+
+    def _on_trade(self, key: str, ts, price: float, qty: float) -> None:
+        state = self._tick_state[key]
+        prev = state["prev_price"]
+        sign = state["last_sign"]
+        if prev is not None:
+            if price > prev:
+                sign = 1.0
+            elif price < prev:
+                sign = -1.0
+        state["prev_price"] = price
+        state["last_sign"] = sign
+        self._cvd_events[key].append((ts, sign * max(float(qty), 0.0)))
+        self._trim(key, ts)
+
+    def _rolling_cvd(self, key: str) -> float:
+        return float(sum(v for _, v in self._cvd_events[key]))
+
+    def _compute_score(self, key: str) -> float:
+        hist = self._hourly[key]
+        if len(hist) < 25:
+            return 0.0
+        _, cur_high, cur_low, cur_cvd = hist[-1]
+        prev = list(hist)[:-1]
+        hi_p, lo_p = max(x[1] for x in prev), min(x[2] for x in prev)
+        hi_cvd, lo_cvd = max(x[3] for x in prev), min(x[3] for x in prev)
+        if cur_high > hi_p and cur_cvd <= hi_cvd:
+            return -1.0
+        if cur_low < lo_p and cur_cvd >= lo_cvd:
+            return 1.0
+        p_z = (cur_high - lo_p) / max(hi_p - lo_p, 1e-9)
+        c_z = (cur_cvd - lo_cvd) / max(hi_cvd - lo_cvd, 1e-9)
+        return self._clamp(math.tanh((c_z - p_z) * 2.0))
+
+    def update(self, symbol, bar_or_tick) -> None:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        ts = getattr(bar_or_tick, "EndTime", getattr(bar_or_tick, "Time", None))
+        if ts is None:
+            return
+        px = float(getattr(bar_or_tick, "LastPrice", getattr(bar_or_tick, "Price", getattr(bar_or_tick, "Close", 0.0))) or 0.0)
+        if px <= 0:
+            return
+        qty = float(getattr(bar_or_tick, "Quantity", getattr(bar_or_tick, "Volume", 0.0)) or 0.0)
+        self._on_trade(key, ts, px, qty if qty > 0 else 1.0)
+        self._cvd[key] = self._rolling_cvd(key)
+        if hasattr(bar_or_tick, "Close"):
+            open_ = float(getattr(bar_or_tick, "Open", getattr(bar_or_tick, "Close", px)) or px)
+            close = float(getattr(bar_or_tick, "Close", px) or px)
+            high = float(getattr(bar_or_tick, "High", px) or px)
+            low = float(getattr(bar_or_tick, "Low", px) or px)
+            sign = 1.0 if close > open_ else (-1.0 if close < open_ else self._tick_state[key]["last_sign"])
+            if qty > 0:
+                self._cvd_events[key].append((ts, sign * qty))
+            self._trim(key, ts)
+            cvd_now = self._rolling_cvd(key)
+            self._cvd[key] = cvd_now
+            self._hourly[key].append((ts, high, low, cvd_now))
+            self._scores[key] = self._compute_score(key)
+
+    def value(self, symbol) -> float:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        return float(self._cvd.get(key, 0.0))
+
+    def score(self, symbol) -> float:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        return float(self._scores.get(key, 0.0))
+
+
+class OrderFlowImbalanceFeature:
+    def __init__(self) -> None:
+        self._last_quote = {}
+        self._hour_key = {}
+        self._hour_acc = defaultdict(float)
+        self._hourly = defaultdict(lambda: deque(maxlen=24 * 30))
+        self._values = defaultdict(float)
+        self._scores = {}
+        self._fallback_quote_bar = True
+
+    @staticmethod
+    def _clamp(x: float) -> float:
+        return max(-1.0, min(1.0, float(x)))
+
+    def _event_ofi(self, key: str, bid_p: float, bid_q: float, ask_p: float, ask_q: float) -> float:
+        prev = self._last_quote.get(key)
+        self._last_quote[key] = (bid_p, bid_q, ask_p, ask_q)
+        if prev is None:
+            return 0.0
+        pbp, pbq, pap, paq = prev
+        bid_term = bid_q if bid_p > pbp else (bid_q - pbq if bid_p == pbp else -pbq)
+        ask_term = ask_q if ask_p < pap else (ask_q - paq if ask_p == pap else -paq)
+        return float(bid_term - ask_term)
+
+    def _roll_hour(self, key: str, hour_key) -> None:
+        prev_hour = self._hour_key.get(key)
+        if prev_hour is None:
+            self._hour_key[key] = hour_key
+            return
+        if hour_key != prev_hour:
+            self._hourly[key].append(self._hour_acc[key])
+            self._hour_acc[key] = 0.0
+            self._hour_key[key] = hour_key
+            self._scores[key] = self._compute_score(key)
+
+    def _compute_score(self, key: str) -> float:
+        hist = self._hourly[key]
+        if len(hist) < 24:
+            return 0.0
+        cur = float(hist[-1])
+        sample = list(hist)[-24 * 30 :]
+        mean = sum(sample) / len(sample)
+        var = sum((x - mean) ** 2 for x in sample) / max(len(sample) - 1, 1)
+        z = (cur - mean) / math.sqrt(max(var, 1e-12))
+        return self._clamp(math.tanh(z / 2.0))
+
+    def update(self, symbol, bar_or_tick) -> None:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        ts = getattr(bar_or_tick, "EndTime", getattr(bar_or_tick, "Time", None))
+        if ts is None:
+            return
+        self._roll_hour(key, (ts.year, ts.month, ts.day, ts.hour))
+        bid_p = float(getattr(bar_or_tick, "BidPrice", 0.0) or 0.0)
+        ask_p = float(getattr(bar_or_tick, "AskPrice", 0.0) or 0.0)
+        bid_q = float(getattr(bar_or_tick, "BidSize", 0.0) or 0.0)
+        ask_q = float(getattr(bar_or_tick, "AskSize", 0.0) or 0.0)
+        if bid_p > 0 and ask_p > 0 and (bid_q > 0 or ask_q > 0):
+            self._fallback_quote_bar = False
+            self._hour_acc[key] += self._event_ofi(key, bid_p, bid_q, ask_p, ask_q)
+            self._values[key] = self._hour_acc[key]
+            return
+        if hasattr(bar_or_tick, "Open") and hasattr(bar_or_tick, "Close"):
+            open_ = float(getattr(bar_or_tick, "Open", 0.0) or 0.0)
+            close = float(getattr(bar_or_tick, "Close", 0.0) or 0.0)
+            vol = float(getattr(bar_or_tick, "Volume", 0.0) or 0.0)
+            self._hour_acc[key] += (1.0 if close >= open_ else -1.0) * vol
+            self._values[key] = self._hour_acc[key]
+
+    def value(self, symbol) -> float:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        return float(self._values.get(key, 0.0))
+
+    def score(self, symbol) -> float:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        return float(self._scores.get(key, 0.0))
+
+    def using_fallback(self) -> bool:
+        return bool(self._fallback_quote_bar)
+
+
+class VolConeBreakoutFeature:
+    def __init__(self) -> None:
+        self._gk = defaultdict(lambda: deque(maxlen=24 * 30))
+        self._pv = defaultdict(lambda: deque(maxlen=24 * 5))
+        self._scores = {}
+        self._last_pct = defaultdict(float)
+        self._ranks = defaultdict(float)
+        self._decay = defaultdict(int)
+        self._decay_sign = defaultdict(float)
+
+    @staticmethod
+    def _clamp(x: float) -> float:
+        return max(-1.0, min(1.0, float(x)))
+
+    @staticmethod
+    def gk_value(open_: float, high: float, low: float, close: float) -> float:
+        if min(open_, high, low, close) <= 0:
+            return 0.0
+        a = 0.5 * (math.log(high / low) ** 2)
+        b = (2.0 * math.log(2.0) - 1.0) * (math.log(close / open_) ** 2)
+        return max(0.0, a - b)
+
+    def update(self, symbol, bar_or_tick) -> None:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        if not hasattr(bar_or_tick, "Open"):
+            return
+        open_ = float(getattr(bar_or_tick, "Open", 0.0) or 0.0)
+        high = float(getattr(bar_or_tick, "High", 0.0) or 0.0)
+        low = float(getattr(bar_or_tick, "Low", 0.0) or 0.0)
+        close = float(getattr(bar_or_tick, "Close", 0.0) or 0.0)
+        vol = float(getattr(bar_or_tick, "Volume", 0.0) or 0.0)
+        if min(open_, high, low, close) <= 0:
+            return
+        gk = self.gk_value(open_, high, low, close)
+        hist = self._gk[key]
+        prev = list(hist)
+        hist.append(gk)
+        self._pv[key].append((close * vol, vol))
+        if len(prev) < 24:
+            self._scores[key] = 0.0
+            return
+        rank = sum(1 for x in prev if x <= gk) / max(len(prev), 1)
+        self._ranks[key] = rank
+        crossed_up = self._last_pct[key] < 0.8 <= rank
+        self._last_pct[key] = rank
+        total_pv = sum(pv for pv, _ in self._pv[key])
+        total_v = sum(v for _, v in self._pv[key])
+        vwap = total_pv / total_v if total_v > 0 else close
+        if crossed_up:
+            s = 1.0 if close > vwap else -1.0
+            self._scores[key] = s
+            self._decay[key] = 12
+            self._decay_sign[key] = s
+            return
+        if self._decay[key] > 0:
+            self._decay[key] -= 1
+            self._scores[key] = self._clamp(self._decay_sign[key] * (self._decay[key] / 12.0))
+            return
+        self._scores[key] = 0.0
+
+    def percentile_rank(self, symbol) -> float:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        return float(self._ranks.get(key, 0.0))
+
+    def score(self, symbol) -> float:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        return float(self._scores.get(key, 0.0))
+
+
+class BtcDominanceRotationFeature:
+    def __init__(self, tracked_symbols: list[str] | None = None) -> None:
+        self._tracked = set(tracked_symbols or [])
+        self._base = {}
+        self._latest = {}
+        self._proxy_history = deque(maxlen=24 * 15)
+        self._delta_history = deque(maxlen=24 * 14)
+        self._proxy = 0.0
+        self._scores = {}
+
+    @staticmethod
+    def _clamp(x: float) -> float:
+        return max(-1.0, min(1.0, float(x)))
+
+    def set_tracked_symbols(self, symbols: list[str]) -> None:
+        self._tracked = set(symbols)
+
+    def update(self, symbol, bar_or_tick) -> None:
+        if not hasattr(bar_or_tick, "Close"):
+            return
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        price = float(getattr(bar_or_tick, "Close", 0.0) or 0.0)
+        if price <= 0:
+            return
+        if key not in self._base:
+            self._base[key] = price
+        self._latest[key] = price
+        self._recompute()
+
+    def _recompute(self) -> None:
+        if "BTCUSD" not in self._latest:
+            return
+        tracked = [s for s in self._tracked if s in self._latest] or list(self._latest.keys())
+        denom = 0.0
+        for s in tracked:
+            base = max(self._base.get(s, self._latest[s]), 1e-9)
+            denom += self._latest[s] / base
+        if denom <= 0:
+            return
+        btc_norm = self._latest["BTCUSD"] / max(self._base.get("BTCUSD", self._latest["BTCUSD"]), 1e-9)
+        proxy = btc_norm / denom
+        self._proxy = proxy
+        self._proxy_history.append(proxy)
+        if len(self._proxy_history) <= 24:
+            return
+        delta24 = proxy - list(self._proxy_history)[-25]
+        self._delta_history.append(delta24)
+        if len(self._delta_history) < 24:
+            return
+        sample = list(self._delta_history)
+        mean = sum(sample) / len(sample)
+        var = sum((x - mean) ** 2 for x in sample) / max(len(sample) - 1, 1)
+        z = (delta24 - mean) / math.sqrt(max(var, 1e-12))
+        alt_score = self._clamp(-z)
+        for s in tracked:
+            self._scores[s] = -0.5 * alt_score if s == "BTCUSD" else alt_score
+
+    def proxy(self) -> float:
+        return float(self._proxy)
+
+    def score(self, symbol) -> float:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        return float(self._scores.get(key, 0.0))
+
+
+class StablecoinLiquidityFeature:
+    CACHE_KEY = "stablecoin_liquidity_v1"
+    URLS = {
+        "usdt": "https://api.coingecko.com/api/v3/coins/tether/market_chart?vs_currency=usd&days=14&interval=daily",
+        "usdc": "https://api.coingecko.com/api/v3/coins/usd-coin/market_chart?vs_currency=usd&days=14&interval=daily",
+    }
+
+    def __init__(self, algo=None) -> None:
+        self.algo = algo
+        self._weekly_pct = 0.0
+        self._last_update: date | None = None
+        self._load_cache()
+
+    @staticmethod
+    def _clamp(x: float, lo: float, hi: float) -> float:
+        return max(lo, min(hi, float(x)))
+
+    def _debug(self, msg: str) -> None:
+        if self.algo is not None and hasattr(self.algo, "Debug"):
+            self.algo.Debug(msg)
+
+    def _load_cache(self) -> None:
+        try:
+            if self.algo is not None and hasattr(self.algo, "ObjectStore") and self.algo.ObjectStore.ContainsKey(self.CACHE_KEY):
+                payload = json.loads(self.algo.ObjectStore.Read(self.CACHE_KEY))
+                self._weekly_pct = float(payload.get("weekly_pct", 0.0))
+                d = payload.get("last_update")
+                if d:
+                    y, m, dd = [int(x) for x in str(d).split("-")]
+                    self._last_update = date(y, m, dd)
+        except Exception:
+            pass
+
+    def _save_cache(self) -> None:
+        try:
+            if self.algo is not None and hasattr(self.algo, "ObjectStore"):
+                self.algo.ObjectStore.Save(
+                    self.CACHE_KEY, json.dumps({"weekly_pct": self._weekly_pct, "last_update": str(self._last_update)})
+                )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _fetch_json(url: str):
+        with urlopen(url, timeout=4, context=ssl.create_default_context()) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _fetch_weekly_pct(self) -> float:
+        totals = []
+        for _, url in self.URLS.items():
+            data = self._fetch_json(url)
+            mc = [float(x[1]) for x in data.get("market_caps", [])]
+            if len(mc) < 8:
+                raise ValueError("insufficient market cap points")
+            totals.append(mc)
+        combined = [sum(vals) for vals in zip(*totals)]
+        latest, week_ago = combined[-1], combined[-8]
+        return 0.0 if week_ago <= 0 else (latest / week_ago) - 1.0
+
+    def update(self, now=None) -> None:
+        today = getattr(now, "date", lambda: date.today())()
+        if self._last_update == today:
+            return
+        try:
+            self._weekly_pct = float(self._fetch_weekly_pct())
+            self._last_update = today
+            self._save_cache()
+        except Exception as exc:  # pragma: no cover
+            self._debug(f"stablecoin_liquidity fallback: {type(exc).__name__}:{exc!r}")
+            self._last_update = today
+
+    def weekly_pct(self) -> float:
+        return float(self._weekly_pct)
+
+    def multiplier(self) -> float:
+        return self._clamp(1.0 + 5.0 * float(self._weekly_pct), 0.5, 1.5)
+
+
+class SignalFeatureStack:
+    def __init__(self, algo=None, tracked_symbols: list[str] | None = None) -> None:
+        self.cvd = CvdDivergenceFeature()
+        self.ofi = OrderFlowImbalanceFeature()
+        self.vol_cone = VolConeBreakoutFeature()
+        self.btc_rotation = BtcDominanceRotationFeature(tracked_symbols or [])
+        self.stablecoin_liquidity = StablecoinLiquidityFeature(algo)
+
+    def set_tracked_symbols(self, symbols: list[str]) -> None:
+        self.btc_rotation.set_tracked_symbols(symbols)
+
+    def update(self, symbol, bar_or_tick) -> None:
+        self.cvd.update(symbol, bar_or_tick)
+        self.ofi.update(symbol, bar_or_tick)
+        self.vol_cone.update(symbol, bar_or_tick)
+        self.btc_rotation.update(symbol, bar_or_tick)
+        self.stablecoin_liquidity.update(getattr(bar_or_tick, "EndTime", getattr(bar_or_tick, "Time", None)))
+
+    def component_scores(self, symbol) -> dict[str, float]:
+        return {
+            "cvd": self.cvd.score(symbol),
+            "ofi": self.ofi.score(symbol),
+            "volc": self.vol_cone.score(symbol),
+            "rot": self.btc_rotation.score(symbol),
+        }
+
+    def init_status(self) -> dict[str, str]:
+        return {
+            "cvd": "trade-tick if available, bar fallback enabled",
+            "ofi": "quote L1" if not self.ofi.using_fallback() else "quote-bar fallback",
+            "vol_cone": "garman-klass",
+            "btc_rotation": "active",
+            "stablecoin_overlay": "coingecko+cache",
+            "hurst": "R/S(500)",
+        }

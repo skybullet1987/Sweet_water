@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 
 try:  # pragma: no cover
     from AlgorithmImports import OrderDirection, OrderType
@@ -33,6 +35,26 @@ except ModuleNotFoundError:  # pragma: no cover
     from .config import CONFIG, StrategyConfig  # type: ignore
 
 POSITION_TOLERANCE = 1e-9
+
+
+@dataclass
+class PositionState:
+    entry_price: float
+    highest_close: float
+    entry_atr: float
+    entry_time: datetime | None
+
+
+def position_status(algo, symbol) -> Literal["flat", "long", "pending"]:
+    if len(algo.Transactions.GetOpenOrders(symbol)) > 0:
+        return "pending"
+    return "long" if is_invested_not_dust(algo, symbol) else "flat"
+
+
+def _position_state(algo) -> dict:
+    if not hasattr(algo, "position_state"):
+        algo.position_state = {}
+    return algo.position_state
 
 
 def get_effective_round_trip_fee(algo) -> float:
@@ -153,9 +175,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
 def place_entry(algo, symbol, quantity, tag="Entry", force_market=False, signal_score=None):
     if getattr(algo, "long_only", True) and float(quantity) <= 0:
         return None
-    if is_invested_not_dust(algo, symbol):
-        return None
-    if len(algo.Transactions.GetOpenOrders(symbol)) > 0:
+    if position_status(algo, symbol) != "flat":
         return None
     quantity = round_quantity(algo, symbol, float(quantity))
     if quantity <= 0:
@@ -173,15 +193,13 @@ def place_entry(algo, symbol, quantity, tag="Entry", force_market=False, signal_
 
 
 def cleanup_position(algo, symbol, record_pnl=False, exit_price=None):
-    entry_price = algo.entry_prices.get(symbol)
+    pstate = _position_state(algo).get(symbol)
+    entry_price = getattr(pstate, "entry_price", None)
     if record_pnl and entry_price and exit_price and entry_price > 0 and exit_price > 0:
         pnl = (exit_price - entry_price) / entry_price - get_effective_round_trip_fee(algo)
         algo.pnl_by_tag.setdefault(getattr(algo, "_last_exit_tag", "Unknown"), []).append(pnl)
         algo.pnl_by_regime.setdefault(getattr(algo, "market_regime", "unknown"), []).append(pnl)
-    algo.entry_prices.pop(symbol, None)
-    algo.entry_times.pop(symbol, None)
-    algo.highest_close.pop(symbol, None)
-    algo.entry_atrs.pop(symbol, None)
+    _position_state(algo).pop(symbol, None)
 
 
 def smart_liquidate(algo, symbol, tag="Liquidate"):
@@ -213,8 +231,8 @@ def liquidate_all_positions(algo, tag="Liquidate"):
 
 def manage_open_positions(algo, data=None):
     exits = []
-    for symbol in list(getattr(algo, "entry_prices", {}).keys()):
-        if not is_invested_not_dust(algo, symbol):
+    for symbol, pstate in list(_position_state(algo).items()):
+        if position_status(algo, symbol) == "flat":
             cleanup_position(algo, symbol)
             continue
         sec = algo.Securities.get(symbol)
@@ -228,18 +246,18 @@ def manage_open_positions(algo, data=None):
         low = float(getattr(bar, "Low", close) or close)
         current_atr = float(getattr(algo.feature_engine, "current_features", lambda *_: {})(symbol.Value).get("atr", 0.0) or 0.0)
 
-        entry_price = float(algo.entry_prices.get(symbol, close) or close)
-        entry_atr = float(algo.entry_atrs.get(symbol, current_atr) or current_atr)
+        entry_price = float(getattr(pstate, "entry_price", close) or close)
+        entry_atr = float(getattr(pstate, "entry_atr", current_atr) or current_atr)
         if entry_atr <= 0:
             entry_atr = max(entry_price * 0.01, 1e-6)
 
-        highest = float(algo.highest_close.get(symbol, entry_price) or entry_price)
+        highest = float(getattr(pstate, "highest_close", entry_price) or entry_price)
         highest = max(highest, close)
-        algo.highest_close[symbol] = highest
+        pstate.highest_close = highest
 
         bars_held = 0
-        if symbol in algo.entry_times:
-            bars_held = int((algo.Time - algo.entry_times[symbol]).total_seconds() / 3600)
+        if pstate.entry_time is not None:
+            bars_held = int((algo.Time - pstate.entry_time).total_seconds() / 3600)
 
         tp = entry_price + algo.config.tp_atr_mult * entry_atr
         hard_sl = entry_price - algo.config.sl_atr_mult * entry_atr
@@ -289,7 +307,7 @@ def execute_regime_entries(algo, candidates, regime_tag="regime"):
     for symbol, score, weight in candidates:
         if float(score) <= 0:
             continue
-        if is_invested_not_dust(algo, symbol) or len(algo.Transactions.GetOpenOrders(symbol)) > 0:
+        if position_status(algo, symbol) != "flat":
             continue
         sec = algo.Securities.get(symbol)
         if sec is None:
@@ -340,21 +358,6 @@ def escalate_stale_orders(algo):
         algo._submitted_orders.pop(symbol, None)
         escalated.append(symbol)
     return escalated
-
-
-def get_hold_bucket(hold_hours):
-    if hold_hours < 0.5:
-        return "<30min"
-    if hold_hours < 2:
-        return "30min-2h"
-    if hold_hours < 6:
-        return "2h-6h"
-    return "6h+"
-
-
-def slip_log(algo, symbol, direction, fill_price):
-    _ = algo, symbol, direction, fill_price
-    return
 
 
 class KrakenTieredFeeModel(FeeModel):

@@ -13,7 +13,7 @@ if str(QC_RUNTIME) not in sys.path:
     sys.path.insert(0, str(QC_RUNTIME))
 
 from config import CONFIG, StrategyConfig
-from execution import Executor, execute_regime_entries, manage_open_positions
+from execution import Executor, PositionState, execute_regime_entries, manage_open_positions
 from main import SweetWaterPhase1
 from reporting import walk_forward_run
 from scoring import Scorer
@@ -202,7 +202,9 @@ class TestPhaseRequirements:
                     "volume": 3000 + i,
                 }
             )
-        algo.scorer.score = lambda *_args, **_kwargs: 0.9
+        algo.scorer.score = lambda *_args, **_kwargs: {
+            "cvd": 0.0, "ofi": 0.0, "volc": 0.0, "rot": 0.0, "mult": 1.0, "hurst": 0.6, "hurst_regime": "trend", "raw": 0.9, "final": 0.9
+        }
         algo.risk.evaluate = lambda payload: self._Decision(payload["target_weight"])
 
     def _make_slice(self, algo, symbol, open_, high, low, close, btc_close=200.0):
@@ -253,10 +255,7 @@ class TestPhaseRequirements:
         hold.Quantity = 1.0
         hold.Invested = True
         hold.AveragePrice = 100.0
-        algo.entry_prices[symbol] = 100.0
-        algo.entry_atrs[symbol] = 2.0
-        algo.highest_close[symbol] = 100.0
-        algo.entry_times[symbol] = algo.Time - timedelta(hours=1)
+        algo.position_state[symbol] = PositionState(100.0, 100.0, 2.0, algo.Time - timedelta(hours=1))
 
         manage_open_positions(algo, self._make_slice(algo, symbol, 100, 104.5, 99.8, 103.0))
         assert any(o[3] == "TP" for o in algo._order_calls)
@@ -269,10 +268,7 @@ class TestPhaseRequirements:
         hold.Quantity = 1.0
         hold.Invested = True
         hold.AveragePrice = 100.0
-        algo.entry_prices[symbol] = 100.0
-        algo.entry_atrs[symbol] = 2.0
-        algo.highest_close[symbol] = 100.0
-        algo.entry_times[symbol] = algo.Time - timedelta(hours=1)
+        algo.position_state[symbol] = PositionState(100.0, 100.0, 2.0, algo.Time - timedelta(hours=1))
 
         manage_open_positions(algo, self._make_slice(algo, symbol, 100, 101.0, 97.5, 98.0))
         assert any(o[3] == "SL" for o in algo._order_calls)
@@ -285,10 +281,7 @@ class TestPhaseRequirements:
         hold.Quantity = 1.0
         hold.Invested = True
         hold.AveragePrice = 100.0
-        algo.entry_prices[symbol] = 100.0
-        algo.entry_atrs[symbol] = 5.0
-        algo.highest_close[symbol] = 100.0
-        algo.entry_times[symbol] = algo.Time - timedelta(hours=1)
+        algo.position_state[symbol] = PositionState(100.0, 100.0, 5.0, algo.Time - timedelta(hours=1))
         algo.feature_engine.current_features = lambda *_args, **_kwargs: {"atr": 2.0}
 
         manage_open_positions(algo, self._make_slice(algo, symbol, 100, 108.0, 107.0, 108.0))
@@ -332,13 +325,13 @@ class TestPhaseRequirements:
         assert all(order[2] >= 0 for order in algo._order_calls)
         assert float(algo.Portfolio[symbol].Quantity) >= qty_before
 
-    def test_cross_section_score_orders_winners_first(self):
-        s = Scorer()
-        feats = {"ema20": 2, "ema50": 1, "mom_24": 0.01, "adx": 30, "ofi": 1}
-        low = s.score("A", feats, "risk_on", {"btc_trend": 0.01}, rank_24h=0.0, rank_168h=0.0)
-        mid = s.score("B", feats, "risk_on", {"btc_trend": 0.01}, rank_24h=0.5, rank_168h=0.5)
-        high = s.score("C", feats, "risk_on", {"btc_trend": 0.01}, rank_24h=1.0, rank_168h=1.0)
-        assert high > mid > low
+def test_cross_section_score_orders_winners_first():
+    s = Scorer()
+    feats = {"ema20": 2, "ema50": 1, "mom_24": 0.01, "adx": 30, "ofi": 1}
+    low = s.legacy_score("A", feats, "risk_on", {"btc_trend": 0.01}, rank_24h=0.0, rank_168h=0.0)
+    mid = s.legacy_score("B", feats, "risk_on", {"btc_trend": 0.01}, rank_24h=0.5, rank_168h=0.5)
+    high = s.legacy_score("C", feats, "risk_on", {"btc_trend": 0.01}, rank_24h=1.0, rank_168h=1.0)
+    assert high > mid > low
 
 
 def test_execution_file_under_30kb():

@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover
         Invalid = "Invalid"
 
 from config import CONFIG, StrategyConfig
-from execution import cleanup_position, get_effective_round_trip_fee, get_min_notional_usd, is_invested_not_dust
+from execution import PositionState, cleanup_position, get_effective_round_trip_fee, get_min_notional_usd
 
 
 class Reporter:
@@ -95,17 +95,22 @@ class Reporter:
         self.daily_trade_count += 1
 
         if direction == OrderDirection.Buy:
-            algo.entry_prices[symbol] = fill_price
-            algo.highest_close[symbol] = fill_price
-            algo.entry_times[symbol] = algo.Time
             atr = float(getattr(algo.feature_engine, "current_features", lambda *_: {})(symbol.Value).get("atr", 0.0) or 0.0)
             if atr <= 0:
                 atr = max(fill_price * 0.01, 1e-6)
-            algo.entry_atrs[symbol] = atr
+            if not hasattr(algo, "position_state"):
+                algo.position_state = {}
+            algo.position_state[symbol] = PositionState(
+                entry_price=fill_price,
+                highest_close=fill_price,
+                entry_atr=atr,
+                entry_time=getattr(algo, "Time", None),
+            )
             return
 
         if direction == OrderDirection.Sell:
-            entry = float(algo.entry_prices.get(symbol, fill_price) or fill_price)
+            pstate = getattr(algo, "position_state", {}).get(symbol)
+            entry = float(getattr(pstate, "entry_price", fill_price) or fill_price)
             pnl = (fill_price - entry) / max(entry, 1e-9) - get_effective_round_trip_fee(algo)
             if pnl > 0:
                 self.wins.append(pnl)

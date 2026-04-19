@@ -1,117 +1,92 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from collections import defaultdict, deque
 
 import numpy as np
 
-from config import CONFIG, StrategyConfig
-
 try:
-    from hmmlearn.hmm import GaussianHMM  # type: ignore
-
-    HAS_HMM = True
-except Exception:  # pragma: no cover
-    GaussianHMM = None
-    HAS_HMM = False
-
-try:
-    from sklearn.mixture import GaussianMixture
-except Exception:  # pragma: no cover
-    GaussianMixture = None
-
-HMM_COMPONENTS = 3
-HMM_MAX_ITER = 200
-HMM_RANDOM_STATE = 7
-GMM_COMPONENTS = 2
+    from config import CONFIG, StrategyConfig
+except ModuleNotFoundError:  # pragma: no cover
+    from .config import CONFIG, StrategyConfig  # type: ignore
 
 
-@dataclass
-class _ModelState:
-    model: object | None = None
-    labels: dict[int, str] | None = None
+class HurstRegimeModel:
+    def __init__(self, window: int = 500) -> None:
+        self.window = int(window)
+        self._rets = defaultdict(lambda: deque(maxlen=self.window))
+        self._last_close = {}
+        self._h = {}
+
+    @staticmethod
+    def hurst_rs(log_returns: np.ndarray) -> float:
+        r = np.asarray(log_returns, dtype=float)
+        n = len(r)
+        if n < 20:
+            return 0.5
+        mean = float(np.mean(r))
+        dev = r - mean
+        z = np.cumsum(dev)
+        R = float(np.max(z) - np.min(z))
+        S = float(np.std(r, ddof=1))
+        if S <= 0 or R <= 0:
+            return 0.5
+        return max(0.0, min(1.0, math.log(R / S) / math.log(n)))
+
+    def update(self, symbol, bar_or_tick) -> None:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        close = float(getattr(bar_or_tick, "Close", getattr(bar_or_tick, "Price", 0.0)) or 0.0)
+        if close <= 0:
+            return
+        prev = self._last_close.get(key)
+        self._last_close[key] = close
+        if prev and prev > 0:
+            self._rets[key].append(math.log(close / prev))
+        if len(self._rets[key]) >= self.window:
+            self._h[key] = self.hurst_rs(np.array(self._rets[key], dtype=float))
+
+    def hurst(self, symbol) -> float:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        return float(self._h.get(key, 0.5))
+
+    def regime(self, symbol) -> str:
+        h = self.hurst(symbol)
+        if h > 0.55:
+            return "trend"
+        if h < 0.45:
+            return "meanrev"
+        return "random"
 
 
 class RegimeEngine:
     def __init__(self, config: StrategyConfig = CONFIG) -> None:
         self.config = config
-        self._x: list[list[float]] = []
-        self._ret: list[float] = []
-        self._model = _ModelState()
-        self._last_refit = -1
+        self._vol_window = deque(maxlen=30)
         self._state = "risk_on"
         self._probs = {"risk_on": 1.0, "risk_off": 0.0, "chop": 0.0}
         self.vol_stress = 0.0
         self._btc_below_ema = False
-
-    def _label_states(self, states: np.ndarray, returns: np.ndarray, n_states: int) -> dict[int, str]:
-        sharpe_by_state: dict[int, float] = {}
-        for idx in range(n_states):
-            vals = returns[states == idx]
-            if len(vals) < 2:
-                sharpe_by_state[idx] = -np.inf
-                continue
-            sigma = float(np.std(vals, ddof=1))
-            sharpe_by_state[idx] = (float(np.mean(vals)) / sigma) if sigma > 1e-12 else -np.inf
-        ranked = [k for k, _ in sorted(sharpe_by_state.items(), key=lambda kv: kv[1])]
-        if n_states == 2:
-            return {ranked[0]: "risk_off", ranked[1]: "risk_on"}
-        return {ranked[0]: "risk_off", ranked[1]: "chop", ranked[2]: "risk_on"}
-
-    def _fit(self) -> None:
-        window = self.config.hmm_train_window_bars
-        x = np.asarray(self._x[-window:], dtype=float)
-        y = np.asarray(self._ret[-window:], dtype=float)
-        if HAS_HMM:
-            try:
-                model = GaussianHMM(
-                    n_components=HMM_COMPONENTS,
-                    covariance_type="diag",
-                    n_iter=HMM_MAX_ITER,
-                    random_state=HMM_RANDOM_STATE,
-                )
-                model.fit(x)
-                states = model.predict(x)
-                self._model = _ModelState(model=model, labels=self._label_states(states, y, HMM_COMPONENTS))
-                return
-            except Exception:
-                pass
-        if GaussianMixture is not None:
-            model = GaussianMixture(n_components=GMM_COMPONENTS, covariance_type="full", random_state=HMM_RANDOM_STATE)
-            model.fit(x)
-            states = model.predict(x)
-            self._model = _ModelState(model=model, labels=self._label_states(states, y, GMM_COMPONENTS))
-            return
-        self._model = _ModelState(model=None, labels=None)
+        self.hurst = HurstRegimeModel(window=500)
 
     def update(self, btc_return: float, btc_vol: float, breadth: float, btc_above_ema200: bool = False) -> None:
-        self._x.append([float(btc_return), float(btc_vol), float(breadth)])
-        self._ret.append(float(btc_return))
         self._btc_below_ema = not bool(btc_above_ema200)
-        idx = len(self._x) - 1
-        if len(self._x) >= 30:
-            vols = np.asarray([row[1] for row in self._x[-30:]], dtype=float)
+        self._vol_window.append(float(btc_vol))
+        if len(self._vol_window) >= 30:
+            vols = np.asarray(self._vol_window, dtype=float)
             mu = float(np.mean(vols))
             sigma = float(np.std(vols, ddof=1)) if len(vols) > 1 else 0.0
             z = (float(btc_vol) - mu) / max(sigma, 1e-9)
             self.vol_stress = float(1.0 / (1.0 + np.exp(-z)))
         else:
             self.vol_stress = 0.0
-        if len(self._x) >= self.config.hmm_train_window_bars:
-            due = self._last_refit < 0 or (idx - self._last_refit) >= self.config.hmm_retrain_every_bars
-            if due:
-                self._fit()
-                self._last_refit = idx
-        if self._model.model is None or self._model.labels is None:
+        if self.vol_stress > self.config.vol_stress_threshold:
+            self._state = "risk_off"
+        elif abs(float(btc_return)) < float(self.config.chop_return_threshold):
+            self._state = "chop"
+        else:
             self._state = "risk_on"
-            self._probs = {"risk_on": 1.0, "risk_off": 0.0, "chop": 0.0}
-            return
-        latest = np.asarray(self._x[-1:], dtype=float)
-        probs = self._model.model.predict_proba(latest)[0]
-        mapped = {"risk_on": 0.0, "risk_off": 0.0, "chop": 0.0}
-        for state_idx, prob in enumerate(probs):
-            mapped[self._model.labels[state_idx]] += float(prob)
-        self._probs = mapped
-        self._state = max(mapped, key=mapped.get)
+        self._probs = {"risk_on": 0.0, "risk_off": 0.0, "chop": 0.0}
+        self._probs[self._state] = 1.0
 
     def current_state(self) -> str:
         return self._state

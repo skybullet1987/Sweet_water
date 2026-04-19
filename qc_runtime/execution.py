@@ -244,15 +244,16 @@ def estimate_min_qty(algo, symbol):
 
 def get_min_notional_usd(algo, symbol):
     ticker = symbol.Value if hasattr(symbol, 'Value') else str(symbol)
-    fallback = MIN_NOTIONAL_FALLBACK.get(ticker, algo.min_notional)
+    min_notional = float(getattr(algo, 'min_notional', None) or 1.0)
+    fallback = MIN_NOTIONAL_FALLBACK.get(ticker, min_notional)
     try:
         price = algo.Securities[symbol].Price
         min_qty = get_min_quantity(algo, symbol)
         implied = price * min_qty if price > 0 else fallback
-        return max(fallback, implied, algo.min_notional)
+        return max(fallback, implied, min_notional)
     except Exception as e:
         algo.Debug(f"Error in get_min_notional_usd for {symbol.Value}: {e}")
-        return max(fallback, algo.min_notional)
+        return max(fallback, min_notional)
 
 
 def round_quantity(algo, symbol, quantity):

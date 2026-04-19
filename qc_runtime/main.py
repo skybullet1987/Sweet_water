@@ -44,7 +44,7 @@ from reporting import Reporter
 from risk import DrawdownCircuitBreaker, RiskManager
 from scoring import Scorer
 from sizing import Sizer
-from universe import select_universe
+from universe import KRAKEN_SAFE_LIST, REFERENCE_SYMBOLS, select_universe
 
 
 class SweetWaterPhase1(QCAlgorithm):
@@ -63,67 +63,107 @@ class SweetWaterPhase1(QCAlgorithm):
         self.risk = RiskManager(self.config)
         self.reporter = Reporter(self.config)
 
-        self.stop_loss_pct = 0.03
-        self.take_profit_pct = 0.06
-        self.max_hold_hours = 24
         self.max_participation_rate = 0.15
         self.spread_limit_pct = 0.025
-        self.stale_order_bars = self.config.stale_order_bars
 
         self._drawdown_breaker = DrawdownCircuitBreaker(max_drawdown_pct=-0.10)
 
         self.symbols = []
+        self.reference_symbols = []
         self.symbol_by_ticker = {}
         self.open_snapshots = defaultdict(dict)
+        self.trade_log = deque(maxlen=500)
+        self.crypto_data = {}
+        self._last_rebalance_month = None
+        self._init_execution_attrs()
 
-        # Bookkeeping state expected by restored order-event logic.
+        for ticker in KRAKEN_SAFE_LIST:
+            self._subscribe_symbol(ticker)
+        for ticker in REFERENCE_SYMBOLS:
+            self._subscribe_symbol(ticker)
+        self.reference_symbols = [self.symbol_by_ticker[t] for t in REFERENCE_SYMBOLS if t in self.symbol_by_ticker]
+
+        initial_universe = select_universe(self._history_provider, pd.Timestamp.now(tz="UTC"))
+        self.symbols = [self.symbol_by_ticker[t] for t in initial_universe if t in self.symbol_by_ticker]
+        now = self.Time if hasattr(self, "Time") else pd.Timestamp.now(tz="UTC")
+        self._last_rebalance_month = (int(now.year), int(now.month))
+
+    def _subscribe_symbol(self, ticker: str):  # pragma: no cover
+        if ticker in self.symbol_by_ticker:
+            return self.symbol_by_ticker[ticker]
+        sec_obj = self.AddCrypto(ticker, Resolution.Hour, Market.Kraken)
+        sec_obj.FeeModel = KrakenTieredFeeModel()
+        sec_obj.SetSlippageModel(RealisticCryptoSlippage(self))
+        self.symbol_by_ticker[ticker] = sec_obj.Symbol
+        return sec_obj.Symbol
+
+    def _init_execution_attrs(self):  # pragma: no cover
+        self.min_notional = 1.0
+        self.max_spread_pct = 0.0080
+        self.spread_widen_mult = 3.0
+        self.volatility_regime = "normal"
+        self.market_regime = "trending"
+        self.log_budget = 200
+        self.live_stale_order_timeout_seconds = 90
+        self.stale_order_timeout_seconds = 300
+        self.slip_outlier_threshold = 0.005
+        self.quick_take_profit = 0.04
+        self.tight_stop_loss = 0.025
+        self.disable_recent_outcome_cash_mode = True
+        self.disable_adaptive_ranking_memory = True
+        self.expected_round_trip_fees = 0.0065
+        self.stop_loss_pct = 0.025
+        self.take_profit_pct = 0.05
+        self.max_hold_hours = self.config.time_stop_bars
+        self.stale_order_bars = 3
+        self.enable_queue_rejection = False
+        self.stress_spread_mult = 1.0
+        self.breakout_nonfill_penalty = 0.08
+
+        self._spread_warning_times = {}
+        self._cancel_cooldowns = {}
         self._pending_orders = {}
         self._submitted_orders = {}
         self._order_retries = {}
+        self._failed_exit_attempts = {}
+        self._failed_exit_counts = {}
+        self._partial_sell_symbols = set()
+        self._session_blacklist = set()
+        self._rolling_wins = deque(maxlen=200)
+        self._rolling_win_sizes = deque(maxlen=200)
+        self._rolling_loss_sizes = deque(maxlen=200)
+        self._recent_trade_outcomes = deque(maxlen=20)
+        self._slip_abs = deque(maxlen=200)
+        self._symbol_slippage_history = {}
+        self._spike_entries = {}
+        self._partial_tp_taken = {}
+        self._partial_tp_tier = {}
+        self._entry_signal_combos = {}
+        self._entry_engine = {}
+        self._chop_engine = {}
+        self._last_live_trade_time = None
+        self._cash_mode_until = None
+
         self.entry_prices = {}
         self.highest_prices = {}
         self.entry_times = {}
         self.entry_volumes = {}
-        self._rolling_wins = deque(maxlen=50)
-        self._rolling_win_sizes = deque(maxlen=50)
-        self._rolling_loss_sizes = deque(maxlen=50)
-        self._recent_trade_outcomes = deque(maxlen=20)
-        self._partial_sell_symbols = set()
-        self._failed_exit_attempts = {}
-        self._failed_exit_counts = {}
-        self._session_blacklist = set()
-        self._spike_entries = {}
-        self.daily_trade_count = 0
+        self.peak_value = None
         self.winning_trades = 0
         self.losing_trades = 0
         self.total_pnl = 0.0
         self.consecutive_losses = 0
-        self.peak_value = None
-        self._cancel_cooldowns = {}
-        self._spread_warning_times = {}
-        self._symbol_slippage_history = {}
-        self._slip_abs = deque(maxlen=50)
+        self.daily_trade_count = 0
+        self.trade_count = 0
         self.pnl_by_tag = {}
         self.pnl_by_regime = {}
         self.pnl_by_vol_regime = {}
         self.pnl_by_signal_combo = {}
         self.pnl_by_hold_time = {}
-        self.pnl_by_engine = {"trend": [], "chop": []}
-        self.trade_log = deque(maxlen=500)
-        self.crypto_data = {}
-
-        self.expected_round_trip_fees = 0.0065
-        self.stale_limit_cancels = 0
+        self.pnl_by_engine = {}
         self.stale_limit_escalations = 0
         self.stale_limit_escalation_fills = 0
-
-        initial_universe = select_universe(self._history_provider, pd.Timestamp.utcnow())
-        for ticker in initial_universe:
-            sec_obj = self.AddCrypto(ticker, Resolution.Hour, Market.Kraken)
-            sec_obj.FeeModel = KrakenTieredFeeModel()
-            sec_obj.SetSlippageModel(RealisticCryptoSlippage(self))
-            self.symbol_by_ticker[ticker] = sec_obj.Symbol
-        self.symbols = [self.symbol_by_ticker[t] for t in self.symbol_by_ticker]
+        self.stale_limit_cancels = 0
 
     def _history_provider(self, symbol: str, start, end):  # pragma: no cover
         sec = self.symbol_by_ticker.get(symbol)
@@ -135,16 +175,13 @@ class SweetWaterPhase1(QCAlgorithm):
         return hist[["open", "high", "low", "close", "volume"]]
 
     def _ensure_monthly_universe(self):  # pragma: no cover
-        if self.Time.day != 1 or self.Time.hour != 0:
+        current_month = (int(self.Time.year), int(self.Time.month))
+        if current_month == self._last_rebalance_month:
             return
-        for ticker in select_universe(self._history_provider, self.Time):
-            if ticker in self.symbol_by_ticker:
-                continue
-            sec_obj = self.AddCrypto(ticker, Resolution.Hour, Market.Kraken)
-            sec_obj.FeeModel = KrakenTieredFeeModel()
-            sec_obj.SetSlippageModel(RealisticCryptoSlippage(self))
-            self.symbol_by_ticker[ticker] = sec_obj.Symbol
-        self.symbols = [self.symbol_by_ticker[t] for t in self.symbol_by_ticker]
+        for ticker in KRAKEN_SAFE_LIST:
+            self._subscribe_symbol(ticker)
+        self.symbols = [self.symbol_by_ticker[t] for t in select_universe(self._history_provider, self.Time) if t in self.symbol_by_ticker]
+        self._last_rebalance_month = current_month
 
     def _update_symbol_series(self, symbol, bar):
         state = self.crypto_data.setdefault(symbol, {"prices": deque(maxlen=96), "volume": deque(maxlen=96)})
@@ -159,7 +196,12 @@ class SweetWaterPhase1(QCAlgorithm):
     def _score_candidates(self, data: Slice):
         btc_ret = 0.0
         breadth_votes = []
-        for symbol in self.symbols:
+        feed_symbols = [*self.reference_symbols, *self.symbols]
+        seen = set()
+        for symbol in feed_symbols:
+            if symbol in seen:
+                continue
+            seen.add(symbol)
             bar = data.Bars.get(symbol)
             if bar is None:
                 continue

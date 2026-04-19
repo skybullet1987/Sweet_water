@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -16,12 +17,13 @@ if str(QC_RUNTIME) not in sys.path:
 from config import CONFIG, StrategyConfig
 from execution import Executor, KrakenTieredFeeModel, RealisticCryptoSlippage, execute_regime_entries, place_entry
 from features import FeatureEngine, amihud_illiquidity, rank_momentum, realized_vol, roll_spread, zscore_vs_universe
+from main import SweetWaterPhase1
 from regime import RegimeEngine
 from reporting import Reporter, walk_forward_run
 from risk import RiskManager
 from scoring import Scorer
 from sizing import Sizer
-from universe import select_universe
+from universe import REFERENCE_SYMBOLS, select_universe
 
 
 def _bar(symbol: str, i: int, base: float = 100.0) -> dict[str, float | str]:
@@ -197,14 +199,15 @@ def test_walk_forward_fixture_meets_baseline():
     assert baseline["oos_trade_count"] >= 0
 
 
-def test_universe_selector_keeps_btc():
+def test_universe_selector_excludes_reference_symbols():
     def _hist(symbol, start, end):
         _ = start, end
         rows = 30
         return pd.DataFrame({"close": np.linspace(100, 120, rows), "volume": np.linspace(1000, 2000, rows)})
 
     selected = select_universe(_hist, pd.Timestamp("2026-01-01", tz="UTC"))
-    assert "BTCUSD" in selected
+    assert "BTCUSD" not in selected
+    assert all(sym not in REFERENCE_SYMBOLS for sym in selected)
 
 
 def test_real_orders_actually_placed_with_real_fees():
@@ -373,3 +376,198 @@ def test_real_orders_actually_placed_with_real_fees():
     assert len(algo.order_calls) >= 3
     assert algo.fee_spy.calls >= 1
     assert rejected_blacklist
+
+
+class TestSweetWaterPhase1Integration:
+    class _Symbol:
+        def __init__(self, value: str):
+            self.Value = value
+
+        def __hash__(self):
+            return hash(self.Value)
+
+        def __eq__(self, other):
+            return isinstance(other, TestSweetWaterPhase1Integration._Symbol) and self.Value == other.Value
+
+    class _SymbolProps:
+        MinimumPriceVariation = 0.01
+        LotSize = 0.0001
+        MinimumOrderSize = 0.0001
+
+    class _Security:
+        def __init__(self, symbol, price: float):
+            self.Symbol = symbol
+            self.Price = price
+            self.BidPrice = price * 0.999
+            self.AskPrice = price * 1.001
+            self.Volume = 10_000.0
+            self.SymbolProperties = TestSweetWaterPhase1Integration._SymbolProps()
+            self.FeeModel = None
+            self.SlippageModel = None
+
+        def SetSlippageModel(self, model):
+            self.SlippageModel = model
+
+    class _Holding:
+        def __init__(self):
+            self.Quantity = 0.0
+            self.Invested = False
+            self.AveragePrice = 0.0
+            self.Price = 0.0
+
+    class _Portfolio(dict):
+        def __init__(self):
+            super().__init__()
+            self.TotalPortfolioValue = 1000.0
+            self.TotalHoldingsValue = 0.0
+            self.Cash = 1000.0
+
+    class _Transactions:
+        def __init__(self):
+            self._orders = {}
+            self._open = []
+            self._next = 1
+
+        def GetOpenOrders(self, symbol=None):
+            if symbol is None:
+                return list(self._open)
+            return [o for o in self._open if o.Symbol == symbol]
+
+        def CancelOrder(self, order_id):
+            self._open = [o for o in self._open if o.Id != order_id]
+
+        def GetOrderById(self, order_id):
+            return self._orders.get(order_id)
+
+    class _Ticket:
+        def __init__(self, order_id: int):
+            self.OrderId = order_id
+
+    class _Slice:
+        def __init__(self, bars):
+            self.Bars = bars
+
+    class _Decision:
+        def __init__(self, adjusted_target_weight: float):
+            self.approved = True
+            self.adjusted_target_weight = adjusted_target_weight
+
+    class _Bar:
+        def __init__(self, open_, high, low, close, volume):
+            self.Open = float(open_)
+            self.High = float(high)
+            self.Low = float(low)
+            self.Close = float(close)
+            self.Volume = float(volume)
+
+    def _build_algo(self):
+        algo = SweetWaterPhase1.__new__(SweetWaterPhase1)
+        algo.Time = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        algo.LiveMode = False
+        algo.IsWarmingUp = False
+        algo.Securities = {}
+        algo.Portfolio = self._Portfolio()
+        algo.Transactions = self._Transactions()
+        algo._order_calls = []
+        algo._debug_logs = []
+
+        def _noop(*_args, **_kwargs):
+            return None
+
+        algo.SetBrokerageModel = _noop
+        algo.SetCash = lambda cash: setattr(algo.Portfolio, "Cash", float(cash))
+        algo.SetStartDate = _noop
+        algo.SetEndDate = _noop
+        algo.SetWarmup = _noop
+        algo.Debug = lambda msg: algo._debug_logs.append(str(msg))
+        algo.Liquidate = _noop
+
+        def _add_crypto(ticker, _resolution, _market):
+            symbol = self._Symbol(ticker)
+            sec = self._Security(symbol, 100.0 if ticker != "BTCUSD" else 200.0)
+            algo.Securities[symbol] = sec
+            algo.Portfolio[symbol] = self._Holding()
+            return sec
+
+        algo.AddCrypto = _add_crypto
+
+        def _history(symbol, _start, _end, _resolution):
+            ticker = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+            rows = 30
+            base = {
+                "ETHUSD": 2_000_000.0,
+                "SOLUSD": 1_500_000.0,
+                "XRPUSD": 1_200_000.0,
+                "ADAUSD": 1_100_000.0,
+                "LINKUSD": 1_000_000.0,
+                "DOTUSD": 900_000.0,
+            }.get(ticker, 500_000.0)
+            close = np.linspace(10.0, 11.5, rows)
+            volume = np.linspace(base, base * 1.1, rows)
+            return pd.DataFrame(
+                {
+                    "open": close * 0.999,
+                    "high": close * 1.001,
+                    "low": close * 0.998,
+                    "close": close,
+                    "volume": volume,
+                }
+            )
+
+        algo.History = _history
+
+        def _market_order(symbol, quantity, tag=""):
+            order_id = algo.Transactions._next
+            algo.Transactions._next += 1
+            order = type("Order", (), {"Id": order_id, "Symbol": symbol, "Quantity": quantity, "Tag": tag, "Price": algo.Securities[symbol].Price, "Direction": 1 if quantity > 0 else -1})
+            algo.Transactions._orders[order_id] = order
+            algo._order_calls.append(("market", symbol.Value, float(quantity), tag))
+            return self._Ticket(order_id)
+
+        def _limit_order(symbol, quantity, limit_price, tag=""):
+            order_id = algo.Transactions._next
+            algo.Transactions._next += 1
+            order = type("Order", (), {"Id": order_id, "Symbol": symbol, "Quantity": quantity, "Tag": tag, "Price": float(limit_price), "Direction": 1 if quantity > 0 else -1})
+            algo.Transactions._orders[order_id] = order
+            algo.Transactions._open.append(order)
+            algo._order_calls.append(("limit", symbol.Value, float(quantity), tag))
+            return self._Ticket(order_id)
+
+        algo.MarketOrder = _market_order
+        algo.LimitOrder = _limit_order
+        return algo
+
+    def test_initialize_and_ondata_places_non_btc_entries(self):
+        algo = self._build_algo()
+        algo.Initialize()
+
+        assert "BTCUSD" in [s.Value for s in algo.reference_symbols]
+        assert "BTCUSD" not in [s.Value for s in algo.symbols]
+        assert any(s.Value != "BTCUSD" for s in algo.symbols)
+
+        algo.sizer.passes_cost_gate = lambda *_args, **_kwargs: True
+        algo.sizer.size_for_trade = lambda _symbol, _score, _state: 0.08
+        algo.scorer.score = lambda _symbol, _feats, _state, _ctx: 0.9
+        algo.risk.evaluate = lambda payload: self._Decision(payload["target_weight"])
+
+        fixture = pd.read_csv(REPO_ROOT / "tests/fixtures/walk_forward_bars.csv").head(240)
+        tradable = algo.symbols[:4]
+        refs = list(algo.reference_symbols)
+        tracked_symbols = refs + tradable
+
+        for i, row in fixture.iterrows():
+            algo.Time = datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(hours=int(i))
+            bars = {}
+            base = float(row["close"])
+            for j, symbol in enumerate(tracked_symbols):
+                px = base * (1.0 + 0.0007 * j)
+                sec = algo.Securities[symbol]
+                sec.Price = px
+                sec.BidPrice = px * 0.999
+                sec.AskPrice = px * 1.001
+                sec.Volume = max(1_000.0, float(row["volume"]) * (1.0 + 0.02 * j))
+                bars[symbol] = self._Bar(px * 0.999, px * 1.002, px * 0.998, px, sec.Volume)
+            algo.OnData(self._Slice(bars))
+
+        non_btc_orders = [o for o in algo._order_calls if o[1] != "BTCUSD"]
+        assert non_btc_orders, f"Expected non-BTC entry order, got {algo._order_calls}"

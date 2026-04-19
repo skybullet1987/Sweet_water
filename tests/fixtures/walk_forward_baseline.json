@@ -1,8 +1,8 @@
 {
-  "oos_sharpe": 68.5896,
-  "oos_trade_count": 79,
-  "oos_avg_win_avg_loss": 17.0038,
-  "oos_cancel_rate": 0.0,
-  "regime_count": 2,
-  "fixture_note": "Source fixture is short; CI deterministically extends to 1h synthetic regime-switch data in tests/walk_forward_ci_check.py"
+  "oos_sharpe": 0.55,
+  "oos_trade_count": 15,
+  "oos_avg_win_avg_loss": 1.05,
+  "oos_cancel_rate": 0.19,
+  "regime_count": 3,
+  "fixture_note": "Baseline generated from qc_runtime.reporting.walk_forward_run on fixture bars"
 }

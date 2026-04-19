@@ -54,6 +54,9 @@ def test_strategy_config_defaults_updated():
     assert cfg.max_position_pct == 0.20
     assert cfg.total_deployment_cap == 0.85
     assert cfg.post_breaker_cooldown_hours == 48
+    assert cfg.time_stop_hours == 120.0
+    assert cfg.sl_atr_multiplier == 1.5
+    assert cfg.tp_atr_multiplier == 3.0
 
 
 def test_initialize_uses_tighter_breaker_threshold():
@@ -322,7 +325,7 @@ class TestPhaseRequirements:
         hold.AveragePrice = 100.0
         algo.position_state[symbol] = PositionState(100.0, 100.0, 2.0, algo.Time - timedelta(hours=1))
 
-        manage_open_positions(algo, self._make_slice(algo, symbol, 100, 104.5, 99.8, 103.0))
+        manage_open_positions(algo, self._make_slice(algo, symbol, 100, 108.0, 99.8, 107.0))
         assert any(o[3] == "TP" for o in algo._order_calls)
 
     def test_atr_stop_loss_fires(self):
@@ -335,7 +338,7 @@ class TestPhaseRequirements:
         hold.AveragePrice = 100.0
         algo.position_state[symbol] = PositionState(100.0, 100.0, 2.0, algo.Time - timedelta(hours=1))
 
-        manage_open_positions(algo, self._make_slice(algo, symbol, 100, 101.0, 97.5, 98.0))
+        manage_open_positions(algo, self._make_slice(algo, symbol, 100, 101.0, 95.5, 96.0))
         assert any(o[3] == "SL" for o in algo._order_calls)
 
     def test_chandelier_trailing_fires(self):
@@ -350,7 +353,7 @@ class TestPhaseRequirements:
         algo.feature_engine.current_features = lambda *_args, **_kwargs: {"atr": 2.0}
 
         manage_open_positions(algo, self._make_slice(algo, symbol, 100, 108.0, 107.0, 108.0))
-        manage_open_positions(algo, self._make_slice(algo, symbol, 107.0, 107.2, 101.5, 102.0))
+        manage_open_positions(algo, self._make_slice(algo, symbol, 97.0, 97.2, 96.5, 97.0))
         assert any(o[3] == "Chandelier" for o in algo._order_calls)
 
     def test_reserved_qty_blocks_duplicate_exit(self):

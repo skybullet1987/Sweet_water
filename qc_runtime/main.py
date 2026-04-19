@@ -70,6 +70,9 @@ HARD_RISK_OFF_VOL_STRESS = 0.9
 NEW_ENTRANT_MIN_DELTA_MULTIPLIER = 0.5
 NO_TRADE_HEARTBEAT_THRESHOLD_BARS = 168
 NO_TRADE_HEARTBEAT_LOG_CADENCE_BARS = 24
+PRIME_MIN_READY_SYMBOLS = 5
+NO_CHASE_MOM24_THRESHOLD = 0.15
+MIN_VOLUME_RATIO_24H_7D = 1.2
 
 
 class SweetWaterPhase1(QCAlgorithm):
@@ -194,6 +197,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self._breaker_disengaged_at = None
         self._last_scored = []
         self._last_force_exit_date = None
+        self._last_btc_gate_log_date = None
 
         self.position_state: dict[object, PositionState] = {}
         self.entry_volumes = {}
@@ -230,6 +234,7 @@ class SweetWaterPhase1(QCAlgorithm):
         end = self.Time if hasattr(self, "Time") else pd.Timestamp.now(tz="UTC")
         start = end - timedelta(days=prime_days)
         primed = 0
+        btc_sym = self.symbol_by_ticker.get("BTCUSD")
         for ticker, sym in list(self.symbol_by_ticker.items()):
             try:
                 hist = self.History(sym, start, end, Resolution.Hour)
@@ -254,8 +259,22 @@ class SweetWaterPhase1(QCAlgorithm):
                 bar_proxy = _PrimeBar(close)
                 self.regime_engine.hurst.update(sym, bar_proxy)
                 self.regime_engine.vr.update(sym, bar_proxy)
+                if btc_sym is not None and sym == btc_sym and close > 0:
+                    self.regime_engine.update_btc_close(close)
             primed += 1
-        self.Debug(f"PRIME features symbols={primed}")
+        ready = 0
+        symbols = list(getattr(self, "symbols", []))
+        for sym in symbols:
+            feats = self.feature_engine.current_features(sym.Value) or {}
+            if abs(float(feats.get("mom_90d", 0.0) or 0.0)) > 1e-9:
+                ready += 1
+        if ready < PRIME_MIN_READY_SYMBOLS:
+            self.Debug(f"CRITICAL prime_features mom_90d_ready={ready}/{len(symbols)} -- priming may have failed!")
+        else:
+            self.Debug(f"PRIME features symbols={primed} mom_90d_ready={ready}")
+        disp_ready = len(getattr(self, "_dispersion_history", []))
+        if disp_ready < 20:
+            self.Debug(f"CRITICAL prime_features dispersion_ready={disp_ready} (<20) by Jan 1")
 
     def _ensure_monthly_universe(self):  # pragma: no cover
         current_month = (int(self.Time.year), int(self.Time.month))
@@ -369,6 +388,17 @@ class SweetWaterPhase1(QCAlgorithm):
             price = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
             if price <= 0:
                 continue
+            feat_engine = getattr(self, "feature_engine", None)
+            feats = feat_engine.current_features(getattr(sym, "Value", str(sym))) if feat_engine is not None else {}
+            feats = feats or {}
+            mom_24 = float(feats.get("mom_24", 0.0) or 0.0)
+            if mom_24 > NO_CHASE_MOM24_THRESHOLD:
+                self.Debug(f"NO_CHASE sym={getattr(sym,'Value',sym)} mom_24={mom_24:.3f}")
+                continue
+            vol_ratio = float(feats.get("vol_ratio_24h_7d", 1.0) or 1.0)
+            if vol_ratio < MIN_VOLUME_RATIO_24H_7D:
+                self.Debug(f"NO_VOLUME sym={getattr(sym,'Value',sym)} vol_ratio={vol_ratio:.2f}")
+                continue
             desired = equity * float(entry["target_weight"])
             notional = min(desired, available_cash * 0.95)
             if notional < float(self.config.min_position_floor_usd):
@@ -385,12 +415,13 @@ class SweetWaterPhase1(QCAlgorithm):
         self._pending_rotation_entry_time = None
 
     def _dispersion_regime(self):
-        if len(self._dispersion_history) < 20:
+        history = getattr(self, "_dispersion_history", [])
+        if len(history) < 20:
             return "full"
-        sorted_disp = sorted(self._dispersion_history)
+        sorted_disp = sorted(history)
         p15 = sorted_disp[max(0, int(0.15 * len(sorted_disp)) - 1)]
         p30 = sorted_disp[max(0, int(0.30 * len(sorted_disp)) - 1)]
-        current = self._dispersion_history[-1]
+        current = history[-1]
         if current < p15:
             return "flat"
         if current < p30:
@@ -398,11 +429,23 @@ class SweetWaterPhase1(QCAlgorithm):
         return "full"
 
     def _current_holdings(self):
-        holdings = []
-        for symbol in self.symbols:
-            if is_invested_not_dust(self, symbol):
-                holdings.append(symbol)
-        return holdings
+        out = []
+        for kv in self.Portfolio:
+            if hasattr(kv, "Key"):
+                sym = kv.Key
+                holding = getattr(kv, "Value", None)
+            else:
+                sym = kv
+                holding = None
+            try:
+                if holding is None or not hasattr(holding, "Quantity"):
+                    holding = self.Portfolio[sym]
+                qty = float(getattr(holding, "Quantity", 0.0) or 0.0)
+            except Exception:
+                qty = 0.0
+            if qty > 0:
+                out.append(sym)
+        return out
 
     def _market_regime_state(self, btc_ret: float, breadth: float):
         btc = self.symbol_by_ticker.get("BTCUSD")
@@ -513,8 +556,28 @@ class SweetWaterPhase1(QCAlgorithm):
             weights_raw[sym] = 1.0 / (rv * spread_penalty)
         total = sum(weights_raw.values()) or 1.0
         target_weights = {sym: max(0.0, float(risk_scale)) * (w / total) for sym, w in weights_raw.items()}
+        sorted_by_score = sorted(scored, key=lambda x: x[1], reverse=True)
+        rank_by_sym = {sym: i for i, (sym, _score, _feats) in enumerate(sorted_by_score)}
+
+        def _conviction_cap(rank, dispersion_state):
+            base = 0.20
+            if dispersion_state != "full":
+                return base
+            if rank == 0:
+                return 0.35
+            if rank == 1:
+                return 0.30
+            if rank == 2:
+                return 0.25
+            if rank == 3:
+                return 0.22
+            return 0.20
+
+        disp_state = self._dispersion_regime()
+        floor_cap = float(getattr(self.config, "max_position_pct", 0.20) or 0.20)
         for sym in list(target_weights):
-            target_weights[sym] = min(target_weights[sym], float(self.config.max_position_pct))
+            cap = max(floor_cap, _conviction_cap(rank_by_sym.get(sym, 99), disp_state))
+            target_weights[sym] = min(target_weights[sym], cap)
         total_deployment_cap = float(getattr(self.config, "total_deployment_cap", 0.85) or 0.85)
         total_w = sum(target_weights.values())
         if total_w > total_deployment_cap and total_w > 0:
@@ -538,11 +601,14 @@ class SweetWaterPhase1(QCAlgorithm):
                 self.Debug(f"ORD_FAIL action=exit symbol={symbol.Value}")
 
         if exits_submitted:
-            self._pending_rotation_entries = [
+            candidates = [
                 {"symbol": sym, "score": score, "target_weight": target_weights[sym]}
                 for sym, score, _feats in scored
                 if sym in target_set and sym not in held_set
             ]
+            existing_syms = {e["symbol"] for e in self._pending_rotation_entries}
+            new_entries = [e for e in candidates if e["symbol"] not in existing_syms]
+            self._pending_rotation_entries.extend(new_entries)
             self._pending_rotation_entry_time = self.Time
             self.Debug(f"REBAL exits_done pending_entries={len(self._pending_rotation_entries)}")
             return
@@ -570,6 +636,17 @@ class SweetWaterPhase1(QCAlgorithm):
             score = next((x[1] for x in ranked if x[0] == symbol), 0.0)
             fee_model = getattr(sec, "FeeModel", None)
             if delta_w > 0:
+                feat_engine = getattr(self, "feature_engine", None)
+                feats = feat_engine.current_features(getattr(symbol, "Value", str(symbol))) if feat_engine is not None else {}
+                feats = feats or {}
+                mom_24 = float(feats.get("mom_24", 0.0) or 0.0)
+                if mom_24 > NO_CHASE_MOM24_THRESHOLD:
+                    self.Debug(f"NO_CHASE sym={getattr(symbol,'Value',symbol)} mom_24={mom_24:.3f}")
+                    continue
+                vol_ratio = float(feats.get("vol_ratio_24h_7d", 1.0) or 1.0)
+                if vol_ratio < MIN_VOLUME_RATIO_24H_7D:
+                    self.Debug(f"NO_VOLUME sym={getattr(symbol,'Value',symbol)} vol_ratio={vol_ratio:.2f}")
+                    continue
                 desired_notional = equity * target_w
                 notional = min(desired_notional, notional_cap)
                 if notional < float(self.config.min_position_floor_usd):
@@ -588,7 +665,7 @@ class SweetWaterPhase1(QCAlgorithm):
                     available_cash -= qty * price
                     notional_cap = max(0.0, available_cash * 0.95)
                     if available_cash < float(self.config.min_position_floor_usd):
-                        self.Debug("REBAL cash exhausted — defer remaining entries to next rebalance")
+                        self.Debug("REBAL cash exhausted -- defer remaining entries to next rebalance")
                         break
             else:
                 notional = abs(delta_w) * equity
@@ -636,6 +713,9 @@ class SweetWaterPhase1(QCAlgorithm):
                 breadth_votes.append(1.0 if feats.get("ema20", 0.0) > feats.get("ema50", 0.0) else 0.0)
             if symbol.Value == "BTCUSD":
                 btc_ret = math.log(max(bar.Close, 1e-9) / max(bar.Open, 1e-9))
+                btc_close = float(getattr(bar, "Close", 0.0) or 0.0)
+                if btc_close > 0:
+                    self.regime_engine.update_btc_close(btc_close)
         breadth = sum(breadth_votes) / len(breadth_votes) if breadth_votes else 0.5
         return btc_ret, breadth
 
@@ -676,6 +756,7 @@ class SweetWaterPhase1(QCAlgorithm):
         for sym, tag in exits:
             self.Debug(f"EXIT sym={sym.Value} tag={tag}")
 
+        # Tier 7: drain deferred entries every bar (cash-aware, idempotent if list empty)
         self._process_pending_entries(scored_lookup=None)
 
         state, scored = self._score_candidates(data)
@@ -691,9 +772,16 @@ class SweetWaterPhase1(QCAlgorithm):
                     f"DISP regime={disp} current={self._dispersion_history[-1]:.4f} n={len(self._dispersion_history)}"
                 )
                 self._last_dispersion_log_date = day_key
+        reg_engine = getattr(self, "regime_engine", None)
+        btc_gate_open = reg_engine.btc_above_ema30d() if reg_engine is not None else True
+        if not btc_gate_open:
+            gate_day = self.Time.date() if hasattr(self, "Time") else None
+            if gate_day is not None and getattr(self, "_last_btc_gate_log_date", None) != gate_day:
+                self.Debug("GATE btc_below_ema30d=true -- no new entries")
+                self._last_btc_gate_log_date = gate_day
         if state == "risk_off" or disp == "flat":
             liquidate_all_positions(self, tag="RiskOff" if state == "risk_off" else "FlatDispersion")
-        elif self._rebalance_due():
+        elif self._rebalance_due() and btc_gate_open:
             if state == "risk_on" and disp == "full":
                 risk_scale = 1.0
             elif state == "risk_on" and disp == "half":

@@ -11,6 +11,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     from .config import CONFIG, StrategyConfig  # type: ignore
 
+BTC_EMA_PERIOD_HOURS = 30 * 24
+
 
 class HurstRegimeModel:
     def __init__(self, window: int = 5000) -> None:
@@ -168,8 +170,26 @@ class RegimeEngine:
         self._probs = {"risk_on": 1.0, "risk_off": 0.0, "chop": 0.0}
         self.vol_stress = 0.0
         self._btc_below_ema = False
+        self._btc_close_history = deque(maxlen=BTC_EMA_PERIOD_HOURS)
+        self._btc_above_ema30d = True
         self.hurst = HurstRegimeModel(window=5000)
         self.vr = VarianceRatioRegimeModel(window=5000, min_samples=500)
+
+    def update_btc_close(self, close: float):
+        if close <= 0:
+            return
+        self._btc_close_history.append(float(close))
+        if len(self._btc_close_history) >= BTC_EMA_PERIOD_HOURS:
+            prices = list(self._btc_close_history)
+            period = BTC_EMA_PERIOD_HOURS
+            alpha = 2.0 / (period + 1.0)
+            ema = prices[0]
+            for p in prices[1:]:
+                ema = alpha * p + (1 - alpha) * ema
+            self._btc_above_ema30d = float(close) > ema
+
+    def btc_above_ema30d(self) -> bool:
+        return bool(self._btc_above_ema30d)
 
     def update(self, btc_return: float, btc_vol: float, breadth: float, btc_above_ema200: bool = False) -> None:
         self._btc_below_ema = not bool(btc_above_ema200)
@@ -201,6 +221,8 @@ class RegimeEngine:
         if self.vol_stress > self.config.vol_stress_threshold:
             return False
         if breadth < self.config.breadth_threshold:
+            return False
+        if not self._btc_above_ema30d:
             return False
         if self._btc_below_ema:
             return False

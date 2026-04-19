@@ -49,6 +49,7 @@ def _build_algo(now: datetime):
     algo._force_exit_losers = lambda _scored: set()
     algo.Debug = lambda *_args, **_kwargs: None
     algo.sizer = type("Sizer", (), {"passes_cost_gate": lambda *_args, **_kwargs: True})()
+    algo.feature_engine = type("Feat", (), {"current_features": staticmethod(lambda *_args, **_kwargs: {"mom_24": 0.0, "vol_ratio_24h_7d": 2.0})})()
     algo.Securities = {
         sym: type("Sec", (), {"Price": 100.0, "BidPrice": 99.0, "AskPrice": 101.0, "FeeModel": None, "SymbolProperties": type("Props", (), {"LotSize": 0.0001, "MinimumOrderSize": 0.0001})()})()
     }

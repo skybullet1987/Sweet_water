@@ -124,10 +124,58 @@ def _cci(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 20) ->
 
 
 class FeatureEngine:
-    def __init__(self, lookback: int = DEFAULT_LOOKBACK_BARS) -> None:
+    ATR_PERIOD = 14
+
+    def __init__(self, lookback: int = DEFAULT_LOOKBACK_BARS, signal_mode: str = "microstructure") -> None:
         self.lookback = lookback
-        self._bars: dict[str, deque[dict[str, float]]] = defaultdict(lambda: deque(maxlen=lookback))
+        self.signal_mode = str(signal_mode or "microstructure")
+        self._state: dict[str, dict[str, Any]] = {}
         self._features: dict[str, dict[str, float]] = {}
+
+    def _symbol_state(self, symbol: str) -> dict[str, Any]:
+        state = self._state.get(symbol)
+        if state is None:
+            state = {
+                "count": 0,
+                "open": deque(maxlen=self.lookback),
+                "high": deque(maxlen=self.lookback),
+                "low": deque(maxlen=self.lookback),
+                "close": deque(maxlen=self.lookback),
+                "volume": deque(maxlen=self.lookback),
+                "ret30": deque(maxlen=30),
+                "tr_seed": deque(maxlen=self.ATR_PERIOD),
+                "prev_close": None,
+                "atr": None,
+                "ema20": None,
+                "ema50": None,
+                "ema200": None,
+            }
+            self._state[symbol] = state
+        return state
+
+    @staticmethod
+    def _to_float(value: float | None, fallback: float = 0.0) -> float:
+        if value is None:
+            return float(fallback)
+        out = float(value)
+        if not math.isfinite(out):
+            return float(fallback)
+        return out
+
+    @staticmethod
+    def _std(values: deque[float]) -> float:
+        n = len(values)
+        if n < 2:
+            return 0.0
+        arr = np.asarray(values, dtype=float)
+        return float(arr.std(ddof=1))
+
+    @staticmethod
+    def _ema(prev: float | None, value: float, period: int) -> float:
+        if prev is None:
+            return float(value)
+        alpha = 2.0 / (float(period) + 1.0)
+        return float(prev + alpha * (value - prev))
 
     @staticmethod
     def _parse_bar(bar: Any) -> tuple[str, dict[str, float]]:
@@ -147,45 +195,89 @@ class FeatureEngine:
         symbol, parsed = self._parse_bar(bar)
         if not symbol:
             return
-        self._bars[symbol].append(parsed)
-        frame = pd.DataFrame(self._bars[symbol])
-        if len(frame) < 60:
+        state = self._symbol_state(symbol)
+        close = float(parsed["close"])
+        high = float(parsed["high"])
+        low = float(parsed["low"])
+        open_ = float(parsed["open"])
+        volume = float(parsed["volume"])
+
+        state["count"] += 1
+        state["open"].append(open_)
+        state["high"].append(high)
+        state["low"].append(low)
+        state["close"].append(close)
+        state["volume"].append(volume)
+
+        prev_close = state["prev_close"]
+        tr = abs(high - low) if prev_close is None else max(abs(high - low), abs(high - prev_close), abs(low - prev_close))
+        state["tr_seed"].append(float(tr))
+        if state["atr"] is None:
+            if len(state["tr_seed"]) == self.ATR_PERIOD:
+                state["atr"] = float(sum(state["tr_seed"]) / self.ATR_PERIOD)
+        else:
+            state["atr"] = ((self.ATR_PERIOD - 1.0) * state["atr"] + float(tr)) / self.ATR_PERIOD
+
+        if prev_close is not None and prev_close > 0 and close > 0:
+            state["ret30"].append(float(math.log(close / prev_close)))
+        state["prev_close"] = close
+
+        state["ema20"] = self._ema(state["ema20"], close, 20)
+        state["ema50"] = self._ema(state["ema50"], close, 50)
+        state["ema200"] = self._ema(state["ema200"], close, 200)
+
+        if state["count"] < 60:
             return
-        close = frame["close"].astype(float)
-        high = frame["high"].astype(float)
-        low = frame["low"].astype(float)
-        volume = frame["volume"].astype(float)
-        ret = np.log(close).diff().fillna(0.0)
-        macd_line = _ema(close, 12) - _ema(close, 26)
-        macd_signal = macd_line.ewm(span=9, adjust=False).mean()
-        bb_mid = close.rolling(20, min_periods=20).mean()
-        bb_std = close.rolling(20, min_periods=20).std()
-        upper = bb_mid + 2.0 * bb_std
-        lower = bb_mid - 2.0 * bb_std
-        width = max(float((upper - lower).iloc[-1]), 1e-9)
-        signed_volume = np.sign(ret.fillna(0.0)) * volume
-        self._features[symbol] = {
-            "rsi": float(_rsi(close, 14).iloc[-1]),
-            "atr": float(_atr(high, low, close, 14).iloc[-1]),
-            "adx": float(_adx(high, low, close, 14).iloc[-1]),
-            "macd_hist": float((macd_line - macd_signal).iloc[-1]),
-            "bb_pos": float((close.iloc[-1] - lower.iloc[-1]) / width),
-            "cmo": float(_cmo(close, 14).iloc[-1]),
-            "aroon_osc": float(_aroon_osc(high, low, 14).iloc[-1]),
-            "mfi": float(_mfi(high, low, close, volume, 14).iloc[-1]),
-            "cci": float(_cci(high, low, close, 20).iloc[-1]),
-            "amihud": float(amihud_illiquidity(ret, (close * volume), 20).iloc[-1]),
-            "roll_spread": float(roll_spread(close, 20).iloc[-1]),
-            "kyle_lambda": float(kyle_lambda_proxy(ret, signed_volume, 20).iloc[-1]),
-            "realized_vol": float(realized_vol(ret, 24).iloc[-1]),
-            "realized_vol_30": float(realized_vol(ret, 30).iloc[-1]),
-            "ofi": float(ofi_proxy(frame["open"], high, low, close, volume).rolling(20, min_periods=20).mean().iloc[-1]),
-            "mom_24": float((close.iloc[-1] / close.iloc[-24]) - 1.0),
-            "mom_168": float((close.iloc[-1] / close.iloc[-168]) - 1.0) if len(close) >= 168 else 0.0,
-            "ema20": float(_ema(close, 20).iloc[-1]),
-            "ema50": float(_ema(close, 50).iloc[-1]),
-            "ema200": float(_ema(close, 200).iloc[-1]),
+
+        close_hist = state["close"]
+        mom_24 = float((close_hist[-1] / close_hist[-24]) - 1.0) if len(close_hist) >= 24 else 0.0
+        mom_168 = float((close_hist[-1] / close_hist[-168]) - 1.0) if len(close_hist) >= 168 else 0.0
+        realized_vol_30 = self._std(state["ret30"]) * math.sqrt(24.0 * 365.0)
+
+        features = {
+            "atr": self._to_float(state["atr"], 0.0),
+            "realized_vol_30": self._to_float(realized_vol_30, 0.0),
+            "mom_24": self._to_float(mom_24, 0.0),
+            "mom_168": self._to_float(mom_168, 0.0),
+            "ema20": self._to_float(state["ema20"], float("nan")) if state["count"] >= 20 else float("nan"),
+            "ema50": self._to_float(state["ema50"], float("nan")) if state["count"] >= 50 else float("nan"),
+            "ema200": self._to_float(state["ema200"], float("nan")) if state["count"] >= 200 else float("nan"),
+            "rsi": 50.0,
+            "adx": 0.0,
+            "ofi": 0.0,
+            "cci": 0.0,
+            "bb_pos": 0.5,
+            "mfi": 50.0,
         }
+
+        if self.signal_mode == "legacy":
+            open_s = pd.Series(state["open"], dtype=float)
+            high_s = pd.Series(state["high"], dtype=float)
+            low_s = pd.Series(state["low"], dtype=float)
+            close_s = pd.Series(state["close"], dtype=float)
+            vol_s = pd.Series(state["volume"], dtype=float)
+            ret_s = np.log(close_s.clip(lower=1e-12)).diff().fillna(0.0)
+            bb_mid = close_s.rolling(20, min_periods=20).mean()
+            bb_std = close_s.rolling(20, min_periods=20).std()
+            upper = bb_mid + 2.0 * bb_std
+            lower = bb_mid - 2.0 * bb_std
+            width = max(float((upper.iloc[-1] - lower.iloc[-1]) if len(upper) else 0.0), 1e-9)
+            bb_pos = ((close_s.iloc[-1] - lower.iloc[-1]) / width) if len(lower) else 0.5
+            features.update(
+                {
+                    "rsi": self._to_float(_rsi(close_s, 14).iloc[-1], 50.0),
+                    "adx": self._to_float(_adx(high_s, low_s, close_s, 14).iloc[-1], 0.0),
+                    "ofi": self._to_float(ofi_proxy(open_s, high_s, low_s, close_s, vol_s).rolling(20, min_periods=20).mean().iloc[-1], 0.0),
+                    "cci": self._to_float(_cci(high_s, low_s, close_s, 20).iloc[-1], 0.0),
+                    "bb_pos": self._to_float(bb_pos, 0.5),
+                    "mfi": self._to_float(_mfi(high_s, low_s, close_s, vol_s, 14).iloc[-1], 50.0),
+                    "realized_vol": self._to_float(realized_vol(ret_s, 24).iloc[-1], features["realized_vol_30"]),
+                }
+            )
+        else:
+            features["realized_vol"] = features["realized_vol_30"]
+
+        self._features[symbol] = features
 
     def current_features(self, symbol: str) -> dict[str, float]:
         return dict(self._features.get(symbol, {}))

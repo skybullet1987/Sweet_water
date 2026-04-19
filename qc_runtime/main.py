@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover
     class Resolution:
         Hour = "Hour"
         Minute = "Minute"
+        Tick = "Tick"
 
     class BrokerageName:
         Kraken = "Kraken"
@@ -67,7 +68,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self.SetEndDate(self.config.end_year, self.config.end_month, self.config.end_day)
         self.SetWarmup(self.config.warmup_bars, Resolution.Hour)
 
-        self.feature_engine = FeatureEngine()
+        self.feature_engine = FeatureEngine(signal_mode=getattr(self.config, "signal_mode", "microstructure"))
         self.regime_engine = RegimeEngine(self.config)
         self.scorer = Scorer(self.config)
         self.signal_features = SignalFeatureStack(self)
@@ -113,7 +114,7 @@ class SweetWaterPhase1(QCAlgorithm):
         if ticker in self.symbol_by_ticker:
             return self.symbol_by_ticker[ticker]
         sec_obj = self.AddCrypto(ticker, Resolution.Hour, Market.Kraken)
-        if getattr(self.config, "signal_mode", "microstructure") == "microstructure":
+        if getattr(self.config, "signal_mode", "microstructure") == "microstructure" and bool(getattr(self, "LiveMode", False)):
             try:
                 tick_obj = self.AddCrypto(ticker, Resolution.Tick, Market.Kraken)
                 self._configure_security_models(tick_obj)
@@ -157,6 +158,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self._recent_trade_outcomes = deque(maxlen=20)
         self._entry_signal_combos = {}
         self._last_cash_gate_log = None
+        self._bar_count = 0
 
         self.position_state: dict[object, PositionState] = {}
         self.entry_volumes = {}
@@ -342,6 +344,16 @@ class SweetWaterPhase1(QCAlgorithm):
 
     def OnData(self, data: Slice):  # pragma: no cover
         self._ensure_monthly_universe()
+        self._bar_count += 1
+        if self._bar_count % 24 == 0:
+            equity = float(getattr(self.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
+            self.Debug(
+                f"HB t={getattr(self, 'Time', 'n/a')} warmup={bool(getattr(self, 'IsWarmingUp', False))} "
+                f"bars={self._bar_count} equity={equity:.2f}"
+            )
+        if self.IsWarmingUp:
+            self._ingest_data(data)
+            return
 
         self._drawdown_breaker.update(self)
         if self._drawdown_breaker.is_triggered():

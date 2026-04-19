@@ -14,7 +14,7 @@ if str(QC_RUNTIME) not in sys.path:
     sys.path.insert(0, str(QC_RUNTIME))
 
 from features import CvdDivergenceFeature, OrderFlowImbalanceFeature, VolConeBreakoutFeature
-from regime import HurstRegimeModel
+from regime import HurstRegimeModel, VarianceRatioRegimeModel
 
 MAX_FILE_BYTES = 60_000
 MAX_TOTAL_LOC = 6_000
@@ -71,6 +71,38 @@ def test_hurst_distinguishes_trend_vs_mean_reversion():
     h_trend = HurstRegimeModel.hurst_rs(trend[200:])
     h_mean = HurstRegimeModel.hurst_rs(meanrev[200:])
     assert h_trend > h_mean
+
+
+def test_variance_ratio_trend_ar1_gt_one():
+    rng = np.random.default_rng(11)
+    n = 1400
+    rets = np.zeros(n)
+    for i in range(1, n):
+        rets[i] = 0.8 * rets[i - 1] + rng.normal(0, 0.01)
+    model = VarianceRatioRegimeModel(window=500, min_samples=120)
+    sym = _Symbol("BTCUSD")
+    t = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    px = 100.0
+    for i in range(n):
+        px *= float(np.exp(rets[i]))
+        model.update(sym, _Bar(t + timedelta(hours=i), px, px, px, px, 1.0))
+    assert model.variance_ratio(sym) > 1.0
+
+
+def test_variance_ratio_meanrev_ar1_lt_one():
+    rng = np.random.default_rng(12)
+    n = 1400
+    rets = np.zeros(n)
+    for i in range(1, n):
+        rets[i] = -0.8 * rets[i - 1] + rng.normal(0, 0.01)
+    model = VarianceRatioRegimeModel(window=500, min_samples=120)
+    sym = _Symbol("BTCUSD")
+    t = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    px = 100.0
+    for i in range(n):
+        px *= float(np.exp(rets[i]))
+        model.update(sym, _Bar(t + timedelta(hours=i), px, px, px, px, 1.0))
+    assert model.variance_ratio(sym) < 1.0
 
 
 def test_ofi_sign_convention_positive_bid_improves():

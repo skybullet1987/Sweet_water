@@ -40,9 +40,12 @@ class StrategyConfig:
     # Exits (ATR-scaled)
     tp_atr_mult: float = 2.0
     sl_atr_mult: float = 1.0
+    tp_atr_multiplier: float = 3.0
+    sl_atr_multiplier: float = 1.5
     chandelier_atr_mult: float = 3.0
     activate_trailing_above_pct: float = 0.005
     time_stop_bars: int = 24
+    time_stop_hours: float = 120.0
 
     # Regime gates
     vol_stress_threshold: float = 0.85

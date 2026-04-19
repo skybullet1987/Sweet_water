@@ -152,6 +152,8 @@ class FeatureEngine:
                 "daily_close": deque(maxlen=420),
                 "daily_logret": deque(maxlen=420),
                 "last_daily_bucket": None,
+                "vol_24h_history": deque(maxlen=8),
+                "current_24h_volume": 0.0,
             }
             self._state[symbol] = state
         return state
@@ -230,6 +232,7 @@ class FeatureEngine:
         state["low"].append(low)
         state["close"].append(close)
         state["volume"].append(volume)
+        state["current_24h_volume"] = float(state.get("current_24h_volume", 0.0) + volume)
 
         prev_close = state["prev_close"]
         tr = abs(high - low) if prev_close is None else max(abs(high - low), abs(high - prev_close), abs(low - prev_close))
@@ -261,9 +264,13 @@ class FeatureEngine:
             elif prev_bucket != daily_bucket:
                 if prev_close is not None and prev_close > 0:
                     self._append_daily_close(state, prev_close)
+                state["vol_24h_history"].append(float(state.get("current_24h_volume", 0.0)))
+                state["current_24h_volume"] = 0.0
                 state["last_daily_bucket"] = daily_bucket
         elif state["count"] % 24 == 0:
             self._append_daily_close(state, close)
+            state["vol_24h_history"].append(float(state.get("current_24h_volume", 0.0)))
+            state["current_24h_volume"] = 0.0
 
         if state["count"] < 60:
             return
@@ -309,6 +316,14 @@ class FeatureEngine:
                 sd = float(rolling.std(ddof=1))
                 z = (rv_now - mu) / max(sd, 1e-9)
                 vol_stress_21d = float(1.0 / (1.0 + math.exp(-z)))
+        vol_hist = list(state["vol_24h_history"])
+        vol_ratio_24h_7d = 1.0
+        if len(vol_hist) >= 8:
+            last_24h_volume = float(vol_hist[-1])
+            prior_7_days_volume = vol_hist[-8:-1]
+            denom = float(sum(prior_7_days_volume) / max(len(prior_7_days_volume), 1))
+            if denom > 0:
+                vol_ratio_24h_7d = last_24h_volume / denom
 
         features = {
             "atr": self._to_float(state["atr"], 0.0),
@@ -324,6 +339,7 @@ class FeatureEngine:
             "rv_21d": self._to_float(rv_21d, 0.0),
             "dd_63d": self._clip(self._to_float(dd_63d, 0.0), 0.0, 1.0),
             "vol_stress_21d": self._clip(self._to_float(vol_stress_21d, 0.0), 0.0, 1.0),
+            "vol_ratio_24h_7d": self._to_float(vol_ratio_24h_7d, 1.0),
             "daily_count": float(len(daily_close)),
             "ema20": self._to_float(state["ema20"], float("nan")) if state["count"] >= 20 else float("nan"),
             "ema50": self._to_float(state["ema50"], float("nan")) if state["count"] >= 50 else float("nan"),

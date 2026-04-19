@@ -48,7 +48,11 @@ class PositionState:
 def position_status(algo, symbol) -> Literal["flat", "long", "pending"]:
     if len(algo.Transactions.GetOpenOrders(symbol)) > 0:
         return "pending"
-    return "long" if is_invested_not_dust(algo, symbol) else "flat"
+    try:
+        qty = float(getattr(algo.Portfolio[symbol], "Quantity", 0.0) or 0.0)
+    except Exception:
+        qty = 0.0
+    return "long" if qty > 0 else "flat"
 
 
 def _position_state(algo) -> dict:
@@ -116,7 +120,26 @@ def is_invested_not_dust(algo, symbol) -> bool:
 
 
 def get_actual_position_count(algo) -> int:
-    return sum(1 for item in algo.Portfolio for s in [getattr(item, "Key", item)] if is_invested_not_dust(algo, s))
+    count = 0
+    for item in getattr(algo, "Portfolio", []):
+        if hasattr(item, "Key"):
+            symbol = item.Key
+            holding = getattr(item, "Value", None)
+        else:
+            symbol = item
+            holding = None
+        if holding is None or not hasattr(holding, "Quantity"):
+            try:
+                holding = algo.Portfolio[symbol]
+            except Exception:
+                holding = None
+        try:
+            qty = float(getattr(holding, "Quantity", 0.0) or 0.0)
+        except Exception:
+            qty = 0.0
+        if qty > 0:
+            count += 1
+    return count
 
 
 def debug_limited(algo, msg: str) -> None:
@@ -386,60 +409,95 @@ def liquidate_all_positions(algo, tag="Liquidate"):
 
 def manage_open_positions(algo, data=None):
     exits = []
-    for symbol, pstate in list(_position_state(algo).items()):
-        if position_status(algo, symbol) == "flat":
+    holdings = []
+    for kv in getattr(algo, "Portfolio", []):
+        if hasattr(kv, "Key"):
+            symbol = kv.Key
+            holding = getattr(kv, "Value", None)
+        else:
+            symbol = kv
+            holding = None
+        if holding is None or not hasattr(holding, "Quantity"):
+            try:
+                holding = algo.Portfolio[symbol]
+            except Exception:
+                holding = None
+        try:
+            qty = float(getattr(holding, "Quantity", 0.0) or 0.0)
+        except Exception:
+            qty = 0.0
+        if qty > 0:
+            holdings.append(symbol)
+
+    holding_set = set(holdings)
+    for symbol in list(_position_state(algo).keys()):
+        if symbol not in holding_set and position_status(algo, symbol) == "flat":
             cleanup_position(algo, symbol)
+    for symbol in holdings:
+        if symbol not in _position_state(algo):
+            try:
+                avg_px = float(algo.Portfolio[symbol].AveragePrice or 0.0)
+            except Exception:
+                avg_px = 0.0
+            if avg_px <= 0:
+                sec = algo.Securities.get(symbol)
+                avg_px = float(getattr(sec, "Price", 0.0) or 0.0)
+            if avg_px <= 0:
+                continue
+            feats = algo.feature_engine.current_features(getattr(symbol, "Value", str(symbol))) or {}
+            atr = float(feats.get("atr", 0.0) or 0.0)
+            if atr <= 0:
+                atr = avg_px * 0.05
+            _position_state(algo)[symbol] = PositionState(
+                entry_price=avg_px,
+                highest_close=avg_px,
+                entry_atr=atr,
+                entry_time=algo.Time,
+            )
+            algo.Debug(f"LAZY_STATE sym={getattr(symbol,'Value',symbol)} avg={avg_px:.6f} atr={atr:.6f}")
+        pstate = _position_state(algo).get(symbol)
+        if pstate is None:
             continue
         sec = algo.Securities.get(symbol)
         if sec is None:
             continue
-        bar = None
-        if data is not None:
-            bar = data.Bars.get(symbol) if hasattr(data, "Bars") else None
-        close = float(getattr(bar, "Close", getattr(sec, "Price", 0.0)) or 0.0)
-        high = float(getattr(bar, "High", close) or close)
-        low = float(getattr(bar, "Low", close) or close)
-        current_atr = float(getattr(algo.feature_engine, "current_features", lambda *_: {})(symbol.Value).get("atr", 0.0) or 0.0)
-
-        entry_price = float(getattr(pstate, "entry_price", close) or close)
-        entry_atr = float(getattr(pstate, "entry_atr", current_atr) or current_atr)
-        if entry_atr <= 0:
-            entry_atr = max(entry_price * 0.01, 1e-6)
-
-        highest = float(getattr(pstate, "highest_close", entry_price) or entry_price)
-        highest = max(highest, close)
-        pstate.highest_close = highest
-
-        bars_held = 0
-        if pstate.entry_time is not None:
-            bars_held = int((algo.Time - pstate.entry_time).total_seconds() / 3600)
-
-        tp = entry_price + algo.config.tp_atr_mult * entry_atr
-        hard_sl = entry_price - algo.config.sl_atr_mult * entry_atr
-        trailing_armed = close > entry_price * (1.0 + algo.config.activate_trailing_above_pct)
-        trailing_sl = highest - algo.config.chandelier_atr_mult * max(current_atr, 1e-9)
-        effective_sl = max(hard_sl, trailing_sl) if trailing_armed else hard_sl
-
-        tag = None
-        exit_px = close
-        if high >= tp:
-            tag = "TP"
-            exit_px = tp
-        elif low <= effective_sl:
-            tag = "Chandelier" if trailing_armed and trailing_sl >= hard_sl else "SL"
-            exit_px = effective_sl
-        elif bars_held >= algo.config.time_stop_bars:
-            tag = "TimeStop"
-            exit_px = close
-
-        allow_time_stop = (
-            tag != "TimeStop" or bars_held >= int(getattr(algo.config, "min_hold_hours", 0) or 0)
-        )
-        if tag and allow_time_stop:
-            algo._last_exit_tag = tag
+        price = float(getattr(sec, "Price", 0.0) or 0.0)
+        if price <= 0:
+            continue
+        state = _position_state(algo)[symbol]
+        if state.entry_time is not None:
+            hours_held = (algo.Time - state.entry_time).total_seconds() / 3600.0
+        else:
+            hours_held = 0.0
+        TIME_STOP_HOURS = float(getattr(CONFIG, "time_stop_hours", 120.0))
+        if hours_held >= TIME_STOP_HOURS:
+            if smart_liquidate(algo, symbol, tag="TimeStop"):
+                algo.Debug(f"TIME_STOP sym={getattr(symbol,'Value',symbol)} hours={hours_held:.1f}")
+                cleanup_position(algo, symbol, record_pnl=True, exit_price=price)
+                _position_state(algo).pop(symbol, None)
+                exits.append((symbol, "TimeStop"))
+                continue
+        state.highest_close = max(state.highest_close, price)
+        sl_price = state.entry_price - float(CONFIG.sl_atr_multiplier) * state.entry_atr
+        chandelier_active = (state.highest_close - state.entry_price) >= state.entry_atr
+        chandelier_stop = state.highest_close - 2.0 * state.entry_atr if chandelier_active else None
+        effective_stop = max(sl_price, chandelier_stop) if chandelier_stop is not None else sl_price
+        tp_price = state.entry_price + float(CONFIG.tp_atr_multiplier) * state.entry_atr
+        if price <= effective_stop:
+            tag = "Chandelier" if chandelier_active and chandelier_stop is not None and effective_stop == chandelier_stop else "SL"
             if smart_liquidate(algo, symbol, tag=tag):
-                cleanup_position(algo, symbol, record_pnl=True, exit_price=exit_px)
+                algo.Debug(f"{tag} sym={getattr(symbol,'Value',symbol)} px={price:.4f} stop={effective_stop:.4f}")
+                cleanup_position(algo, symbol, record_pnl=True, exit_price=price)
+                _position_state(algo).pop(symbol, None)
                 exits.append((symbol, tag))
+                continue
+        elif price >= tp_price:
+            if smart_liquidate(algo, symbol, tag="TP"):
+                algo.Debug(f"TP sym={getattr(symbol,'Value',symbol)} px={price:.4f} tp={tp_price:.4f}")
+                cleanup_position(algo, symbol, record_pnl=True, exit_price=price)
+                _position_state(algo).pop(symbol, None)
+                exits.append((symbol, "TP"))
+                continue
     return exits
 
 

@@ -15,7 +15,7 @@ if str(QC_RUNTIME) not in sys.path:
     sys.path.insert(0, str(QC_RUNTIME))
 
 from config import CONFIG, StrategyConfig
-from execution import Executor, KrakenTieredFeeModel, RealisticCryptoSlippage, execute_regime_entries, place_entry
+from execution import Executor, KrakenTieredFeeModel, RealisticCryptoSlippage, execute_regime_entries, manage_open_positions, place_entry
 from features import FeatureEngine, amihud_illiquidity, rank_momentum, realized_vol, roll_spread, zscore_vs_universe
 from main import SweetWaterPhase1
 from regime import RegimeEngine
@@ -575,3 +575,117 @@ class TestSweetWaterPhase1Integration:
         assert non_btc_orders, f"Expected non-BTC entry order, got {algo._order_calls}"
         assert all(o[1] != "DOGEUSD" for o in algo._order_calls), f"DOGEUSD should never be ordered: {algo._order_calls}"
         assert all(float(o[2]) > 0 for o in algo._order_calls), f"Expected long-only entries, got {algo._order_calls}"
+
+    def _configure_single_symbol_entry_path(self, algo, symbol):
+        algo.symbols = [symbol]
+        algo.feature_engine.update = lambda *_args, **_kwargs: None
+        algo.feature_engine.current_features = lambda *_args, **_kwargs: {"ema20": 2.0, "ema50": 1.0, "mom_24": 0.01, "adx": 30.0, "ofi": 1.0}
+        algo.scorer.score = lambda *_args, **_kwargs: 0.9
+        algo.sizer.size_for_trade = lambda *_args, **_kwargs: 0.08
+        algo.sizer.passes_cost_gate = lambda *_args, **_kwargs: True
+        algo.risk.evaluate = lambda payload: self._Decision(payload["target_weight"])
+
+    def _make_slice(self, algo, symbol, open_, high, low, close, volume=10_000.0):
+        bars = {}
+        for ref in algo.reference_symbols:
+            ref_px = 200.0
+            ref_sec = algo.Securities[ref]
+            ref_sec.Price = ref_px
+            ref_sec.BidPrice = ref_px * 0.999
+            ref_sec.AskPrice = ref_px * 1.001
+            ref_sec.Volume = volume
+            bars[ref] = self._Bar(ref_px * 0.999, ref_px * 1.002, ref_px * 0.998, ref_px, volume)
+        sec = algo.Securities[symbol]
+        sec.Price = float(close)
+        sec.BidPrice = float(close) * 0.999
+        sec.AskPrice = float(close) * 1.001
+        sec.Volume = float(volume)
+        bars[symbol] = self._Bar(open_, high, low, close, volume)
+        return self._Slice(bars)
+
+    def test_no_double_entry_same_symbol(self):
+        algo = self._build_algo()
+        algo.Initialize()
+        algo.LiveMode = True
+        symbol = algo.symbol_by_ticker["SOLUSD"]
+        self._configure_single_symbol_entry_path(algo, symbol)
+
+        algo.Time = datetime(2025, 1, 2, 0, tzinfo=timezone.utc)
+        algo.OnData(self._make_slice(algo, symbol, 100.0, 101.0, 99.5, 100.5))
+        algo.Time = datetime(2025, 1, 2, 1, tzinfo=timezone.utc)
+        algo.OnData(self._make_slice(algo, symbol, 100.5, 101.2, 100.0, 100.8))
+
+        buy_orders = [o for o in algo._order_calls if o[2] > 0]
+        assert len(buy_orders) == 1, f"Expected one buy order across two bars, got {algo._order_calls}"
+
+    def test_cash_gate_blocks_entries_when_cash_exhausted(self):
+        algo = self._build_algo()
+        algo.Initialize()
+        algo.LiveMode = True
+        symbol = algo.symbol_by_ticker["SOLUSD"]
+        self._configure_single_symbol_entry_path(algo, symbol)
+        below_threshold_cash = 0.50
+        algo.Portfolio.Cash = below_threshold_cash
+
+        for i in range(10):
+            algo.Time = datetime(2025, 1, 3, i, tzinfo=timezone.utc)
+            algo.OnData(self._make_slice(algo, symbol, 100.0, 101.0, 99.5, 100.5))
+
+        assert len(algo._order_calls) == 0, f"Expected zero entries when cash-gated, got {algo._order_calls}"
+
+    def test_take_profit_exit_fires(self):
+        algo = self._build_algo()
+        algo.Initialize()
+        symbol = algo.symbol_by_ticker["SOLUSD"]
+        sec = algo.Securities[symbol]
+        hold = algo.Portfolio[symbol]
+        hold.Quantity = 1.0
+        hold.Invested = True
+        hold.AveragePrice = 100.0
+        hold.Price = 100.0
+        sec.Price = 100.0
+        algo.entry_prices[symbol] = 100.0
+        algo.highest_prices[symbol] = 100.0
+        algo.entry_times[symbol] = algo.Time - timedelta(hours=1)
+
+        manage_open_positions(algo, self._make_slice(algo, symbol, 100.0, 106.0, 99.0, 104.0))
+        assert any(order[3] == "TakeProfit" for order in algo._order_calls), f"Missing TakeProfit exit: {algo._order_calls}"
+
+    def test_stop_loss_exit_fires(self):
+        algo = self._build_algo()
+        algo.Initialize()
+        symbol = algo.symbol_by_ticker["SOLUSD"]
+        sec = algo.Securities[symbol]
+        hold = algo.Portfolio[symbol]
+        hold.Quantity = 1.0
+        hold.Invested = True
+        hold.AveragePrice = 100.0
+        hold.Price = 100.0
+        sec.Price = 100.0
+        algo.entry_prices[symbol] = 100.0
+        algo.highest_prices[symbol] = 100.0
+        algo.entry_times[symbol] = algo.Time - timedelta(hours=1)
+
+        manage_open_positions(algo, self._make_slice(algo, symbol, 100.0, 101.0, 97.0, 98.0))
+        assert any(order[3] == "StopLoss" for order in algo._order_calls), f"Missing StopLoss exit: {algo._order_calls}"
+
+    def test_trailing_stop_exit_fires(self):
+        algo = self._build_algo()
+        algo.Initialize()
+        symbol = algo.symbol_by_ticker["SOLUSD"]
+        sec = algo.Securities[symbol]
+        hold = algo.Portfolio[symbol]
+        hold.Quantity = 1.0
+        hold.Invested = True
+        hold.AveragePrice = 100.0
+        hold.Price = 100.0
+        sec.Price = 100.0
+        # Raise TP so trailing logic can arm/trigger without TakeProfit firing first.
+        algo.take_profit_pct = 0.20
+        algo.entry_prices[symbol] = 100.0
+        algo.highest_prices[symbol] = 100.0
+        algo.entry_times[symbol] = algo.Time - timedelta(hours=1)
+
+        manage_open_positions(algo, self._make_slice(algo, symbol, 100.0, 108.0, 107.0, 108.0))
+        manage_open_positions(algo, self._make_slice(algo, symbol, 106.0, 106.5, 105.0, 105.5))
+        assert any(order[3] == "TrailingStop" for order in algo._order_calls), f"Missing TrailingStop exit: {algo._order_calls}"

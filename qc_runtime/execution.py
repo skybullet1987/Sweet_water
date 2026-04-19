@@ -68,6 +68,8 @@ random.seed(42)
 # Additive non-fill penalty for breakout/momentum entries (vol-ignition-only, no mean-reversion support).
 # Configurable via algo.breakout_nonfill_penalty; conservative default 0.08 (+8 pp above base rate).
 _BREAKOUT_NONFILL_PENALTY_DEFAULT = 0.08
+# 10% buffer over min-notional to avoid immediate invalids from fee/slippage drift.
+CASH_GATE_SAFETY_MARGIN = 1.10
 
 
 def reseed_non_fill_simulation(seed):
@@ -313,7 +315,14 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
                 algo.highest_prices[symbol] = algo.Portfolio[symbol].AveragePrice
                 algo.entry_times[symbol] = algo.Time
             return False
-    algo.Transactions.CancelOpenOrders(symbol)
+    if hasattr(algo.Transactions, 'CancelOpenOrders'):
+        algo.Transactions.CancelOpenOrders(symbol)
+    else:
+        for order in list(algo.Transactions.GetOpenOrders(symbol)):
+            try:
+                algo.Transactions.CancelOrder(int(getattr(order, 'Id')))
+            except Exception:
+                pass
     # Use MinimumOrderSize (not lot_size) for exits — lot_size can be < MinimumOrderSize on some assets.
     try:
         sec = algo.Securities[symbol]
@@ -469,7 +478,12 @@ def is_invested_not_dust(algo, symbol):
 
 
 def get_actual_position_count(algo):
-    return sum(1 for kvp in algo.Portfolio if is_invested_not_dust(algo, kvp.Key))
+    count = 0
+    for item in algo.Portfolio:
+        symbol = getattr(item, 'Key', item)
+        if is_invested_not_dust(algo, symbol):
+            count += 1
+    return count
 
 
 def has_open_orders(algo, symbol=None):
@@ -1335,6 +1349,16 @@ def place_entry(algo, symbol, quantity, tag='Entry', force_market=False, signal_
     if sym_val in SYMBOL_BLACKLIST_STRUCTURAL:
         algo.Debug(f"BLACKLIST reject: {sym_val}")
         return None
+    if is_invested_not_dust(algo, symbol):
+        logged = getattr(algo, '_invested_entry_skip_logged', set())
+        if sym_val not in logged:
+            budget = int(getattr(algo, 'log_budget', 0) or 0)
+            if budget > 0:
+                algo.Debug(f"ENTRY SKIP (invested): {sym_val}")
+                algo.log_budget = budget - 1
+            logged.add(sym_val)
+            algo._invested_entry_skip_logged = logged
+        return None
     if getattr(algo, 'long_only', True) and float(quantity) < 0:
         return None
     sec = algo.Securities.get(symbol) if hasattr(algo, 'Securities') else None
@@ -1350,7 +1374,7 @@ def place_entry(algo, symbol, quantity, tag='Entry', force_market=False, signal_
     return place_limit_or_market(algo, symbol, quantity, tag=tag, force_market=force_market, signal_score=signal_score)
 
 
-def manage_open_positions(algo):
+def manage_open_positions(algo, data=None):
     if not hasattr(algo, 'entry_prices'):
         return []
     exits = []
@@ -1367,30 +1391,84 @@ def manage_open_positions(algo):
         if sec is None:
             continue
         price = float(getattr(sec, 'Price', 0.0) or 0.0)
-        entry = float(algo.entry_prices.get(symbol, price) or price)
+        bar = None
+        if data is not None:
+            try:
+                bar = data.Bars.get(symbol)
+            except Exception:
+                bar = None
+        high = float(getattr(bar, 'High', price) or price)
+        low = float(getattr(bar, 'Low', price) or price)
+        close = float(getattr(bar, 'Close', price) or price)
+        entry = float(algo.entry_prices.get(symbol, close) or close)
         highest = float(algo.highest_prices.get(symbol, entry) or entry)
-        if price > highest:
-            algo.highest_prices[symbol] = price
-            highest = price
-        stop = entry * (1.0 - float(getattr(algo, 'stop_loss_pct', 0.03)))
-        tp = entry * (1.0 + float(getattr(algo, 'take_profit_pct', 0.06)))
+        if high > highest:
+            algo.highest_prices[symbol] = high
+            highest = high
+        stop = entry * (1.0 - float(getattr(algo, 'stop_loss_pct', 0.025)))
+        tp = entry * (1.0 + float(getattr(algo, 'take_profit_pct', 0.05)))
+        trailing_pct = float(getattr(algo, 'trailing_stop_pct', 0.02))
+        activate_above = float(getattr(algo, 'activate_trailing_above_pct', 0.01))
+        trailing_level = highest * (1.0 - trailing_pct)
+        trailing_active = highest > entry * (1.0 + activate_above)
         bars_held = 0
         if symbol in getattr(algo, 'entry_times', {}):
             bars_held = (algo.Time - algo.entry_times[symbol]).total_seconds() / 3600.0
         reason = None
-        if price <= stop:
-            reason = 'StopLoss'
-        elif price >= tp:
+        exit_price = close
+        # Exit precedence for bars that can touch multiple barriers:
+        # TakeProfit -> StopLoss -> TrailingStop -> TimeStop.
+        # With OHLC-only bars, intrabar path is unknown; this deterministic order
+        # resolves ties consistently and matches the requested precedence.
+        if high >= tp:
             reason = 'TakeProfit'
+            exit_price = tp
+        elif low <= stop:
+            reason = 'StopLoss'
+            exit_price = stop
+        elif trailing_active and low <= trailing_level:
+            reason = 'TrailingStop'
+            exit_price = trailing_level
         elif bars_held >= float(getattr(algo, 'max_hold_hours', 24)):
             reason = 'TimeStop'
+            exit_price = close
         if reason:
             ticket = smart_liquidate(algo, symbol, tag=reason)
+            pnl_pct = (exit_price - entry) / entry if entry > 0 else 0.0
+            if ticket:
+                cleanup_position(algo, symbol, record_pnl=True, exit_price=exit_price)
+            try:
+                algo.Debug(
+                    f"EXIT {reason}: {symbol.Value} entry=${entry:.4f} exit=${exit_price:.4f} pnl={pnl_pct:+.2%}"
+                )
+            except Exception:
+                pass
             exits.append((symbol, reason, ticket))
     return exits
 
 
 def execute_regime_entries(algo, candidates, regime_tag='regime'):
+    available_cash = None
+    try:
+        available_cash = float(algo.Portfolio.CashBook["USD"].Amount)
+    except Exception:
+        available_cash = float(getattr(algo.Portfolio, 'Cash', 0.0) or 0.0)
+    min_notional = float(getattr(algo, 'min_notional', 1.0) or 1.0)
+    current_hour = getattr(algo, 'Time', None)
+    if current_hour is not None:
+        current_hour = current_hour.replace(minute=0, second=0, microsecond=0)
+    if available_cash < (min_notional * CASH_GATE_SAFETY_MARGIN):
+        last_log = getattr(algo, '_last_cash_gate_log', None)
+        if current_hour != last_log:
+            budget = int(getattr(algo, 'log_budget', 0) or 0)
+            if budget > 0:
+                algo.Debug(f"CASH GATE: skipping entries, available=${available_cash:.2f}")
+                algo.log_budget = budget - 1
+            algo._last_cash_gate_log = current_hour
+        return []
+    max_positions = int(getattr(algo, 'max_positions', getattr(getattr(algo, 'config', None), 'max_positions', 3)) or 3)
+    if get_actual_position_count(algo) >= max_positions:
+        return []
     placed = []
     for symbol, score, fraction in candidates:
         if getattr(algo, 'long_only', True) and float(score) < 0:

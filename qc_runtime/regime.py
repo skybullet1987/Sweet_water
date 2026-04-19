@@ -40,6 +40,8 @@ class RegimeEngine:
         self._last_refit = -1
         self._state = "risk_on"
         self._probs = {"risk_on": 1.0, "risk_off": 0.0, "chop": 0.0}
+        self.vol_stress = 0.0
+        self._btc_below_ema = False
 
     def _label_states(self, states: np.ndarray, returns: np.ndarray, n_states: int) -> dict[int, str]:
         sharpe_by_state: dict[int, float] = {}
@@ -81,10 +83,19 @@ class RegimeEngine:
             return
         self._model = _ModelState(model=None, labels=None)
 
-    def update(self, btc_return: float, btc_vol: float, breadth: float) -> None:
+    def update(self, btc_return: float, btc_vol: float, breadth: float, btc_above_ema200: bool = False) -> None:
         self._x.append([float(btc_return), float(btc_vol), float(breadth)])
         self._ret.append(float(btc_return))
+        self._btc_below_ema = not bool(btc_above_ema200)
         idx = len(self._x) - 1
+        if len(self._x) >= 30:
+            vols = np.asarray([row[1] for row in self._x[-30:]], dtype=float)
+            mu = float(np.mean(vols))
+            sigma = float(np.std(vols, ddof=1)) if len(vols) > 1 else 0.0
+            z = (float(btc_vol) - mu) / max(sigma, 1e-9)
+            self.vol_stress = float(1.0 / (1.0 + np.exp(-z)))
+        else:
+            self.vol_stress = 0.0
         if len(self._x) >= self.config.hmm_train_window_bars:
             due = self._last_refit < 0 or (idx - self._last_refit) >= self.config.hmm_retrain_every_bars
             if due:
@@ -107,3 +118,12 @@ class RegimeEngine:
 
     def current_state_probs(self) -> dict[str, float]:
         return dict(self._probs)
+
+    def gates_pass(self, breadth: float) -> bool:
+        if self.vol_stress > self.config.vol_stress_threshold:
+            return False
+        if breadth < self.config.breadth_threshold:
+            return False
+        if self._btc_below_ema:
+            return False
+        return True

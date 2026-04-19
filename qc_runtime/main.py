@@ -101,35 +101,14 @@ class SweetWaterPhase1(QCAlgorithm):
 
     def _init_execution_attrs(self):  # pragma: no cover
         self.min_notional = 1.0
-        self.max_spread_pct = 0.0080
-        self.spread_widen_mult = 3.0
         self.volatility_regime = "normal"
         self.market_regime = "trending"
         self.log_budget = 200
-        self.live_stale_order_timeout_seconds = 90
-        self.stale_order_timeout_seconds = 300
-        self.slip_outlier_threshold = 0.005
-        self.quick_take_profit = 0.04
-        self.tight_stop_loss = 0.025
-        self.disable_recent_outcome_cash_mode = True
-        self.disable_adaptive_ranking_memory = True
         self.expected_round_trip_fees = 0.0065
-        self.stop_loss_pct = float(getattr(self.config, "stop_loss_pct", 0.025))
-        self.take_profit_pct = float(getattr(self.config, "take_profit_pct", 0.05))
-        self.trailing_stop_pct = float(getattr(self.config, "trailing_stop_pct", 0.02))
-        self.activate_trailing_above_pct = float(getattr(self.config, "activate_trailing_above_pct", 0.01))
-        self.max_hold_hours = float(getattr(self.config, "time_stop_bars", 24))
-        self.stale_order_bars = 3
-        self.enable_queue_rejection = False
-        self.stress_spread_mult = 1.0
-        self.breakout_nonfill_penalty = 0.08
-
-        self._spread_warning_times = {}
         self._cancel_cooldowns = {}
         self._pending_orders = {}
         self._submitted_orders = {}
         self._order_retries = {}
-        self._failed_exit_attempts = {}
         self._failed_exit_counts = {}
         self._partial_sell_symbols = set()
         self._session_blacklist = set()
@@ -137,20 +116,12 @@ class SweetWaterPhase1(QCAlgorithm):
         self._rolling_win_sizes = deque(maxlen=200)
         self._rolling_loss_sizes = deque(maxlen=200)
         self._recent_trade_outcomes = deque(maxlen=20)
-        self._slip_abs = deque(maxlen=200)
-        self._symbol_slippage_history = {}
-        self._spike_entries = {}
-        self._partial_tp_taken = {}
-        self._partial_tp_tier = {}
         self._entry_signal_combos = {}
-        self._entry_engine = {}
-        self._chop_engine = {}
-        self._last_live_trade_time = None
-        self._cash_mode_until = None
         self._last_cash_gate_log = None
 
         self.entry_prices = {}
-        self.highest_prices = {}
+        self.highest_close = {}
+        self.entry_atrs = {}
         self.entry_times = {}
         self.entry_volumes = {}
         self.peak_value = None
@@ -162,10 +133,6 @@ class SweetWaterPhase1(QCAlgorithm):
         self.trade_count = 0
         self.pnl_by_tag = {}
         self.pnl_by_regime = {}
-        self.pnl_by_vol_regime = {}
-        self.pnl_by_signal_combo = {}
-        self.pnl_by_hold_time = {}
-        self.pnl_by_engine = {}
         self.stale_limit_escalations = 0
         self.stale_limit_escalation_fills = 0
         self.stale_limit_cancels = 0
@@ -229,13 +196,25 @@ class SweetWaterPhase1(QCAlgorithm):
 
         btc_vol = abs(btc_ret)
         breadth = sum(breadth_votes) / len(breadth_votes) if breadth_votes else 0.5
-        self.regime_engine.update(btc_ret, btc_vol, breadth)
+        btc_above_ema200 = True
+        for ref in self.reference_symbols:
+            feats = self.feature_engine.current_features(ref.Value)
+            if ref.Value == "BTCUSD" and feats:
+                btc_above_ema200 = feats.get("ema20", 0.0) >= feats.get("ema200", 0.0)
+                break
+        self.regime_engine.update(btc_ret, btc_vol, breadth, btc_above_ema200=btc_above_ema200)
         state = self.regime_engine.current_state()
         self.market_regime = state
         self.sizer.update_returns(btc_ret)
 
         equity, gross = self._portfolio_state()
         candidates = []
+        if not self.regime_engine.gates_pass(breadth):
+            return state, candidates
+        threshold = self.config.score_threshold * (
+            self.config.chop_threshold_multiplier if state == "chop" else 1.0
+        )
+        symbol_scores = []
         for symbol in self.symbols:
             if is_invested_not_dust(self, symbol):
                 continue
@@ -244,12 +223,44 @@ class SweetWaterPhase1(QCAlgorithm):
             feats = self.feature_engine.current_features(symbol.Value)
             if not feats:
                 continue
-            score = self.scorer.score(symbol.Value, feats, state, {"btc_trend": btc_ret})
+            symbol_scores.append((symbol, feats))
+        mom24 = [float(feats.get("mom_24", 0.0)) for _, feats in symbol_scores]
+        mom168 = [float(feats.get("mom_168", 0.0)) for _, feats in symbol_scores]
+        def _rank(values, idx):
+            if not values:
+                return 0.5
+            v = values[idx]
+            return (sum(1 for x in values if x < v) + 0.5 * sum(1 for x in values if x == v)) / len(values)
+        for idx, (symbol, feats) in enumerate(symbol_scores):
+            score = self.scorer.score(
+                symbol.Value,
+                feats,
+                state,
+                {"btc_trend": btc_ret},
+                rank_24h=_rank(mom24, idx),
+                rank_168h=_rank(mom168, idx),
+                cross_section_weight=self.config.cross_section_weight,
+            )
             if self.long_only and float(score) < 0:
                 continue
-            if abs(score) < self.config.score_threshold:
+            if abs(score) < threshold:
                 continue
-            target = self.sizer.size_for_trade(symbol.Value, score, {"equity": equity, "gross_exposure": gross})
+            atr_values = [
+                float(self.feature_engine.current_features(sym.Value).get("atr", 1.0))
+                for sym in self.symbols
+                if is_invested_not_dust(self, sym)
+            ] or [max(float(feats.get("atr", 1.0)), 1e-6)]
+            target = self.sizer.size_for_trade(
+                symbol.Value,
+                score,
+                {
+                    "equity": equity,
+                    "gross_exposure": gross,
+                    "realized_vol_annual": float(feats.get("realized_vol_30", self.config.target_annual_vol)),
+                    "atr": float(feats.get("atr", 1.0)),
+                    "open_position_atrs": atr_values,
+                },
+            )
             decision = self.risk.evaluate(
                 {
                     "symbol": symbol.Value,
@@ -276,6 +287,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self._drawdown_breaker.update(self)
         if self._drawdown_breaker.is_triggered():
             self.Liquidate()
+            self.reporter.tick("breaker")
             return
 
         state, candidates = self._score_candidates(data)

@@ -176,10 +176,13 @@ class FeatureEngine:
             "roll_spread": float(roll_spread(close, 20).iloc[-1]),
             "kyle_lambda": float(kyle_lambda_proxy(ret, signed_volume, 20).iloc[-1]),
             "realized_vol": float(realized_vol(ret, 24).iloc[-1]),
+            "realized_vol_30": float(realized_vol(ret, 30).iloc[-1]),
             "ofi": float(ofi_proxy(frame["open"], high, low, close, volume).rolling(20, min_periods=20).mean().iloc[-1]),
             "mom_24": float((close.iloc[-1] / close.iloc[-24]) - 1.0),
+            "mom_168": float((close.iloc[-1] / close.iloc[-168]) - 1.0) if len(close) >= 168 else 0.0,
             "ema20": float(_ema(close, 20).iloc[-1]),
             "ema50": float(_ema(close, 50).iloc[-1]),
+            "ema200": float(_ema(close, 200).iloc[-1]),
         }
 
     def current_features(self, symbol: str) -> dict[str, float]:

@@ -1,48 +1,19 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import math
-import random
-from collections import deque
-from datetime import timedelta
-
-import numpy as np
+from datetime import datetime, timezone
 
 try:  # pragma: no cover
-    from AlgorithmImports import *  # type: ignore
-    # AlgorithmImports doesn't re-export these runtime base types on QC cloud.
+    from AlgorithmImports import OrderDirection, OrderType
     from QuantConnect.Orders.Fees import FeeModel, OrderFee  # type: ignore
     from QuantConnect.Securities import CashAmount  # type: ignore
 except Exception:  # pragma: no cover
-    class _OrderDirection:
+    class OrderDirection:
         Buy = 1
         Sell = -1
 
-    class _OrderType:
+    class OrderType:
         Limit = 1
-        Market = 2
-
-    class OrderDirection(_OrderDirection):
-        pass
-
-    class OrderType(_OrderType):
-        pass
-
-    class Resolution:
-        Minute = 'Minute'
-        Hour = 'Hour'
-
-    class Market:
-        Kraken = 'Kraken'
-
-    class Symbol:  # minimal fallback for tests
-        def __init__(self, value: str):
-            self.Value = value
-
-        @staticmethod
-        def Create(value, *_args, **_kwargs):
-            return Symbol(value)
 
     class FeeModel:
         pass
@@ -56,1239 +27,342 @@ except Exception:  # pragma: no cover
         def __init__(self, value):
             self.Value = value
 
-try:
-    from config import CONFIG, StrategyConfig
-except ImportError:  # pragma: no cover
-    from qc_runtime.config import CONFIG, StrategyConfig
-
-# Seed once at module load for deterministic backtests (backtest-only; non-fill simulation gated on not algo.LiveMode).
-# Default seed 42 preserves existing behaviour. Call reseed_non_fill_simulation() in Initialize to override.
-random.seed(42)
-
-# Additive non-fill penalty for breakout/momentum entries (vol-ignition-only, no mean-reversion support).
-# Configurable via algo.breakout_nonfill_penalty; conservative default 0.08 (+8 pp above base rate).
-_BREAKOUT_NONFILL_PENALTY_DEFAULT = 0.08
-# 10% buffer over min-notional to avoid immediate invalids from fee/slippage drift.
-CASH_GATE_SAFETY_MARGIN = 1.10
+from config import CONFIG, StrategyConfig
 
 
-def reseed_non_fill_simulation(seed):
-    """Re-seed the module-level RNG used for non-fill simulation.
-
-    Call this from QCAlgorithm.Initialize() to make the non-fill seed configurable
-    while preserving deterministic behaviour (default seed = 42).
-    """
-    random.seed(int(seed))
+def get_effective_round_trip_fee(algo) -> float:
+    return max(0.0, min(float(getattr(algo, "expected_round_trip_fees", CONFIG.expected_round_trip_fees)), 0.05))
 
 
-def _deterministic_reject(algo, symbol, prob, salt=""):
-    """Deterministic rejection decision from (date, symbol, bar_count, salt)."""
-    prob = max(0.0, min(1.0, float(prob)))
-    if prob <= 0.0:
-        return False
-    if prob >= 1.0:
-        return True
-
-    symbol_key = symbol.Value if hasattr(symbol, 'Value') else str(symbol)
-    date_key = algo.Time.strftime("%Y-%m-%d")
-    bar_count = 0
-    try:
-        crypto = algo.crypto_data.get(symbol)
-        if crypto is not None:
-            bar_count = len(crypto.get('prices', []))
-    except Exception:
-        pass
-
-    digest = hashlib.sha256(f"{date_key}|{symbol_key}|{bar_count}|{salt}".encode("utf-8")).digest()
-    sample = int.from_bytes(digest[:8], "big") / float(1 << 64)
-    return sample < prob
-
-# Round-trip fee estimate for PnL tracking (Kelly/circuit-breakers). Kraken 0.25% maker + 0.40% taker = 0.65%.
-ESTIMATED_ROUND_TRIP_FEE = 0.0065  # 0.65% round-trip
-# Maximum allowed round-trip fee (5%) as a safety rail against misconfiguration.
-MAX_ROUND_TRIP_FEE = 0.05
-
-
-def get_effective_round_trip_fee(algo):
-    """Return configured round-trip fee estimate used for net-PnL accounting.
-
-    Args:
-        algo: QCAlgorithm-like instance that may expose `expected_round_trip_fees`.
-    Returns:
-        Fee percentage in [0.0, MAX_ROUND_TRIP_FEE].
-    """
-    try:
-        fee = float(getattr(algo, 'expected_round_trip_fees', ESTIMATED_ROUND_TRIP_FEE))
-    except (TypeError, ValueError):
-        return ESTIMATED_ROUND_TRIP_FEE
-    # Defensive bounds: reject invalid/unstable fee settings.
-    # 5% round-trip is intentionally far above plausible venue fees/slippage and
-    # serves only as a safety rail for accidental misconfiguration.
-    return max(0.0, min(fee, MAX_ROUND_TRIP_FEE))
-
-# STRUCTURAL blacklist: a-priori structural exclusions (not look-ahead biased).
-SYMBOL_BLACKLIST_STRUCTURAL = {
-    "BTCUSD",  # Reference symbol only — never trade (too expensive for small capital, always dust)
-    "USDTUSD", "USDCUSD", "PYUSDUSD", "EURCUSD", "USTUSD",
-    "DAIUSD", "TUSDUSD", "WETHUSD", "WBTCUSD", "WAXLUSD",
-    "SHIBUSD", "XMRUSD", "ZECUSD", "DASHUSD",
-    "XNYUSD",
-    "BDXNUSD", "RAIINUSD", "LUNAUSD", "LUNCUSD", "USTCUSD", "ABORDUSD",
-    "BONDUSD", "KEEPUSD", "ORNUSD",
-    "MUSD", "ICNTUSD",
-    "EPTUSD", "LMWRUSD",
-    "CPOOLUSD",
-    "ARCUSD", "PAXGUSD",
-    "PARTIUSD", "RAREUSD", "BANANAS31USD",
-    # Micro-caps / meme coins: insufficient capacity for live execution
-    "SEIUSD", "WIFUSD", "BONKUSD", "PEPEUSD", "FLOKIUSD", "ORDIUSD", "TIAUSD",
-    "TRUMPUSD", "FARTCOINUSD", "MOODENGUSD", "TITCOINUSD", "FWOGUSD", "XCNUSD",
-    # Forex pairs
-    "EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "JPYUSD", "CADUSD", "CHFUSD", "CNYUSD", "HKDUSD", "SGDUSD",
-    "SEKUSD", "NOKUSD", "DKKUSD", "KRWUSD", "TRYUSD", "ZARUSD", "MXNUSD", "INRUSD", "BRLUSD",
-    "PLNUSD", "THBUSD",
-}
-
-# BACKTEST-DERIVED blacklist: look-ahead bias — excluded from observed backtest losses. Keep False for honest runs.
-SYMBOL_BLACKLIST_BACKTEST_DERIVED = {
-    "XCNUSD",    # Catastrophic stop-loss losses (e.g. -$5,386 and -$1.9M single trades)
-    "KTAUSD",    # Immediate stop losses on first trades
-    "NANOUSD",   # Immediate stop losses on first trades
-    "FWOGUSD",   # Repeated breakeven stops and poor fills
-    "STRKUSD",   # Repeated breakeven stops and poor fills
-}
-
-# Toggle: False = honest backtest (default). True = look-ahead-biased mode (removes observed losses retroactively).
-INCLUDE_BACKTEST_DERIVED_BLACKLIST = False
-
-# Combined blacklist.
-SYMBOL_BLACKLIST = (
-    SYMBOL_BLACKLIST_STRUCTURAL | SYMBOL_BLACKLIST_BACKTEST_DERIVED
-    if INCLUDE_BACKTEST_DERIVED_BLACKLIST
-    else SYMBOL_BLACKLIST_STRUCTURAL
-)
-
-# UTC hour thresholds for spread time-of-day multipliers (_estimate_backtest_spread).
-_TOD_ASIAN_END = 8; _TOD_EU_END = 13; _TOD_US_END = 21  # session boundaries
-# Backtest queue-priority: participation-rate rejection constants.
-_QUEUE_PARTICIPATION_THRESHOLD = 0.02; _QUEUE_REJECTION_SLOPE = 10.0; _QUEUE_MAX_REJECTION_PROB = 0.90
-
-# Known fiat currency codes used to filter forex pairs from the crypto universe
-KNOWN_FIAT_CURRENCIES = frozenset({
-    "EUR", "GBP", "AUD", "NZD", "JPY", "CAD", "CHF", "CNY", "HKD", "SGD",
-    "SEK", "NOK", "DKK", "KRW", "TRY", "ZAR", "MXN", "INR", "BRL", "PLN", "THB",
-})
-
-# Haircut before re-rounding sell qty: prevents floating-point overshoot above lot_size boundary.
-QUANTITY_HAIRCUT_FACTOR = 0.9999
-
-# Tolerance for IEEE 754 floating-point overshoot when comparing rounded qty to actual holding.
-QUANTITY_OVERSHOOT_TOLERANCE = 1.0001
-
-KRAKEN_MIN_QTY_FALLBACK = {
-    'AXSUSD': 5.0, 'SANDUSD': 10.0, 'MANAUSD': 10.0, 'ADAUSD': 10.0,
-    'MATICUSD': 10.0, 'DOTUSD': 1.0, 'LINKUSD': 0.5, 'AVAXUSD': 0.2,
-    'ATOMUSD': 0.5, 'NEARUSD': 1.0, 'SOLUSD': 0.05,
-    'ALGOUSD': 10.0, 'XLMUSD': 30.0, 'TRXUSD': 50.0, 'ENJUSD': 10.0,
-    'BATUSD': 10.0, 'CRVUSD': 5.0, 'SNXUSD': 3.0, 'COMPUSD': 0.1,
-    'AAVEUSD': 0.05, 'MKRUSD': 0.01, 'YFIUSD': 0.001, 'UNIUSD': 1.0,
-    'SUSHIUSD': 5.0, '1INCHUSD': 5.0, 'GRTUSD': 10.0, 'FTMUSD': 10.0,
-    'IMXUSD': 5.0, 'APEUSD': 2.0, 'GMTUSD': 10.0, 'OPUSD': 5.0,
-    'LDOUSD': 5.0, 'ARBUSD': 5.0, 'LPTUSD': 5.0, 'KTAUSD': 10.0,
-    'GUNUSD': 50.0, 'BANANAS31USD': 500.0, 'CHILLHOUSEUSD': 500.0,
-    'PHAUSD': 50.0, 'MUSD': 50.0, 'ICNTUSD': 50.0,
-    'SHIBUSD': 50000.0, 'XRPUSD': 2.0,
-}
-
-MIN_NOTIONAL_FALLBACK = {
-    'EWTUSD': 2.0, 'SANDUSD': 8.0, 'CTSIUSD': 18.0, 'MKRUSD': 0.01,
-    'AUDUSD': 10.0, 'LPTUSD': 0.3, 'OXTUSD': 40.0, 'ENJUSD': 15.0,
-    'UNIUSD': 0.5, 'LSKUSD': 3.0, 'BCHUSD': 1.0,
-}
-
-# Fee buffer: prevents overselling when Kraken deducts fees from base asset at buy time.
-KRAKEN_SELL_FEE_BUFFER = 0.006  # 0.6% (0.4% base fee + 0.2% safety margin)
-
-
-def get_min_quantity(algo, symbol):
-    ticker = symbol.Value if hasattr(symbol, 'Value') else str(symbol)
-    try:
-        if symbol in algo.Securities:
-            sec = algo.Securities[symbol]
-            if hasattr(sec, 'SymbolProperties') and sec.SymbolProperties is not None:
-                min_size = sec.SymbolProperties.MinimumOrderSize
-                if min_size is not None and min_size > 0:
-                    return float(min_size)
-    except Exception as e:
-        algo.Debug(f"Error getting min quantity for {ticker}: {e}")
-        pass
-    if ticker in KRAKEN_MIN_QTY_FALLBACK:
-        return KRAKEN_MIN_QTY_FALLBACK[ticker]
-    return estimate_min_qty(algo, symbol)
-
-
-def estimate_min_qty(algo, symbol):
-    try:
-        price = algo.Securities[symbol].Price if symbol in algo.Securities else 0
-    except Exception as e:
-        algo.Debug(f"Error getting price for min qty estimate: {e}")
-        price = 0
-    if price <= 0: return 50.0
-    if price < 0.001: return 1000.0
-    elif price < 0.01: return 500.0
-    elif price < 0.1: return 50.0
-    elif price < 1.0: return 10.0
-    elif price < 10.0: return 5.0
-    elif price < 100.0: return 1.0
-    elif price < 1000.0: return 0.1
-    else: return 0.01
-
-
-def get_min_notional_usd(algo, symbol):
-    ticker = symbol.Value if hasattr(symbol, 'Value') else str(symbol)
-    min_notional = float(getattr(algo, 'min_notional', None) or 1.0)
-    fallback = MIN_NOTIONAL_FALLBACK.get(ticker, min_notional)
-    try:
-        price = algo.Securities[symbol].Price
-        min_qty = get_min_quantity(algo, symbol)
-        implied = price * min_qty if price > 0 else fallback
-        return max(fallback, implied, min_notional)
-    except Exception as e:
-        algo.Debug(f"Error in get_min_notional_usd for {symbol.Value}: {e}")
-        return max(fallback, min_notional)
-
-
-def round_quantity(algo, symbol, quantity):
-    try:
-        lot_size = algo.Securities[symbol].SymbolProperties.LotSize
-        if lot_size is not None and lot_size > 0:
-            rounded = float(math.floor(quantity / lot_size)) * lot_size
-            # Clamp: never return more than the input (IEEE 754 safety)
-            if rounded > quantity:
-                rounded = rounded - lot_size
-                if rounded < 0:
-                    rounded = 0.0
-            return rounded
-        return quantity
-    except Exception as e:
-        algo.Debug(f"Error rounding quantity for {symbol.Value}: {e}")
-        return quantity
-
-
-def track_exit_order(algo, symbol, ticket, quantity):
-    """Helper to track exit order in _submitted_orders for verification."""
-    if hasattr(algo, '_submitted_orders') and ticket is not None:
-        algo._submitted_orders[symbol] = {
-            'order_id': ticket.OrderId,
-            'time': algo.Time,
-            'quantity': quantity,
-            'intent': 'exit'
-        }
-
-
-def smart_liquidate(algo, symbol, tag="Liquidate"):
-    if len(algo.Transactions.GetOpenOrders(symbol)) > 0:
-        return False
-    if symbol in algo._cancel_cooldowns and algo.Time < algo._cancel_cooldowns[symbol]:
-        return False
-    if symbol not in algo.Portfolio or algo.Portfolio[symbol].Quantity == 0:
-        return False
-    holding_qty = algo.Portfolio[symbol].Quantity
-    min_qty = get_min_quantity(algo, symbol)
-    min_notional = get_min_notional_usd(algo, symbol)
-    price = algo.Securities[symbol].Price if symbol in algo.Securities else 0
-    if price * abs(holding_qty) < min_notional * 0.9:
-        return False
-    # Verify fee reserve before selling (Kraken cash account requirement)
-    if algo.LiveMode and holding_qty > 0:
-        estimated_fee = price * abs(holding_qty) * 0.006  # 0.6% fee estimate (0.4% base + 0.2% safety buffer)
-        try:
-            available_usd = algo.Portfolio.CashBook["USD"].Amount
-        except (KeyError, AttributeError):
-            available_usd = algo.Portfolio.Cash
-        is_stop_loss = "Stop Loss" in tag or "Stop" in tag
-        if available_usd < estimated_fee and not is_stop_loss:
-            algo.Debug(f"⚠️ SKIP SELL {symbol.Value}: fee reserve too low "
-                       f"(need ${estimated_fee:.4f}, have ${available_usd:.4f})")
-            if symbol not in algo.entry_prices:
-                algo.entry_prices[symbol] = algo.Portfolio[symbol].AveragePrice
-                algo.highest_prices[symbol] = algo.Portfolio[symbol].AveragePrice
-                algo.entry_times[symbol] = algo.Time
-            return False
-    if hasattr(algo.Transactions, 'CancelOpenOrders'):
-        algo.Transactions.CancelOpenOrders(symbol)
-    else:
-        for order in list(algo.Transactions.GetOpenOrders(symbol)):
-            try:
-                algo.Transactions.CancelOrder(int(getattr(order, 'Id')))
-            except Exception:
-                pass
-    # Use MinimumOrderSize (not lot_size) for exits — lot_size can be < MinimumOrderSize on some assets.
+def get_min_quantity(algo, symbol) -> float:
+    ticker = symbol.Value if hasattr(symbol, "Value") else str(symbol)
     try:
         sec = algo.Securities[symbol]
-        min_order_size = sec.SymbolProperties.MinimumOrderSize
-        if min_order_size is not None and min_order_size > 0:
-            exit_min_qty = float(min_order_size)
-        else:
-            exit_min_qty = min_qty
-    except Exception as e:
-        algo.Debug(f"Warning: could not get MinimumOrderSize for {symbol.Value}: {e}")
-        exit_min_qty = min_qty
-    if abs(holding_qty) < exit_min_qty:
-        return False
-    # No sell-side fee buffer needed: portfolio already reflects post-fee quantity.
-    safe_qty = round_quantity(algo, symbol, abs(holding_qty))
-    # Apply haircut before re-rounding to prevent floating-point overshoot on Kraken Cash Modeling.
-    actual_qty = abs(algo.Portfolio[symbol].Quantity)
-    if safe_qty > actual_qty * QUANTITY_OVERSHOOT_TOLERANCE:  # tolerance for floating-point
-        safe_qty = round_quantity(algo, symbol, actual_qty)
-    # Hard cap: never exceed actual holding.
-    safe_qty = min(safe_qty, actual_qty)
-    if safe_qty < exit_min_qty:
-        # Position rounded down below MinimumOrderSize — treat as dust, cannot sell
-        return False
-    if safe_qty > 0:
-        direction_mult = -1 if holding_qty > 0 else 1
-        # Spread-aware exit logic
-        is_stop_loss = "Stop Loss" in tag
-        if not is_stop_loss:
-            spread_pct = get_spread_pct(algo, symbol)
-            if spread_pct is not None:
-                if spread_pct > 0.03:  # 3% spread - log warning but still exit with market
-                    algo.Debug(f"⚠️ WIDE SPREAD EXIT: {symbol.Value} spread={spread_pct:.2%}, using market order")
-                    ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
-                    track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
-                    return True
-                elif algo.LiveMode and spread_pct > 0.015:  # 1.5% spread - use limit order with fallback (live mode only)
-                    try:
-                        sec = algo.Securities[symbol]
-                        bid = sec.BidPrice
-                        ask = sec.AskPrice
-                        if bid > 0 and ask > 0:
-                            mid = 0.5 * (bid + ask)
-                            limit_order = algo.LimitOrder(symbol, safe_qty * direction_mult, mid, tag=tag)
-                            # Track for fallback in VerifyOrderFills (90 second timeout handled there)
-                            if hasattr(algo, '_submitted_orders'):
-                                algo._submitted_orders[symbol] = {
-                                    'order_id': limit_order.OrderId,
-                                    'time': algo.Time,
-                                    'quantity': safe_qty * direction_mult,  # Store signed quantity
-                                    'is_limit_exit': True,
-                                    'intent': 'exit'
-                                }
-                            algo.Debug(f"LIMIT EXIT: {symbol.Value} at mid ${mid:.4f} (spread={spread_pct:.2%})")
-                            return True
-                        else:
-                            ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
-                            track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
-                            return True
-                    except Exception as e:
-                        algo.Debug(f"Error placing limit exit for {symbol.Value}: {e}")
-                        ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
-                        track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
-                        return True
-                else:
-                    # Spread is acceptable – use limit order to capture maker fee
-                    exit_price = algo.Securities[symbol].Price
-                    try:
-                        ticket = algo.LimitOrder(symbol, safe_qty * direction_mult, exit_price, tag=tag)
-                    except Exception:
-                        ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
-                    track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
-                    return True
-            else:
-                # Spread unknown – use limit order at last price to capture maker fee
-                exit_price = algo.Securities[symbol].Price
-                try:
-                    ticket = algo.LimitOrder(symbol, safe_qty * direction_mult, exit_price, tag=tag)
-                except Exception:
-                    ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
-                track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
-                return True
-        else:
-            # Stop loss — use market order immediately.
-            # A limit-then-fallback approach is too slow: the 5–15% downside during
-            # a fast crash far outweighs the ~0.5% taker premium we would save.
-            ticket = algo.MarketOrder(symbol, safe_qty * direction_mult, tag=tag)
-            track_exit_order(algo, symbol, ticket, safe_qty * direction_mult)
-            return True
-    else:
-        algo.Debug(f"Warning: {symbol.Value} holding {holding_qty} rounds to 0")
-        return False
-
-
-def partial_smart_sell(algo, symbol, fraction, tag="Partial TP"):
-    """
-    Sell a fraction (0.0–1.0) of the current position.
-    Both the sell portion and the remaining portion must meet the minimum
-    order size; otherwise falls back to a full smart_liquidate.
-    Returns True if an order was placed successfully, False otherwise.
-    """
-    if symbol not in algo.Portfolio or algo.Portfolio[symbol].Quantity == 0:
-        return False
-    if len(algo.Transactions.GetOpenOrders(symbol)) > 0:
-        return False
-    holding_qty = algo.Portfolio[symbol].Quantity
-    if holding_qty == 0:
-        return False
-    price = algo.Securities[symbol].Price if symbol in algo.Securities else 0
-    if price <= 0:
-        return False
-    min_qty = get_min_quantity(algo, symbol)
-    min_notional = get_min_notional_usd(algo, symbol)
-    sell_qty = round_quantity(algo, symbol, abs(holding_qty) * fraction)
-    remaining_qty = round_quantity(algo, symbol, abs(holding_qty) * (1.0 - fraction))
-    # Both halves must be tradeable; fall back to full exit if not
-    if sell_qty < min_qty or remaining_qty < min_qty:
-        return smart_liquidate(algo, symbol, tag)
-    if sell_qty * price < min_notional * 0.9:
-        return smart_liquidate(algo, symbol, tag)
-    # Flag as partial so OnOrderEvent skips position cleanup
-    if hasattr(algo, '_partial_sell_symbols'):
-        algo._partial_sell_symbols.add(symbol)
-    direction_mult = -1 if holding_qty > 0 else 1
-    # Use limit order at current price to capture maker fee (0.25% vs 0.40% taker)
-    try:
-        ticket = algo.LimitOrder(symbol, sell_qty * direction_mult, price, tag=tag)
+        min_size = float(getattr(sec.SymbolProperties, "MinimumOrderSize", 0.0) or 0.0)
+        if min_size > 0:
+            return min_size
     except Exception:
-        ticket = algo.MarketOrder(symbol, sell_qty * direction_mult, tag=tag)
-    if ticket is not None:
-        algo.Debug(f"PARTIAL SELL: {symbol.Value} | frac={fraction:.0%} qty={sell_qty:.6f} of {abs(holding_qty):.6f}")
-    return ticket is not None
+        pass
+    cfg = getattr(algo, "config", CONFIG)
+    return float(getattr(cfg, "min_qty_fallback", {}).get(ticker, 0.0001))
 
 
+def estimate_min_qty(algo, symbol) -> float:
+    price = float(getattr(algo.Securities.get(symbol), "Price", 0.0) or 0.0)
+    if price <= 0:
+        return 1.0
+    return max(get_min_quantity(algo, symbol), 1.0 / price)
 
-def effective_stale_timeout(algo):
-    return algo.live_stale_order_timeout_seconds if algo.LiveMode else algo.stale_order_timeout_seconds
+
+def get_min_notional_usd(algo, symbol) -> float:
+    ticker = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+    cfg = getattr(algo, "config", CONFIG)
+    floor = float(getattr(cfg, "min_notional_fallback", {}).get(ticker, getattr(algo, "min_notional", 1.0)))
+    try:
+        price = float(algo.Securities[symbol].Price)
+    except Exception:
+        price = 0.0
+    implied = price * get_min_quantity(algo, symbol) if price > 0 else 0.0
+    return max(floor, implied, float(getattr(algo, "min_notional", 1.0)))
 
 
+def round_quantity(algo, symbol, quantity: float) -> float:
+    try:
+        lot = float(getattr(algo.Securities[symbol].SymbolProperties, "LotSize", 0.0) or 0.0)
+    except Exception:
+        lot = 0.0
+    if lot <= 0:
+        return float(quantity)
+    sign = 1.0 if quantity >= 0 else -1.0
+    return sign * math.floor(abs(quantity) / lot) * lot
 
-def is_invested_not_dust(algo, symbol):
+
+def is_invested_not_dust(algo, symbol) -> bool:
     if symbol not in algo.Portfolio:
         return False
-    h = algo.Portfolio[symbol]
-    if not h.Invested or h.Quantity == 0:
+    holding = algo.Portfolio[symbol]
+    qty = float(getattr(holding, "Quantity", 0.0) or 0.0)
+    if qty <= 0:
         return False
-    min_qty = get_min_quantity(algo, symbol)
-    min_notional = get_min_notional_usd(algo, symbol)
-    price = algo.Securities[symbol].Price if symbol in algo.Securities else h.Price
-    notional_ok = (price > 0) and (abs(h.Quantity) * price >= min_notional * 0.5)
-    qty_ok = abs(h.Quantity) >= min_qty * 0.5
-    return notional_ok or qty_ok
+    price = float(getattr(algo.Securities.get(symbol), "Price", getattr(holding, "Price", 0.0)) or 0.0)
+    return qty >= get_min_quantity(algo, symbol) * 0.5 or qty * price >= get_min_notional_usd(algo, symbol) * 0.5
 
 
-def get_actual_position_count(algo):
-    count = 0
-    for item in algo.Portfolio:
-        symbol = getattr(item, 'Key', item)
-        if is_invested_not_dust(algo, symbol):
-            count += 1
-    return count
+def get_actual_position_count(algo) -> int:
+    return sum(1 for item in algo.Portfolio for s in [getattr(item, "Key", item)] if is_invested_not_dust(algo, s))
 
 
-def has_open_orders(algo, symbol=None):
-    if symbol is None:
-        return len(algo.Transactions.GetOpenOrders()) > 0
-    return len(algo.Transactions.GetOpenOrders(symbol)) > 0
+def debug_limited(algo, msg: str) -> None:
+    budget = int(getattr(algo, "log_budget", 0) or 0)
+    if budget > 0:
+        algo.Debug(msg)
+        algo.log_budget = budget - 1
 
 
-def has_non_stale_open_orders(algo, symbol):
-    """Check if symbol has open orders that are NOT stale (younger than timeout)."""
-    try:
-        orders = algo.Transactions.GetOpenOrders(symbol)
-        if len(orders) == 0:
-            return False
-        timeout_seconds = effective_stale_timeout(algo)
-        for order in orders:
-            order_time = order.Time
-            if order_time.tzinfo is not None:
-                order_time = order_time.replace(tzinfo=None)
-            order_age = (algo.Time - order_time).total_seconds()
-            if order_age <= timeout_seconds:
-                return True  # At least one order is not stale
-        return False  # All orders are stale
-    except Exception:
-        return False
-
-
-def get_spread_pct(algo, symbol):
-    try:
-        sec = algo.Securities[symbol]
-        bid = sec.BidPrice
-        ask = sec.AskPrice
-        if bid > 0 and ask > 0 and ask >= bid:
-            mid = 0.5 * (bid + ask)
-            if mid > 0:
-                return (ask - bid) / mid
-    except Exception as e:
-        algo.Debug(f"Error getting spread for {symbol.Value}: {e}")
-        pass
-    return None
-
-
-def _estimate_backtest_spread(algo, symbol):
-    """
-    Estimate bid-ask spread from dollar volume for backtest realism.
-    Uses empirical relationship: spread ≈ k / sqrt(dollar_volume).
-    Calibrated against typical Kraken altcoin spreads:
-      - $1M daily vol → ~0.20% spread
-      - $100K daily vol → ~0.63% spread
-      - $10K daily vol → ~2.0% spread
-    Only called in backtest when real quote data is unavailable.
-    """
-    crypto = algo.crypto_data.get(symbol)
-    if crypto is None:
+def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry", force_market=False, signal_score=None):
+    _ = timeout_seconds, signal_score
+    if force_market:
+        return algo.MarketOrder(symbol, quantity, tag=tag)
+    sec = algo.Securities[symbol]
+    price = float(getattr(sec, "Price", 0.0) or 0.0)
+    if price <= 0:
         return None
-
-    dv_list = list(crypto.get('dollar_volume', []))
-    if len(dv_list) < 5:
-        return None
-
-    # Average dollar volume per bar, extrapolated to daily (288 5-min bars/day)
-    avg_bar_dv = float(np.mean(dv_list[-20:]))
-    daily_dv = avg_bar_dv * 288  # 288 = 5-min bars per day (60min/5min × 24h)
-
-    if daily_dv <= 0:
-        return 0.05  # 5% default for zero-volume — will be rejected by spread cap
-
-    # Empirical constant: k=2.0 → 0.20% at $1M, 0.63% at $100K, 2.0% at $10K
-    k = 2.0
-    estimated_spread = k / (daily_dv ** 0.5)
-
-    # Floor: even the most liquid alts have >= 0.05% spread on Kraken
-    # Cap: don't estimate above 10% — if it's that wide, the filter will catch it
-    estimated_spread = max(estimated_spread, 0.0005)
-    estimated_spread = min(estimated_spread, 0.10)
-
-    # Time-of-day: 00-08 UTC Asian (×1.5), 08-13 EU (×1.0), 13-21 US (×0.85), 21+ (×1.2).
-    h = algo.Time.hour
-    if h < _TOD_ASIAN_END:
-        tod_multiplier = 1.5
-    elif h < _TOD_EU_END:
-        tod_multiplier = 1.0
-    elif h < _TOD_US_END:
-        tod_multiplier = 0.85
+    bid = float(getattr(sec, "BidPrice", 0.0) or 0.0)
+    ask = float(getattr(sec, "AskPrice", 0.0) or 0.0)
+    if bid > 0 and ask > 0:
+        limit_price = bid if quantity > 0 else ask
     else:
-        tod_multiplier = 1.2
-    estimated_spread *= tod_multiplier
-
-    # Stress mode: optional pessimistic spread multiplier for robustness testing.
-    # Set algo.stress_spread_mult > 1.0 (e.g. 1.5 or 2.0) to simulate harsher spreads.
-    stress_mult = getattr(algo, 'stress_spread_mult', 1.0)
-    if stress_mult != 1.0:
-        estimated_spread *= stress_mult
-
-    estimated_spread = min(estimated_spread, 0.10)
-
-    # NOTE: do NOT append to crypto['spreads'] here — this function may be called
-    # more than once per bar (e.g. once in screening and once in execution).
-    # The single per-bar append is performed in update_symbol_data (strategy_core.py).
-
-    return estimated_spread
+        limit_price = price
+    ticket = algo.LimitOrder(symbol, quantity, limit_price, tag=tag)
+    algo._submitted_orders[symbol] = {
+        "order_id": ticket.OrderId,
+        "time": getattr(algo, "Time", datetime.now(timezone.utc)),
+        "quantity": float(quantity),
+        "intent": "entry" if quantity > 0 else "exit",
+    }
+    debug_limited(algo, f"ORD key=maker symbol={symbol.Value} qty={quantity:.8f}")
+    return ticket
 
 
-def spread_ok(algo, symbol):
-    sp = get_spread_pct(algo, symbol)
-    if sp is None:
-        if algo.LiveMode:
-            # Allow unknown spreads in live — spread cap check will catch them once data arrives.
-            now = algo.Time
-            last_warn = algo._spread_warning_times.get(symbol.Value)
-            if last_warn is None or (now - last_warn).total_seconds() >= 3600:
-                debug_limited(algo, f"SPREAD UNKNOWN: {symbol.Value} — allowing (no bid/ask yet)")
-                algo._spread_warning_times[symbol.Value] = now
-            return True
-        else:
-            # BACKTEST REALISM: estimate spread from dollar volume
-            sp = _estimate_backtest_spread(algo, symbol)
-            if sp is None:
-                return True  # no data at all, allow (conservative fallback)
-            # Fall through to normal spread checks below with estimated spread
-    effective_spread_cap = algo.max_spread_pct
-    if algo.volatility_regime == "high" or algo.market_regime == "sideways":
-        effective_spread_cap = min(effective_spread_cap, 0.0045)
-    if sp > effective_spread_cap:
-        return False
-    crypto = algo.crypto_data.get(symbol)
-    if crypto and len(crypto.get('spreads', [])) >= 4:
-        median_sp = np.median(list(crypto['spreads']))
-        if median_sp > 0 and sp > algo.spread_widen_mult * median_sp:
-            return False
-    return True
-
-
-def intraday_volume_ok(algo, symbol, order_value):
-    """Returns True if recent intraday dollar volume is sufficient for the order."""
-    crypto = algo.crypto_data.get(symbol)
-    if crypto is None:
-        return True  # no data, allow (conservative)
-
-    dv_list = list(crypto.get('dollar_volume', []))
-    if len(dv_list) < 5:
-        return True  # not enough history yet
-
-    # Min $500 avg dollar volume per bar; rejects low-activity windows
-    recent_avg_dv = float(np.mean(dv_list[-10:])) if len(dv_list) >= 10 else float(np.mean(dv_list))
-    if recent_avg_dv < 500:
-        return False
-
-    if recent_avg_dv > 0 and order_value > 0:
-        implied_participation = order_value / recent_avg_dv
-        if implied_participation > algo.max_participation_rate:
-            return False
-
-    return True
+def place_entry(algo, symbol, quantity, tag="Entry", force_market=False, signal_score=None):
+    if getattr(algo, "long_only", True) and float(quantity) <= 0:
+        return None
+    if is_invested_not_dust(algo, symbol):
+        return None
+    if len(algo.Transactions.GetOpenOrders(symbol)) > 0:
+        return None
+    quantity = round_quantity(algo, symbol, float(quantity))
+    if quantity <= 0:
+        return None
+    sec = algo.Securities.get(symbol)
+    price = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
+    if price <= 0:
+        return None
+    min_notional = get_min_notional_usd(algo, symbol)
+    if quantity * price < min_notional:
+        quantity = round_quantity(algo, symbol, max(quantity, estimate_min_qty(algo, symbol)))
+    if quantity * price < min_notional:
+        return None
+    return place_limit_or_market(algo, symbol, quantity, tag=tag, force_market=force_market, signal_score=signal_score)
 
 
 def cleanup_position(algo, symbol, record_pnl=False, exit_price=None):
-    """
-    Clean up position tracking for a symbol.
-    If record_pnl=True, records the PnL before cleanup using record_exit_pnl helper.
-    """
-    entry_price = algo.entry_prices.get(symbol, None)
-    if record_pnl and entry_price is not None and entry_price > 0:
-        if exit_price is None:
-            try:
-                exit_price = algo.Securities[symbol].Price if symbol in algo.Securities else 0
-            except Exception:
-                exit_price = 0
-        if exit_price > 0:
-            record_exit_pnl(algo, symbol, entry_price, exit_price)
-    # Then do existing cleanup
+    entry_price = algo.entry_prices.get(symbol)
+    if record_pnl and entry_price and exit_price and entry_price > 0 and exit_price > 0:
+        pnl = (exit_price - entry_price) / entry_price - get_effective_round_trip_fee(algo)
+        algo.pnl_by_tag.setdefault(getattr(algo, "_last_exit_tag", "Unknown"), []).append(pnl)
+        algo.pnl_by_regime.setdefault(getattr(algo, "market_regime", "unknown"), []).append(pnl)
     algo.entry_prices.pop(symbol, None)
-    algo.highest_prices.pop(symbol, None)
     algo.entry_times.pop(symbol, None)
-    if symbol in algo.crypto_data:
-        algo.crypto_data[symbol]['trail_stop'] = None
-    if hasattr(algo, '_spike_entries'):
-        algo._spike_entries.pop(symbol, None)
-    if hasattr(algo, '_partial_tp_taken'):
-        algo._partial_tp_taken.pop(symbol, None)
-    if hasattr(algo, '_partial_tp_tier'):
-        algo._partial_tp_tier.pop(symbol, None)
-    if hasattr(algo, '_entry_signal_combos'):
-        algo._entry_signal_combos.pop(symbol, None)
+    algo.highest_close.pop(symbol, None)
+    algo.entry_atrs.pop(symbol, None)
 
 
-def sync_existing_positions(algo):
-    algo.Debug("=" * 50)
-    algo.Debug("=== SYNCING EXISTING POSITIONS ===")
-    synced_count = 0
-    positions_to_close = []
-    for symbol in algo.Portfolio.Keys:
-        if not is_invested_not_dust(algo, symbol):
-            continue
-        holding = algo.Portfolio[symbol]
-        ticker = symbol.Value
-        if symbol in algo.entry_prices:
-            continue
-        if symbol not in algo.Securities:
-            try:
-                algo.AddCrypto(ticker, Resolution.Minute, Market.Kraken)
-            except Exception as e:
-                algo.Debug(f"Error adding crypto {ticker}: {e}")
-                continue
-        algo.entry_prices[symbol] = holding.AveragePrice
-        algo.highest_prices[symbol] = holding.AveragePrice
-        algo.entry_times[symbol] = algo.Time
-        synced_count += 1
-        current_price = algo.Securities[symbol].Price if symbol in algo.Securities else holding.Price
-        pnl_pct = (current_price - holding.AveragePrice) / holding.AveragePrice if holding.AveragePrice > 0 else 0
-        algo.Debug(f"SYNCED: {ticker} | Entry: ${holding.AveragePrice:.4f} | Now: ${current_price:.4f} | PnL: {pnl_pct:+.2%}")
-        if current_price > holding.AveragePrice:
-            algo.highest_prices[symbol] = current_price
-        if pnl_pct >= algo.quick_take_profit:
-            positions_to_close.append((symbol, ticker, pnl_pct, "Sync TP"))
-        elif pnl_pct <= -algo.tight_stop_loss:
-            positions_to_close.append((symbol, ticker, pnl_pct, "Sync SL"))
-    algo.Debug(f"Synced {synced_count} positions")
-    algo.Debug(f"Cash: ${algo.Portfolio.Cash:.2f}")
-    algo.Debug("=" * 50)
-    for symbol, ticker, pnl_pct, reason in positions_to_close:
-        algo.Debug(f"IMMEDIATE {reason}: {ticker} at {pnl_pct:+.2%}")
-        sold = smart_liquidate(algo, symbol, reason)
-        if not sold:
-            algo.Debug(f"⚠️ IMMEDIATE {reason} FAILED: {ticker} — position unsellable, cleaning up tracking")
-            cleanup_position(algo, symbol)
-        # Let OnOrderEvent handle cleanup and PnL tracking on fill
-
-
-def debug_limited(algo, msg):
-    if "CANCELED" in msg or "ZOMBIE" in msg or "INVALID" in msg:
-        algo.Debug(msg)
-        return
-    if algo.log_budget > 0:
-        algo.Debug(msg)
-        algo.log_budget -= 1
-    elif algo.LiveMode:
-        algo.Debug(msg)
-
-
-def slip_log(algo, symbol, direction, fill_price):
-    """Enhanced slip_log with live outlier alert and symbol-level slippage tracking."""
-    try:
-        sec = algo.Securities[symbol]
-        bid = sec.BidPrice
-        ask = sec.AskPrice
-        if bid <= 0 or ask <= 0:
-            return
-        mid = 0.5 * (bid + ask)
-        if mid <= 0:
-            return
-        side = 1 if direction == OrderDirection.Buy else -1
-        slip = side * (fill_price - mid) / mid
-        abs_slip = abs(slip)
-        algo._slip_abs.append(abs_slip)
-        
-        # Track slippage per symbol (store (time, abs_slippage) tuples for time-based decay)
-        if hasattr(algo, '_symbol_slippage_history'):
-            ticker = symbol.Value if hasattr(symbol, 'Value') else str(symbol)
-            if ticker not in algo._symbol_slippage_history:
-                algo._symbol_slippage_history[ticker] = deque(maxlen=30)
-            algo._symbol_slippage_history[ticker].append((algo.Time, abs_slip))
-        
-        # Live slippage alert for unusually high slippage
-        if algo.LiveMode and abs(slip) > algo.slip_outlier_threshold:
-            algo.Debug(f"⚠️ HIGH SLIPPAGE: {symbol.Value} | {abs(slip):.4%} | dir={direction}")
-    except Exception as e:
-        algo.Debug(f"Error in slip_log for {symbol.Value}: {e}")
-        pass
-
-
-def persist_state(algo):
-    """Enhanced persist_state with trade_count and peak_value from main_opus."""
-    if not algo.LiveMode:
-        return
-    try:
-        spike_entries = [s.Value for s in getattr(algo, '_spike_entries', {}).keys() if hasattr(s, 'Value')]
-        state = {
-            "session_blacklist": list(algo._session_blacklist),
-            "winning_trades": algo.winning_trades,
-            "losing_trades": algo.losing_trades,
-            "total_pnl": algo.total_pnl,
-            "consecutive_losses": algo.consecutive_losses,
-            "daily_trade_count": algo.daily_trade_count,
-            "trade_count": algo.trade_count,
-            "peak_value": algo.peak_value if algo.peak_value is not None else 0,
-            "spike_entries": spike_entries,
-        }
-        algo.ObjectStore.Save("live_state", json.dumps(state))
-    except Exception as e:
-        algo.Debug(f"Persist error: {e}")
-
-
-def load_persisted_state(algo):
-    """Enhanced load_persisted_state with trade_count and peak_value from main_opus."""
-    try:
-        if algo.LiveMode and algo.ObjectStore.ContainsKey("live_state"):
-            raw = algo.ObjectStore.Read("live_state")
-            data = json.loads(raw)
-            algo._session_blacklist = set(data.get("session_blacklist", []))
-            algo.winning_trades = data.get("winning_trades", 0)
-            algo.losing_trades = data.get("losing_trades", 0)
-            algo.total_pnl = data.get("total_pnl", 0.0)
-            algo.consecutive_losses = data.get("consecutive_losses", 0)
-            algo.daily_trade_count = data.get("daily_trade_count", 0)
-            algo.trade_count = data.get("trade_count", 0)
-            peak = data.get("peak_value", 0)
-            if peak > 0:
-                algo.peak_value = peak
-            # Restore spike entries: map string values back to Symbol objects
-            spike_entry_values = set(data.get("spike_entries", []))
-            if spike_entry_values and hasattr(algo, '_spike_entries'):
-                for symbol in algo.Securities.Keys:
-                    if hasattr(symbol, 'Value') and symbol.Value in spike_entry_values:
-                        algo._spike_entries[symbol] = True
-            algo.Debug(f"Loaded persisted state: blacklist {len(algo._session_blacklist)}, "
-                       f"trades W:{algo.winning_trades}/L:{algo.losing_trades}")
-    except Exception as e:
-        algo.Debug(f"Load persist error: {e}")
-
-
-def cleanup_object_store(algo):
-    """From main_opus._cleanup_object_store."""
-    try:
-        n = 0
-        for i in algo.ObjectStore.GetEnumerator():
-            k = i.Key if hasattr(i, 'Key') else str(i)
-            if k != "live_state":
-                try:
-                    algo.ObjectStore.Delete(k)
-                    n += 1
-                except Exception as e:
-                    algo.Debug(f"Error deleting key {k}: {e}")
-                    pass
-        if n:
-            algo.Debug(f"Cleaned {n} keys")
-    except Exception as e:
-        algo.Debug(f"Cleanup err: {e}")
-
-
-def live_safety_checks(algo):
-    """Extra safety checks for live trading from main_opus."""
-    if not algo.LiveMode:
-        return True
-    
-    # Check if we have minimum viable cash
-    try:
-        cash = algo.Portfolio.CashBook["USD"].Amount
-    except Exception as e:
-        algo.Debug(f"Error getting cash from CashBook, using Portfolio.Cash: {e}")
-        cash = algo.Portfolio.Cash
-    
-    if cash < 2.0:
-        debug_limited(algo, "LIVE SAFETY: Cash below $2, pausing new entries")
+def smart_liquidate(algo, symbol, tag="Liquidate"):
+    if symbol not in algo.Portfolio:
         return False
-    
-    # Rate limit: don't trade more than once per 90 seconds in live
-    if hasattr(algo, '_last_live_trade_time') and algo._last_live_trade_time is not None:
-        seconds_since = (algo.Time - algo._last_live_trade_time).total_seconds()
-        if seconds_since < 90:
-            return False
-    
-    return True
+    qty = float(getattr(algo.Portfolio[symbol], "Quantity", 0.0) or 0.0)
+    if qty <= 0:
+        return False
+    qty = min(qty, float(getattr(algo.Portfolio[symbol], "Quantity", 0.0) or 0.0))
+    qty = round_quantity(algo, symbol, qty)
+    if qty <= 0:
+        return False
+    ticket = place_limit_or_market(algo, symbol, -qty, tag=tag)
+    return ticket is not None
 
 
-def kelly_fraction(algo):
-    """
-    Half-Kelly position sizing multiplier, normalized so 1.0 = neutral.
+def manage_open_positions(algo, data=None):
+    exits = []
+    for symbol in list(getattr(algo, "entry_prices", {}).keys()):
+        if not is_invested_not_dust(algo, symbol):
+            cleanup_position(algo, symbol)
+            continue
+        sec = algo.Securities.get(symbol)
+        if sec is None:
+            continue
+        bar = None
+        if data is not None:
+            bar = data.Bars.get(symbol) if hasattr(data, "Bars") else None
+        close = float(getattr(bar, "Close", getattr(sec, "Price", 0.0)) or 0.0)
+        high = float(getattr(bar, "High", close) or close)
+        low = float(getattr(bar, "Low", close) or close)
+        current_atr = float(getattr(algo.feature_engine, "current_features", lambda *_: {})(symbol.Value).get("atr", 0.0) or 0.0)
 
-    Normalization: divide by 0.25, the expected half-Kelly for a typical strategy
-    with full-Kelly ≈ 0.50. This means:
-      half_kelly=0.25 → returns 1.0  (neutral sizing)
-      half_kelly=0.375 → returns 1.5 (max boost, capped)
-      half_kelly=0.125 → returns 0.5 (min floor)
-    Result is clamped to [0.5, 1.5] to prevent extreme under/over-sizing.
-    """
-    if len(algo._rolling_wins) < 20:
-        return 0.7
-    win_rate = sum(algo._rolling_wins) / len(algo._rolling_wins)
-    if win_rate <= 0 or win_rate >= 1:
-        return 1.0
-    avg_win = np.mean(list(algo._rolling_win_sizes)) if len(algo._rolling_win_sizes) > 0 else 0.02
-    avg_loss = np.mean(list(algo._rolling_loss_sizes)) if len(algo._rolling_loss_sizes) > 0 else 0.02
-    if avg_loss <= 0:
-        return 1.0
-    b = avg_win / avg_loss
-    kelly = (win_rate * b - (1 - win_rate)) / b
-    half_kelly = kelly * 0.5
-    return max(0.5, min(1.5, half_kelly / 0.25))
+        entry_price = float(algo.entry_prices.get(symbol, close) or close)
+        entry_atr = float(algo.entry_atrs.get(symbol, current_atr) or current_atr)
+        if entry_atr <= 0:
+            entry_atr = max(entry_price * 0.01, 1e-6)
 
+        highest = float(algo.highest_close.get(symbol, entry_price) or entry_price)
+        highest = max(highest, close)
+        algo.highest_close[symbol] = highest
 
-def get_slippage_penalty(algo, symbol):
-    """
-    Calculate position size multiplier based on historical slippage for a symbol.
-    Returns a value between 0.3 and 1.0. Ignores slippage entries older than 48 hours.
-    """
-    if not hasattr(algo, '_symbol_slippage_history'):
-        return 1.0
-    
-    ticker = symbol.Value if hasattr(symbol, 'Value') else str(symbol)
-    if ticker not in algo._symbol_slippage_history:
-        return 1.0
-    
-    slippage_history = algo._symbol_slippage_history[ticker]
-    if len(slippage_history) == 0:
-        return 1.0
-    
-    # Filter out entries older than 48 hours
-    cutoff = algo.Time - timedelta(hours=48)
-    recent_slips = [slip for entry_time, slip in slippage_history if entry_time >= cutoff]
-    if len(recent_slips) == 0:
-        return 1.0
-    
-    avg_slippage = sum(recent_slips) / len(recent_slips)
-    
-    # Apply penalties based on average slippage
-    if avg_slippage > 0.010:  # > 1.0%
-        return 0.3
-    elif avg_slippage > 0.005:  # > 0.5%
-        return 0.6
-    elif avg_slippage > 0.003:  # > 0.3%
-        return 0.8
-    else:
-        return 1.0
+        bars_held = 0
+        if symbol in algo.entry_times:
+            bars_held = int((algo.Time - algo.entry_times[symbol]).total_seconds() / 3600)
+
+        tp = entry_price + algo.config.tp_atr_mult * entry_atr
+        hard_sl = entry_price - algo.config.sl_atr_mult * entry_atr
+        trailing_armed = close > entry_price * (1.0 + algo.config.activate_trailing_above_pct)
+        trailing_sl = highest - algo.config.chandelier_atr_mult * max(current_atr, 1e-9)
+        effective_sl = max(hard_sl, trailing_sl) if trailing_armed else hard_sl
+
+        tag = None
+        exit_px = close
+        if high >= tp:
+            tag = "TP"
+            exit_px = tp
+        elif low <= effective_sl:
+            tag = "Chandelier" if trailing_armed and trailing_sl >= hard_sl else "SL"
+            exit_px = effective_sl
+        elif bars_held >= algo.config.time_stop_bars:
+            tag = "TimeStop"
+            exit_px = close
+
+        if tag:
+            algo._last_exit_tag = tag
+            if smart_liquidate(algo, symbol, tag=tag):
+                cleanup_position(algo, symbol, record_pnl=True, exit_price=exit_px)
+            else:
+                cleanup_position(algo, symbol)
+            exits.append((symbol, tag))
+    return exits
 
 
-def place_limit_or_market(
-    algo,
-    symbol,
-    quantity,
-    timeout_seconds=30,
-    tag="Entry",
-    is_breakout=False,
-    force_market=False,
-    signal_score=None,
-    signal_threshold=None,
-    signal_engine=None,
-    signal_regime=None,
-):
-    """
-    Place entry orders using limit orders to capture maker fees.
-    In backtest: volatility-correlated non-fill simulation, then falls through
-    to the same limit order logic as live.
-    In live: use limit orders with timeout to capture maker fees.
-
-    Parameters
-    ----------
-    is_breakout : bool
-        When True (vol-ignition-heavy / momentum entry with no mean-reversion
-        support) an extra non-fill penalty is applied in backtest.  Momentum
-        entries are unlikely to fill passively as a maker — using a higher
-        rejection probability produces more realistic backtest results.
-        Configurable via algo.breakout_nonfill_penalty (default 0.08 / +8 pp).
-
-    Returns the ticket from the order placement.
-    """
+def execute_regime_entries(algo, candidates, regime_tag="regime"):
     try:
-        if force_market:
-            return algo.MarketOrder(symbol, quantity, tag=tag)
+        available = float(algo.Portfolio.CashBook["USD"].Amount)
+    except Exception:
+        available = float(getattr(algo.Portfolio, "Cash", 0.0) or 0.0)
+    min_notional = float(getattr(algo, "min_notional", 1.0) or 1.0)
+    hour = getattr(algo, "Time", None)
+    if hour is not None:
+        hour = hour.replace(minute=0, second=0, microsecond=0)
 
-        # BACKTEST REALISM: volatility-correlated non-fill simulation
-        # Real non-fills are adversely selected — higher volatility = more non-fills
-        # because price moves away faster. NOT random.
-        if not algo.LiveMode:
-            crypto = algo.crypto_data.get(symbol)
-            if crypto and len(crypto.get('volatility', [])) > 0:
-                recent_vol = float(crypto['volatility'][-1])
-                # Base non-fill rate 8%, scales up to 30% in high-vol environments.
-                # Real limit order fill rates on Kraken altcoins at bid+0.05% are 70-92%
-                # within a 5-minute bar; the 8% base reflects a realistic rejection rate.
-                non_fill_prob = min(0.08 + recent_vol * 3.0, 0.30)
-            else:
-                non_fill_prob = 0.15
-            # Signal-aware adjustment: breakout / momentum entries are rarely filled as
-            # maker — price is running away from the limit so the extra penalty models
-            # adverse selection more honestly.  Mean-reversion entries provide liquidity
-            # and are left at the base rate.
-            if is_breakout:
-                penalty = getattr(algo, 'breakout_nonfill_penalty', _BREAKOUT_NONFILL_PENALTY_DEFAULT)
-                non_fill_prob = min(non_fill_prob + penalty, 0.60)
-            if _deterministic_reject(algo, symbol, non_fill_prob, salt="nonfill"):
-                return None
-        # Fall through to limit order logic for both live and backtest
-        sec = algo.Securities[symbol]
-        bid = sec.BidPrice
-        ask = sec.AskPrice
+    if available < min_notional * 1.2 or get_actual_position_count(algo) >= int(algo.config.max_positions):
+        if getattr(algo, "_last_cash_gate_log", None) != hour:
+            debug_limited(algo, f"GATE key=cash available={available:.2f}")
+            algo._last_cash_gate_log = hour
+        return []
 
-        def _min_tick():
-            try:
-                tick = float(sec.SymbolProperties.MinimumPriceVariation or 0.0)
-                return tick if tick > 0 else 0.0
-            except Exception:
-                return 0.0
+    placed = []
+    for symbol, score, weight in candidates:
+        if float(score) <= 0:
+            continue
+        if is_invested_not_dust(algo, symbol) or len(algo.Transactions.GetOpenOrders(symbol)) > 0:
+            continue
+        sec = algo.Securities.get(symbol)
+        if sec is None:
+            continue
+        price = float(getattr(sec, "Price", 0.0) or 0.0)
+        if price <= 0:
+            continue
 
-        def _estimate_spread():
-            sp = None
-            if bid > 0 and ask > 0 and ask >= bid:
-                mid_local = 0.5 * (bid + ask)
-                if mid_local > 0:
-                    sp = (ask - bid) / mid_local
-            if sp is None and not algo.LiveMode:
-                sp = _estimate_backtest_spread(algo, symbol)
-            return max(float(sp or 0.0), 0.0)
+        equity = float(getattr(algo.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
+        floor = max(get_min_notional_usd(algo, symbol) * 1.5, algo.config.min_position_floor_usd)
+        ceiling = min(equity * algo.config.max_position_pct, available * 0.95)
+        notional = max(0.0, min(ceiling, equity * abs(float(weight))))
+        if notional < floor:
+            debug_limited(algo, f"GATE key=floor symbol={symbol.Value}")
+            continue
 
-        if bid > 0 and ask > 0:
-            mid = 0.5 * (bid + ask)
-            spread_est = _estimate_spread()
-            offset = 0.5 * spread_est * mid
-            tick = _min_tick()
-            offset = max(offset, tick)
-            limit_price = (mid - offset) if quantity > 0 else (mid + offset)
-            if quantity > 0:
-                limit_price = min(limit_price, bid)
-            else:
-                limit_price = max(limit_price, ask)
+        qty = round_quantity(algo, symbol, notional / max(price, 1e-9))
+        if qty <= 0 or qty * price < floor:
+            continue
 
-            # BACKTEST: simulate queue-priority cost when bid/ask data IS available.
-            # Offset (0.12%) reflects real queue priority cost on Kraken altcoins (0.10-0.20%).
-            if not algo.LiveMode:
-                adverse_offset = 0.0012  # 0.12% queue-priority cost
-                if quantity > 0:
-                    limit_price *= (1 + adverse_offset)
-                    limit_price = min(limit_price, ask)  # buy: never cross the ask
-                else:
-                    limit_price *= (1 - adverse_offset)
-                    limit_price = max(limit_price, bid)  # sell: never go below the bid
-
-                # Queue rejection is temporarily disabled by default to avoid
-                # double-counting with the slippage model. Non-fill simulation and
-                # adverse queue offset remain enabled.
-                if getattr(algo, 'enable_queue_rejection', False):
-                    crypto = algo.crypto_data.get(symbol)
-                    if crypto and len(crypto.get('volume', [])) > 0:
-                        bar_volume = float(crypto['volume'][-1])
-                        bar_dollar_volume = bar_volume * float(limit_price) if limit_price > 0 else 0
-                        order_notional = abs(quantity) * float(limit_price)
-                        if bar_dollar_volume > 0:
-                            participation_rate = order_notional / bar_dollar_volume
-                            if participation_rate > _QUEUE_PARTICIPATION_THRESHOLD:
-                                excess = participation_rate - _QUEUE_PARTICIPATION_THRESHOLD
-                                rejection_prob = min(excess * _QUEUE_REJECTION_SLOPE, _QUEUE_MAX_REJECTION_PROB)
-                                if _deterministic_reject(algo, symbol, rejection_prob, salt="queue_bidask"):
-                                    algo.Debug(
-                                        f"BACKTEST QUEUE REJECT (bid/ask): {symbol.Value} "
-                                        f"part={participation_rate:.1%} rej={rejection_prob:.1%}"
-                                    )
-                                    return None
-            else:
-                limit_price = min(limit_price, ask)  # live: never cross the spread
-        else:
-            # No bid/ask data: use last price as limit price.
-            # In backtest this would fill immediately at the limit price,
-            # giving unrealistic instant maker fills without queue priority.
-            ref_price = sec.Price
-            spread_est = _estimate_spread()
-            if ref_price > 0 and spread_est > 0:
-                offset = max(0.5 * spread_est * ref_price, _min_tick())
-                limit_price = (ref_price - offset) if quantity > 0 else (ref_price + offset)
-            else:
-                limit_price = ref_price
-            if limit_price <= 0:
-                algo.Debug(f"Price unavailable for {symbol.Value}, using market order")
-                return algo.MarketOrder(symbol, quantity, tag=tag)
-
-            # BACKTEST: simulate queue-priority cost when no bid/ask data.
-            # Apply adverse offset + participation-rate rejection.
-            if not algo.LiveMode:
-                # Adverse offset: algo is not first in line at the limit level.
-                adverse_offset = 0.0010  # 0.10% queue-priority cost (slippage model handles the rest)
-                if quantity > 0:
-                    limit_price *= (1 + adverse_offset)
-                else:
-                    limit_price *= (1 - adverse_offset)
-
-                if getattr(algo, 'enable_queue_rejection', False):
-                    crypto = algo.crypto_data.get(symbol)
-                    if crypto and len(crypto.get('volume', [])) > 0:
-                        bar_volume = float(crypto['volume'][-1])
-                        bar_dollar_volume = bar_volume * float(limit_price) if limit_price > 0 else 0
-                        order_notional = abs(quantity) * float(limit_price)
-                        if bar_dollar_volume > 0:
-                            participation_rate = order_notional / bar_dollar_volume
-                            if participation_rate > _QUEUE_PARTICIPATION_THRESHOLD:
-                                excess = participation_rate - _QUEUE_PARTICIPATION_THRESHOLD
-                                rejection_prob = min(excess * _QUEUE_REJECTION_SLOPE, _QUEUE_MAX_REJECTION_PROB)
-                                if _deterministic_reject(algo, symbol, rejection_prob, salt="queue_noquote"):
-                                    algo.Debug(
-                                        f"BACKTEST QUEUE REJECT: {symbol.Value} "
-                                        f"part={participation_rate:.1%} rej={rejection_prob:.1%}"
-                                    )
-                                    return None
-
-        # Place maker limit order
-        limit_ticket = algo.LimitOrder(symbol, quantity, limit_price, tag=tag)
-
-        # Track for fallback in VerifyOrderFills
-        if hasattr(algo, '_submitted_orders'):
-            algo._submitted_orders[symbol] = {
-                'order_id': limit_ticket.OrderId,
-                'time': algo.Time,
-                'quantity': quantity,  # Store signed quantity
-                'is_limit_entry': True,
-                'timeout_seconds': timeout_seconds,
-                'intent': 'entry',
-                'signal_score': signal_score,
-                'signal_threshold': signal_threshold,
-                'signal_engine': signal_engine,
-                'signal_regime': signal_regime,
-            }
-
-            algo.Debug(f"MAKER LIMIT: {symbol.Value} | qty={quantity} | bid=${bid:.4f} | limit=${limit_price:.4f} | timeout={timeout_seconds}s")
-        return limit_ticket
-
-    except Exception as e:
-        algo.Debug(f"Error placing limit order for {symbol.Value}: {e}, falling back to market")
-        return algo.MarketOrder(symbol, quantity, tag=tag)
+        ticket = place_entry(algo, symbol, qty, tag=f"{regime_tag}:entry", signal_score=score)
+        if ticket is not None:
+            placed.append(ticket)
+            available -= qty * price
+            if available < min_notional:
+                break
+    return placed
 
 
-def normalize_order_time(order_time):
-    """Helper to normalize order time by removing timezone info if present."""
-    return order_time.replace(tzinfo=None) if order_time.tzinfo is not None else order_time
+def escalate_stale_orders(algo):
+    stale_after = int(getattr(algo, "stale_order_bars", getattr(CONFIG, "stale_order_bars", 3)))
+    escalated = []
+    for symbol, info in list(getattr(algo, "_submitted_orders", {}).items()):
+        age = int(info.get("age_bars", 0)) + 1
+        info["age_bars"] = age
+        algo._submitted_orders[symbol] = info
+        if age < stale_after:
+            continue
+        oid = info.get("order_id")
+        try:
+            if oid is not None:
+                algo.Transactions.CancelOrder(int(oid))
+        except Exception:
+            pass
+        qty = float(info.get("quantity", 0.0) or 0.0)
+        if qty != 0:
+            place_limit_or_market(algo, symbol, qty, tag="[StaleEsc]", force_market=True)
+        algo._submitted_orders.pop(symbol, None)
+        escalated.append(symbol)
+    return escalated
 
 
 def get_hold_bucket(hold_hours):
-    """Return a string bucket label based on hold duration in hours."""
     if hold_hours < 0.5:
-        return '<30min'
-    elif hold_hours < 2.0:
-        return '30min-2h'
-    elif hold_hours < 6.0:
-        return '2h-6h'
-    else:
-        return '6h+'
+        return "<30min"
+    if hold_hours < 2:
+        return "30min-2h"
+    if hold_hours < 6:
+        return "2h-6h"
+    return "6h+"
 
 
-def record_exit_pnl(algo, symbol, entry_price, exit_price, exit_tag="Unknown"):
-    """Helper to record PnL from an exit trade. Returns None if prices are invalid."""
-    if entry_price <= 0 or exit_price <= 0:
-        algo.Debug(f"⚠️ Cannot record PnL for {symbol.Value}: invalid prices (entry=${entry_price:.4f}, exit=${exit_price:.4f})")
-        return None
-    
-    # Fee is a direct percentage-point reduction (matches convention in events.py).
-    pnl = (exit_price - entry_price) / entry_price - get_effective_round_trip_fee(algo)
-    algo._rolling_wins.append(1 if pnl > 0 else 0)
-    if pnl > 0:
-        algo._rolling_win_sizes.append(pnl)
-        algo.winning_trades += 1
-        algo.consecutive_losses = 0
-    else:
-        algo._rolling_loss_sizes.append(abs(pnl))
-        algo.losing_trades += 1
-        algo.consecutive_losses += 1
-    algo.total_pnl += pnl
-    if not hasattr(algo, 'pnl_by_tag'):
-        algo.pnl_by_tag = {}
-    if exit_tag not in algo.pnl_by_tag:
-        algo.pnl_by_tag[exit_tag] = []
-    algo.pnl_by_tag[exit_tag].append(pnl)
-
-    # Regime-level PnL tracking (capped at 200 entries per bucket to prevent
-    # unbounded memory growth during long live runs, consistent with pnl_by_tag).
-    if not hasattr(algo, 'pnl_by_regime'):
-        algo.pnl_by_regime = {}
-    regime = getattr(algo, 'market_regime', 'unknown')
-    if regime not in algo.pnl_by_regime:
-        algo.pnl_by_regime[regime] = []
-    algo.pnl_by_regime[regime].append(pnl)
-    if len(algo.pnl_by_regime[regime]) > 200:
-        algo.pnl_by_regime[regime] = algo.pnl_by_regime[regime][-200:]
-
-    # Volatility regime PnL tracking (same 200-entry cap)
-    if not hasattr(algo, 'pnl_by_vol_regime'):
-        algo.pnl_by_vol_regime = {}
-    vol_regime = getattr(algo, 'volatility_regime', 'normal')
-    if vol_regime not in algo.pnl_by_vol_regime:
-        algo.pnl_by_vol_regime[vol_regime] = []
-    algo.pnl_by_vol_regime[vol_regime].append(pnl)
-    if len(algo.pnl_by_vol_regime[vol_regime]) > 200:
-        algo.pnl_by_vol_regime[vol_regime] = algo.pnl_by_vol_regime[vol_regime][-200:]
-
-    # Signal-combination attribution
-    if hasattr(algo, '_entry_signal_combos') and symbol in algo._entry_signal_combos:
-        signal_combo = algo._entry_signal_combos.pop(symbol)
-        if not hasattr(algo, 'pnl_by_signal_combo'):
-            algo.pnl_by_signal_combo = {}
-        if signal_combo not in algo.pnl_by_signal_combo:
-            algo.pnl_by_signal_combo[signal_combo] = []
-        algo.pnl_by_signal_combo[signal_combo].append(pnl)
-
-    # Hold-time attribution
-    entry_time = algo.entry_times.get(symbol) if hasattr(algo, 'entry_times') else None
-    if entry_time is not None:
-        hold_hours = (algo.Time - entry_time).total_seconds() / 3600
-        hold_bucket = get_hold_bucket(hold_hours)
-    else:
-        hold_bucket = 'unknown'
-    if not hasattr(algo, 'pnl_by_hold_time'):
-        algo.pnl_by_hold_time = {}
-    if hold_bucket not in algo.pnl_by_hold_time:
-        algo.pnl_by_hold_time[hold_bucket] = []
-    algo.pnl_by_hold_time[hold_bucket].append(pnl)
-
-    return pnl
+def slip_log(algo, symbol, direction, fill_price):
+    _ = algo, symbol, direction, fill_price
+    return
 
 
-def get_open_buy_orders_value(algo):
-    """Calculate total value reserved by open buy orders."""
-    total_reserved = 0
-    for o in algo.Transactions.GetOpenOrders():
-        if o.Direction == OrderDirection.Buy:
-            if o.Price > 0:
-                order_price = o.Price
-            elif o.Symbol in algo.Securities:
-                order_price = algo.Securities[o.Symbol].Price
-                if order_price <= 0:
-                    continue
-            else:
-                continue
-            total_reserved += abs(o.Quantity) * order_price
-    return total_reserved
-
-
-
-
-def execute_buy(algo, symbol, quantity):
-    """Place a market buy order for immediate fill."""
-    algo.MarketOrder(symbol, quantity, tag="MG Market Buy")
-
-
-def execute_sell(algo, symbol, quantity):
-    """Place a market sell order for immediate fill."""
-    algo.MarketOrder(symbol, -quantity, tag="MG Market Sell")
-
-# ----- merged from fee_model.py -----
 class KrakenTieredFeeModel(FeeModel):
-    """Volume-tiered Kraken Pro (Canada) fee model; 75% maker / 25% taker blend."""
-
     LIMIT_TAKER_RATIO = 0.25
     FEE_TIERS = [
-        (500_000, 0.0008, 0.0018),
-        (250_000, 0.0010, 0.0020),
-        (100_000, 0.0012, 0.0022),
-        (50_000,  0.0014, 0.0024),
-        (25_000,  0.0020, 0.0035),
-        (10_000,  0.0022, 0.0038),
-        (2_500,   0.0030, 0.0060),
-        (0,       0.0040, 0.0080),
+        (500_000, 0.0008, 0.0018), (250_000, 0.0010, 0.0020), (100_000, 0.0012, 0.0022),
+        (50_000, 0.0014, 0.0024), (25_000, 0.0020, 0.0035), (10_000, 0.0022, 0.0038),
+        (2_500, 0.0030, 0.0060), (0, 0.0040, 0.0080),
     ]
 
     def __init__(self, comparison_mode=False, fixed_maker_rate=None, fixed_taker_rate=None):
         self._comparison_mode = bool(comparison_mode)
-        default_maker = self.FEE_TIERS[-1][1]
-        default_taker = self.FEE_TIERS[-1][2]
-        self._fixed_maker_rate = default_maker if fixed_maker_rate is None else float(fixed_maker_rate)
-        self._fixed_taker_rate = default_taker if fixed_taker_rate is None else float(fixed_taker_rate)
+        self._fixed_maker_rate = self.FEE_TIERS[-1][1] if fixed_maker_rate is None else float(fixed_maker_rate)
+        self._fixed_taker_rate = self.FEE_TIERS[-1][2] if fixed_taker_rate is None else float(fixed_taker_rate)
         self._cumulative_volume = 0.0
-        self._start_time = None
 
     def _current_rates(self):
         if self._comparison_mode:
             return self._fixed_maker_rate, self._fixed_taker_rate
-        maker_rate, taker_rate = self.FEE_TIERS[-1][1], self.FEE_TIERS[-1][2]
-        for min_vol, maker, taker in self.FEE_TIERS:
+        maker, taker = self.FEE_TIERS[-1][1], self.FEE_TIERS[-1][2]
+        for min_vol, m, t in self.FEE_TIERS:
             if self._cumulative_volume >= min_vol:
-                maker_rate, taker_rate = maker, taker
+                maker, taker = m, t
                 break
-        return maker_rate, taker_rate
+        return maker, taker
 
     def estimate_round_trip_cost(self, symbol, notional, is_limit=True):
         _ = symbol
-        notional = abs(float(notional or 0.0))
-        if notional <= 0:
+        n = abs(float(notional or 0.0))
+        if n <= 0:
             return 0.0
-        maker_rate, taker_rate = self._current_rates()
-        if is_limit:
-            side_fee_pct = (1 - self.LIMIT_TAKER_RATIO) * maker_rate + self.LIMIT_TAKER_RATIO * taker_rate
-        else:
-            side_fee_pct = taker_rate
-        return notional * side_fee_pct * 2.0
+        maker, taker = self._current_rates()
+        side_pct = ((1 - self.LIMIT_TAKER_RATIO) * maker + self.LIMIT_TAKER_RATIO * taker) if is_limit else taker
+        return n * side_pct * 2.0
 
-    def GetOrderFee(self, parameters):  # pragma: no cover - QC runtime path
+    def GetOrderFee(self, parameters):  # pragma: no cover
         order = parameters.Order
         price = parameters.Security.Price
-        trade_value = order.AbsoluteQuantity * price
+        notional = order.AbsoluteQuantity * price
         if not self._comparison_mode:
-            self._cumulative_volume += trade_value
-            if self._start_time is None:
-                self._start_time = order.Time
-        maker_rate, taker_rate = self._current_rates()
-        if order.Type == OrderType.Limit:
-            fee_pct = (1 - self.LIMIT_TAKER_RATIO) * maker_rate + self.LIMIT_TAKER_RATIO * taker_rate
-        else:
-            fee_pct = taker_rate
-        return OrderFee(CashAmount(trade_value * fee_pct, "USD"))
+            self._cumulative_volume += notional
+        maker, taker = self._current_rates()
+        pct = ((1 - self.LIMIT_TAKER_RATIO) * maker + self.LIMIT_TAKER_RATIO * taker) if order.Type == OrderType.Limit else taker
+        return OrderFee(CashAmount(notional * pct, "USD"))
 
 
-# ----- merged from realistic_slippage.py -----
-# RealisticCryptoSlippage uses QC's duck-typed Python slippage interface:
-# QC has no `SlippageModel` Python base class (only the C# `ISlippageModel`
-# interface). Implementing `GetSlippageApproximation(asset, order)` on a plain
-# class is sufficient — QC wraps it via `PythonSlippageModel` when assigned
-# through `security.SetSlippageModel(...)`.
 class RealisticCryptoSlippage:
-    """Participation/spread/size-aware slippage model with deterministic helper estimates."""
-
     def __init__(self, algo=None, stress_mult=1.0):
         self.algo = algo
         self.base_slippage_pct = 0.0040 * max(0.1, float(stress_mult))
@@ -1298,256 +372,73 @@ class RealisticCryptoSlippage:
     def _estimate_slippage_pct(self, price, notional, volume=0.0, bid=0.0, ask=0.0):
         if price <= 0:
             return 0.0
-        slippage_pct = self.base_slippage_pct
+        slip = self.base_slippage_pct
         if bid > 0 and ask > 0 and ask >= bid:
             mid = 0.5 * (bid + ask)
-            if mid > 0:
-                spread_frac = (ask - bid) / mid
-                participation_rate = abs(notional) / max(volume * price, 1e-9) if volume and price else 0.0
-                slippage_pct += 0.5 * spread_frac * max(0.25, participation_rate)
-        else:
-            if price < 0.01:
-                slippage_pct += 0.0200
-            elif price < 0.10:
-                slippage_pct += 0.0100
-            elif price < 1.0:
-                slippage_pct += 0.0050
-            elif price < 10.0:
-                slippage_pct += 0.0030
-            elif price < 100.0:
-                slippage_pct += 0.0016
-            else:
-                slippage_pct += 0.0010
+            spread = (ask - bid) / max(mid, 1e-9)
+            participation = abs(notional) / max(volume * price, 1e-9) if volume > 0 else 0.0
+            slip += 0.5 * spread * max(0.25, participation)
         if volume > 0:
-            volume_value = volume * price
-            participation_rate = abs(notional) / max(volume_value, 1e-9)
-            slippage_pct += self.volume_impact_factor * math.sqrt(max(participation_rate, 0.0))
-        return min(slippage_pct, self.max_slippage_pct)
+            participation = abs(notional) / max(volume * price, 1e-9)
+            slip += self.volume_impact_factor * math.sqrt(max(participation, 0.0))
+        return min(slip, self.max_slippage_pct)
 
     def estimate_slippage_bps(self, symbol, notional, price, volume=0.0, bid=0.0, ask=0.0):
         _ = symbol
         return self._estimate_slippage_pct(price, notional, volume=volume, bid=bid, ask=ask) * 10_000.0
 
-    def GetSlippageApproximation(self, asset, order):  # pragma: no cover - QC runtime path
-        price = float(getattr(asset, 'Price', 0) or 0)
-        if price <= 0:
-            return 0
-        order_value = abs(float(getattr(order, 'Quantity', 0) or 0)) * price
+    def GetSlippageApproximation(self, asset, order):  # pragma: no cover
+        price = float(getattr(asset, "Price", 0.0) or 0.0)
+        notional = abs(float(getattr(order, "Quantity", 0.0) or 0.0)) * price
         pct = self._estimate_slippage_pct(
             price=price,
-            notional=order_value,
-            volume=float(getattr(asset, 'Volume', 0) or 0),
-            bid=float(getattr(asset, 'BidPrice', 0) or 0),
-            ask=float(getattr(asset, 'AskPrice', 0) or 0),
+            notional=notional,
+            volume=float(getattr(asset, "Volume", 0.0) or 0.0),
+            bid=float(getattr(asset, "BidPrice", 0.0) or 0.0),
+            ask=float(getattr(asset, "AskPrice", 0.0) or 0.0),
         )
         return price * pct
 
 
-# ----- merged lightweight wrappers from order_management.py and entry_exec.py -----
-def place_entry(algo, symbol, quantity, tag='Entry', force_market=False, signal_score=None):
-    sym_val = symbol.Value if hasattr(symbol, 'Value') else str(symbol)
-    if sym_val in SYMBOL_BLACKLIST_STRUCTURAL:
-        algo.Debug(f"BLACKLIST reject: {sym_val}")
-        return None
-    if is_invested_not_dust(algo, symbol):
-        logged = getattr(algo, '_invested_entry_skip_logged', set())
-        if sym_val not in logged:
-            budget = int(getattr(algo, 'log_budget', 0) or 0)
-            if budget > 0:
-                algo.Debug(f"ENTRY SKIP (invested): {sym_val}")
-                algo.log_budget = budget - 1
-            logged.add(sym_val)
-            algo._invested_entry_skip_logged = logged
-        return None
-    if getattr(algo, 'long_only', True) and float(quantity) < 0:
-        return None
-    sec = algo.Securities.get(symbol) if hasattr(algo, 'Securities') else None
-    price = float(getattr(sec, 'Price', 0.0) or 0.0) if sec is not None else 0.0
-    min_qty = get_min_quantity(algo, symbol)
-    quantity = round_quantity(algo, symbol, quantity)
-    if abs(quantity) < min_qty:
-        quantity = round_quantity(algo, symbol, min_qty * (1 if quantity >= 0 else -1))
-    min_notional = get_min_notional_usd(algo, symbol)
-    if price > 0 and abs(quantity) * price < min_notional:
-        needed = estimate_min_qty(algo, symbol)
-        quantity = round_quantity(algo, symbol, max(abs(quantity), needed) * (1 if quantity >= 0 else -1))
-    return place_limit_or_market(algo, symbol, quantity, tag=tag, force_market=force_market, signal_score=signal_score)
-
-
-def manage_open_positions(algo, data=None):
-    if not hasattr(algo, 'entry_prices'):
-        return []
-    exits = []
-    for symbol in list(algo.entry_prices.keys()):
-        if not is_invested_not_dust(algo, symbol):
-            cleanup_position(algo, symbol)
-            continue
-        holding = algo.Portfolio[symbol] if symbol in algo.Portfolio else None
-        holding_qty = float(getattr(holding, 'Quantity', 0.0) or 0.0) if holding is not None else 0.0
-        if holding_qty <= 0:
-            cleanup_position(algo, symbol)
-            continue
-        sec = algo.Securities.get(symbol)
-        if sec is None:
-            continue
-        price = float(getattr(sec, 'Price', 0.0) or 0.0)
-        bar = None
-        if data is not None:
-            try:
-                bar = data.Bars.get(symbol)
-            except Exception:
-                bar = None
-        high = float(getattr(bar, 'High', price) or price)
-        low = float(getattr(bar, 'Low', price) or price)
-        close = float(getattr(bar, 'Close', price) or price)
-        entry = float(algo.entry_prices.get(symbol, close) or close)
-        highest = float(algo.highest_prices.get(symbol, entry) or entry)
-        if high > highest:
-            algo.highest_prices[symbol] = high
-            highest = high
-        stop = entry * (1.0 - float(getattr(algo, 'stop_loss_pct', 0.025)))
-        tp = entry * (1.0 + float(getattr(algo, 'take_profit_pct', 0.05)))
-        trailing_pct = float(getattr(algo, 'trailing_stop_pct', 0.02))
-        activate_above = float(getattr(algo, 'activate_trailing_above_pct', 0.01))
-        trailing_level = highest * (1.0 - trailing_pct)
-        trailing_active = highest > entry * (1.0 + activate_above)
-        bars_held = 0
-        if symbol in getattr(algo, 'entry_times', {}):
-            bars_held = (algo.Time - algo.entry_times[symbol]).total_seconds() / 3600.0
-        reason = None
-        exit_price = close
-        # Exit precedence for bars that can touch multiple barriers:
-        # TakeProfit -> StopLoss -> TrailingStop -> TimeStop.
-        # With OHLC-only bars, intrabar path is unknown; this deterministic order
-        # resolves ties consistently and matches the requested precedence.
-        if high >= tp:
-            reason = 'TakeProfit'
-            exit_price = tp
-        elif low <= stop:
-            reason = 'StopLoss'
-            exit_price = stop
-        elif trailing_active and low <= trailing_level:
-            reason = 'TrailingStop'
-            exit_price = trailing_level
-        elif bars_held >= float(getattr(algo, 'max_hold_hours', 24)):
-            reason = 'TimeStop'
-            exit_price = close
-        if reason:
-            ticket = smart_liquidate(algo, symbol, tag=reason)
-            pnl_pct = (exit_price - entry) / entry if entry > 0 else 0.0
-            if ticket:
-                cleanup_position(algo, symbol, record_pnl=True, exit_price=exit_price)
-            try:
-                algo.Debug(
-                    f"EXIT {reason}: {symbol.Value} entry=${entry:.4f} exit=${exit_price:.4f} pnl={pnl_pct:+.2%}"
-                )
-            except Exception:
-                pass
-            exits.append((symbol, reason, ticket))
-    return exits
-
-
-def execute_regime_entries(algo, candidates, regime_tag='regime'):
-    available_cash = None
-    try:
-        available_cash = float(algo.Portfolio.CashBook["USD"].Amount)
-    except Exception:
-        available_cash = float(getattr(algo.Portfolio, 'Cash', 0.0) or 0.0)
-    min_notional = float(getattr(algo, 'min_notional', 1.0) or 1.0)
-    current_hour = getattr(algo, 'Time', None)
-    if current_hour is not None:
-        current_hour = current_hour.replace(minute=0, second=0, microsecond=0)
-    if available_cash < (min_notional * CASH_GATE_SAFETY_MARGIN):
-        last_log = getattr(algo, '_last_cash_gate_log', None)
-        if current_hour != last_log:
-            budget = int(getattr(algo, 'log_budget', 0) or 0)
-            if budget > 0:
-                algo.Debug(f"CASH GATE: skipping entries, available=${available_cash:.2f}")
-                algo.log_budget = budget - 1
-            algo._last_cash_gate_log = current_hour
-        return []
-    max_positions = int(getattr(algo, 'max_positions', getattr(getattr(algo, 'config', None), 'max_positions', 3)) or 3)
-    if get_actual_position_count(algo) >= max_positions:
-        return []
-    placed = []
-    for symbol, score, fraction in candidates:
-        if getattr(algo, 'long_only', True) and float(score) < 0:
-            if not getattr(algo, '_logged_long_only_short_filter', False):
-                msg = "LONG_ONLY gate: filtered short candidate(s) in cash mode."
-                debug_budget = int(getattr(algo, 'log_budget', 0) or 0)
-                if debug_budget > 0:
-                    algo.Debug(msg)
-                    algo.log_budget = debug_budget - 1
-                elif getattr(algo, 'LiveMode', False):
-                    algo.Debug(msg)
-                algo._logged_long_only_short_filter = True
-            continue
-        if symbol in getattr(algo, '_pending_orders', {}) and algo._pending_orders[symbol] > 0:
-            continue
-        sec = algo.Securities.get(symbol)
-        if sec is None or float(getattr(sec, 'Price', 0) or 0) <= 0:
-            continue
-        equity = float(getattr(algo.Portfolio, 'TotalPortfolioValue', 0.0) or 0.0)
-        qty = (equity * abs(float(fraction))) / max(float(sec.Price), 1e-9)
-        qty = qty if float(score) >= 0 else -qty
-        ticket = place_entry(algo, symbol, qty, tag=f'{regime_tag}:entry', signal_score=score)
-        if ticket is not None:
-            placed.append(ticket)
-    return placed
-
-
-def escalate_stale_orders(algo):
-    stale_after = int(getattr(algo, 'stale_order_bars', getattr(CONFIG, 'stale_order_bars', 3)))
-    escalated = []
-    submitted = getattr(algo, '_submitted_orders', {})
-    for symbol, info in list(submitted.items()):
-        age_bars = int(info.get('age_bars', 0)) + 1
-        info['age_bars'] = age_bars
-        if age_bars < stale_after:
-            submitted[symbol] = info
-            continue
-        oid = info.get('order_id')
-        try:
-            if oid is not None:
-                algo.Transactions.CancelOrder(int(oid))
-        except Exception:
-            pass
-        qty = float(info.get('quantity', 0.0) or 0.0)
-        if qty != 0:
-            place_limit_or_market(algo, symbol, qty, tag='[StaleEsc]', force_market=True)
-        submitted.pop(symbol, None)
-        escalated.append(symbol)
-        algo.stale_limit_escalations = int(getattr(algo, 'stale_limit_escalations', 0)) + 1
-    return escalated
-
-
 class Executor:
-    """Compatibility wrapper retained for unit tests and simplified callers."""
-
     def __init__(self, config: StrategyConfig = CONFIG) -> None:
         self.config = config
         self.entry_prices: dict[str, float] = {}
+        self.entry_atrs: dict[str, float] = {}
+        self.highest_close: dict[str, float] = {}
 
     def place_entry(self, symbol: str, target_weight: float, score: float) -> dict[str, float | str]:
         return {
-            'symbol': symbol,
-            'target_weight': float(target_weight),
-            'score': float(score),
-            'estimated_cost': float(KrakenTieredFeeModel().estimate_round_trip_cost(symbol, 100.0, is_limit=True) / 100.0),
-            'type': 'limit',
+            "symbol": symbol,
+            "target_weight": float(target_weight),
+            "score": float(score),
+            "estimated_cost": float(KrakenTieredFeeModel().estimate_round_trip_cost(symbol, 100.0, is_limit=True) / 100.0),
+            "type": "limit",
         }
 
     def register_fill(self, symbol: str, price: float, atr: float, side: int, bar_index: int) -> None:
-        _ = atr, side, bar_index
+        _ = side, bar_index
         self.entry_prices[symbol] = float(price)
+        self.entry_atrs[symbol] = float(atr)
+        self.highest_close[symbol] = float(price)
 
     def manage_exits(self, open_positions: dict[str, dict[str, float]], bar_index: int | None = None) -> list[tuple[str, str]]:
         _ = bar_index
         out = []
         for symbol, snap in open_positions.items():
             entry = self.entry_prices.get(symbol)
-            if entry is None:
+            atr = self.entry_atrs.get(symbol, 0.0)
+            if entry is None or atr <= 0:
                 continue
-            if float(snap.get('high', entry)) >= entry * 1.04:
-                out.append((symbol, 'take_profit'))
+            high = float(snap.get("high", entry))
+            low = float(snap.get("low", entry))
+            close = float(snap.get("close", entry))
+            self.highest_close[symbol] = max(self.highest_close.get(symbol, entry), close)
+            tp = entry + self.config.tp_atr_mult * atr
+            sl = entry - self.config.sl_atr_mult * atr
+            chand = self.highest_close[symbol] - self.config.chandelier_atr_mult * atr
+            if high >= tp:
+                out.append((symbol, "TP"))
+            elif low <= max(sl, chand):
+                out.append((symbol, "Chandelier" if chand >= sl else "SL"))
         return out

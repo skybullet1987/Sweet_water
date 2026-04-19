@@ -14,8 +14,8 @@ class StrategyConfig:
     starting_cash: float = 500.0
     bar_resolution: str = "Hour"
     warmup_bars: int = 200
-    universe_size: int = 80
-    top_k: int = 8
+    universe_size: int = 30
+    top_k: int = 6
     signal_mode: str = "cross_sectional_momentum"
 
     # Sizing
@@ -23,17 +23,17 @@ class StrategyConfig:
     kelly_cap: float = 0.25
     min_position_floor_usd: float = 5.0
     max_position_pct: float = 0.30
-    max_positions: int = 8
+    max_positions: int = 6
 
     # Costs
     expected_round_trip_fees: float = 0.0065
     cost_gate_multiplier: float = 2.5
     # cost_gate_multiplier is retained for legacy paths; edge_cost_multiplier is used by the new cross-sectional momentum gate.
-    edge_cost_multiplier: float = 2.5
+    edge_cost_multiplier: float = 1.5
     edge_scale: float = 0.02
     assumed_spread_bps: float = 12.0
     assumed_slippage_bps: float = 8.0
-    min_rebalance_weight_delta: float = 0.03
+    min_rebalance_weight_delta: float = 0.015
 
     # Exits (ATR-scaled)
     tp_atr_mult: float = 2.0
@@ -43,21 +43,21 @@ class StrategyConfig:
     time_stop_bars: int = 24
 
     # Regime gates
-    vol_stress_threshold: float = 0.7
+    vol_stress_threshold: float = 0.85
     breadth_threshold: float = 0.30
     btc_trend_ema: int = 200
     chop_return_threshold: float = 0.002
 
     # Scoring
-    score_threshold: float = 0.40
+    score_threshold: float = 0.20
     chop_threshold_multiplier: float = 1.5
     cross_section_weight: float = 0.40
     micro_entry_threshold: float = 0.45
     micro_flatten_threshold: float = 0.06
     max_orders_per_day: int = 6
     min_hold_hours: int = 6
-    rebalance_cadence_hours: int = 6
-    max_replacements_per_rebalance: int = 2
+    rebalance_cadence_hours: int = 4
+    max_replacements_per_rebalance: int = 4
     sig_hold_log_every_bars: int = 24
     # Legacy knobs still consumed in risk/tests
     hmm_train_window_bars: int = 24 * 120

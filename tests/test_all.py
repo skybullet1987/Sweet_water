@@ -26,6 +26,8 @@ from main import SweetWaterPhase1
 from reporting import walk_forward_run
 from scoring import Scorer
 from sizing import Sizer
+from universe import BLACKLIST, KRAKEN_SAFE_LIST, select_universe
+import universe as universe_module
 
 
 def test_module_size_limits():
@@ -33,6 +35,33 @@ def test_module_size_limits():
 
     for f in ["main.py", "execution.py", "features.py", "scoring.py", "sizing.py", "risk.py", "regime.py", "reporting.py"]:
         assert os.path.getsize(f"qc_runtime/{f}") < 60_000, f"{f} exceeds 60KB"
+
+
+def test_strategy_config_defaults_updated():
+    cfg = StrategyConfig()
+    assert cfg.universe_size == 30
+    assert cfg.top_k == 6
+    assert cfg.max_positions == 6
+    assert cfg.edge_cost_multiplier == 1.5
+    assert cfg.score_threshold == 0.20
+    assert cfg.min_rebalance_weight_delta == 0.015
+    assert cfg.max_replacements_per_rebalance == 4
+    assert cfg.rebalance_cadence_hours == 4
+    assert cfg.vol_stress_threshold == 0.85
+
+
+def test_universe_excludes_sklusd_even_if_high_liquidity(monkeypatch):
+    assert "SKLUSD" not in KRAKEN_SAFE_LIST
+    assert "SKLUSD" in BLACKLIST
+    monkeypatch.setattr(universe_module, "KRAKEN_SAFE_LIST", (*KRAKEN_SAFE_LIST, "SKLUSD"))
+
+    def history_provider(symbol, _start, _end):
+        base_close = 1_000.0 if symbol == "SKLUSD" else 10.0
+        base_volume = 1_000_000.0 if symbol == "SKLUSD" else 100.0
+        return pd.DataFrame({"close": [base_close, base_close], "volume": [base_volume, base_volume]})
+
+    selected = select_universe(history_provider, pd.Timestamp("2025-10-01", tz="UTC"))
+    assert "SKLUSD" not in selected
 
 
 class TestPhaseRequirements:
@@ -351,18 +380,18 @@ class TestPhaseRequirements:
         assert place_limit_or_market(algo, symbol, 0.01, force_market=True, tag="manual7") is None
         assert len(algo._order_calls) == before
 
-    def test_risk_off_when_btc_momentum_negative(self):
+    def test_risk_reduce_when_btc_momentum_negative(self):
         algo = self._build_algo()
         algo.Initialize()
         symbol = algo.symbol_by_ticker["SOLUSD"]
         self._warm_and_configure_single_symbol(algo, symbol)
         orig_current = algo.feature_engine.current_features
-        algo.feature_engine.current_features = lambda ticker: {"mom_90d": -0.1, "vol_stress_21d": 0.2} if ticker == "BTCUSD" else orig_current(ticker)
+        algo.feature_engine.current_features = lambda ticker: {"mom_90d": -0.1, "vol_stress_21d": 0.87} if ticker == "BTCUSD" else orig_current(ticker)
         state, candidates = algo._score_candidates(self._make_slice(algo, symbol, 100, 101, 99, 100, btc_close=220))
-        assert state == "risk_off"
-        assert candidates == []
+        assert state == "risk_reduce"
+        assert candidates
 
-    def test_risk_off_when_btc_vol_stress_high(self):
+    def test_risk_on_when_btc_vol_stress_high_with_positive_momentum(self):
         algo = self._build_algo()
         algo.Initialize()
         symbol = algo.symbol_by_ticker["SOLUSD"]
@@ -370,8 +399,19 @@ class TestPhaseRequirements:
         orig_current = algo.feature_engine.current_features
         algo.feature_engine.current_features = lambda ticker: {"mom_90d": 0.2, "vol_stress_21d": 0.95} if ticker == "BTCUSD" else orig_current(ticker)
         state, candidates = algo._score_candidates(self._make_slice(algo, symbol, 100, 101, 99.5, 100.2, btc_close=50.0))
+        assert state == "risk_on"
+        assert candidates
+
+    def test_risk_off_when_btc_momentum_negative_and_vol_stress_extreme(self):
+        algo = self._build_algo()
+        algo.Initialize()
+        symbol = algo.symbol_by_ticker["SOLUSD"]
+        self._warm_and_configure_single_symbol(algo, symbol)
+        orig_current = algo.feature_engine.current_features
+        algo.feature_engine.current_features = lambda ticker: {"mom_90d": -0.2, "vol_stress_21d": 0.95} if ticker == "BTCUSD" else orig_current(ticker)
+        state, candidates = algo._score_candidates(self._make_slice(algo, symbol, 100, 101, 99.5, 100.2, btc_close=50.0))
         assert state == "risk_off"
-        assert candidates == []
+        assert candidates
 
     def test_cost_gate_rejects_low_score(self):
         sizer = Sizer()
@@ -397,6 +437,30 @@ class TestPhaseRequirements:
         assert len(algo._order_calls) == 0
         assert not any("SIG sym=" in msg for msg in algo._debug_logs)
         assert algo._bar_count >= 1
+
+    def test_ondata_risk_reduce_rebalances_half_scale(self):
+        algo = self._build_algo()
+        algo.Initialize()
+        symbol = algo.symbol_by_ticker["SOLUSD"]
+        called = {}
+        algo._score_candidates = lambda _data: ("risk_reduce", [(symbol, 0.9, {})])
+        algo._rebalance_due = lambda: True
+        algo._rebalance_portfolio = lambda scored, risk_scale=1.0: called.update({"scored": scored, "risk_scale": risk_scale})
+        algo.OnData(self._Slice({}))
+        assert called["risk_scale"] == 0.5
+
+    def test_no_trade_heartbeat_logs_when_risk_on_without_fills(self):
+        algo = self._build_algo()
+        algo.Initialize()
+        symbol = algo.symbol_by_ticker["SOLUSD"]
+        algo._debug_logs = []
+        algo._bar_count = 168
+        algo._last_trade_bar = 0
+        algo._last_no_trade_log_bar = 0
+        algo._score_candidates = lambda _data: ("risk_on", [(symbol, 0.321, {})])
+        algo._rebalance_due = lambda: False
+        algo.OnData(self._Slice({}))
+        assert any(msg.startswith("NO_TRADE_HB bars_since_trade=") for msg in algo._debug_logs)
 
 
 def test_heartbeat_logs_every_24_bars():
@@ -443,6 +507,7 @@ def test_rebalance_logs_are_concise():
     }
     algo.log_budget = 1000
     algo._debug_logs = []
+    algo._score_candidates = lambda _data: ("risk_on", [(symbol, 0.0, {})])
     for i in range(6):
         algo.Time = datetime(2025, 1, 7, i, tzinfo=timezone.utc)
         algo.OnData(t._make_slice(algo, symbol, 100.0, 101.0, 99.0, 100.0))

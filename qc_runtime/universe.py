@@ -7,7 +7,8 @@ import pandas as pd
 from config import CONFIG
 
 REFERENCE_SYMBOLS = ("BTCUSD",)
-DEFAULT_UNIVERSE_SIZE = 80
+DEFAULT_UNIVERSE_SIZE = 30
+BLACKLIST: frozenset[str] = frozenset({"SKLUSD"})
 
 KRAKEN_SAFE_LIST = (
     "BTCUSD",
@@ -89,7 +90,6 @@ KRAKEN_SAFE_LIST = (
     "ZECUSD",
     "DASHUSD",
     "STORJUSD",
-    "SKLUSD",
     "MINAUSD",
     "JASMYUSD",
     "GMTUSD",
@@ -107,6 +107,8 @@ def select_universe(history_provider: Callable[[str, object, object], pd.DataFra
     start = asof_date - timedelta(days=30)
     liquidity: list[tuple[str, float]] = []
     for symbol in KRAKEN_SAFE_LIST:
+        if symbol in BLACKLIST:
+            continue
         frame = history_provider(symbol, start, asof_date)
         if frame is None or frame.empty:
             liquidity.append((symbol, 0.0))

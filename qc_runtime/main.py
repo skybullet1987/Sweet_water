@@ -63,6 +63,7 @@ from universe import KRAKEN_SAFE_LIST, REFERENCE_SYMBOLS, select_universe
 
 INFINITE_HELD_HOURS = 10**9
 DEFAULT_MISSING_SCORE = -1e9
+HARD_RISK_OFF_VOL_STRESS = 0.9
 
 
 class SweetWaterPhase1(QCAlgorithm):
@@ -166,6 +167,8 @@ class SweetWaterPhase1(QCAlgorithm):
         self._entry_signal_combos = {}
         self._last_cash_gate_log = None
         self._bar_count = 0
+        self._last_trade_bar = 0
+        self._last_no_trade_log_bar = 0
         self._last_sig_hold_log_bar = {}
         self._last_daily_summary_date = None
         self._last_rebalance_time = None
@@ -247,10 +250,15 @@ class SweetWaterPhase1(QCAlgorithm):
         feats = self.feature_engine.current_features("BTCUSD") if btc is not None else {}
         btc_mom_90d = float(feats.get("mom_90d", 0.0) or 0.0)
         btc_vol_stress = float(feats.get("vol_stress_21d", 1.0) or 1.0)
-        risk_on = btc_mom_90d > 0.0 and btc_vol_stress < float(self.config.vol_stress_threshold)
+        risk_on = btc_mom_90d > 0.0 or btc_vol_stress < float(self.config.vol_stress_threshold)
         self.regime_engine.update(btc_ret, abs(btc_ret), breadth, btc_above_ema200=(btc_mom_90d > 0.0))
         self.regime_engine.vol_stress = btc_vol_stress
-        state = "risk_on" if risk_on else "risk_off"
+        if btc_mom_90d <= 0.0 and btc_vol_stress >= HARD_RISK_OFF_VOL_STRESS:
+            state = "risk_off"
+        elif risk_on:
+            state = "risk_on"
+        else:
+            state = "risk_reduce"
         self.market_regime = state
         if state != self._last_regime_state:
             self.Debug(
@@ -269,21 +277,21 @@ class SweetWaterPhase1(QCAlgorithm):
     def _score_candidates(self, data: Slice):
         btc_ret, breadth = self._ingest_data(data)
         state = self._market_regime_state(btc_ret, breadth)
-        if state == "risk_off":
-            return state, []
         scored = self._collect_scores(state, btc_ret)
         return state, scored
 
-    def _rebalance_portfolio(self, scored):
+    def _rebalance_portfolio(self, scored, risk_scale: float = 1.0):
         self._last_rebalance_time = self.Time
         top_k = max(1, int(getattr(self.config, "top_k", 8) or 8))
+        effective_top_k = max(1, int(round(top_k * max(0.0, float(risk_scale)))))
         max_repl = max(0, int(getattr(self.config, "max_replacements_per_rebalance", 2)))
         min_hold = max(0, int(getattr(self.config, "min_hold_hours", 0)))
         min_delta = max(0.0, float(getattr(self.config, "min_rebalance_weight_delta", 0.03)))
+        score_threshold = float(getattr(self.config, "score_threshold", 0.0) or 0.0)
         holdings = self._current_holdings()
         held_set = set(holdings)
-        ranked = [(s, score, feats) for s, score, feats in scored if score > 0]
-        top = ranked[:top_k]
+        ranked = [(s, score, feats) for s, score, feats in scored if score >= score_threshold]
+        top = ranked[:effective_top_k]
         top_symbols = [s for s, _, _ in top]
         top_set = set(top_symbols)
         losers = sorted(
@@ -305,14 +313,14 @@ class SweetWaterPhase1(QCAlgorithm):
             target_set.discard(loser)
             target_set.add(entrant)
         for sym in top_symbols:
-            if len(target_set) >= top_k:
+            if len(target_set) >= effective_top_k:
                 break
             target_set.add(sym)
         target_list = sorted(
             target_set,
             key=lambda sym: next((x[1] for x in ranked if x[0] == sym), DEFAULT_MISSING_SCORE),
             reverse=True,
-        )[:top_k]
+        )[:effective_top_k]
         target_set = set(target_list)
         self.Debug(
             "REB "
@@ -330,7 +338,7 @@ class SweetWaterPhase1(QCAlgorithm):
         equity = float(getattr(self.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
         if equity <= 0 or not target_set:
             return
-        target_w = 1.0 / len(target_set)
+        target_w = max(0.0, float(risk_scale)) / len(target_set)
         cost_skips = []
         for symbol in target_list:
             sec = self.Securities.get(symbol)
@@ -342,7 +350,8 @@ class SweetWaterPhase1(QCAlgorithm):
             current_qty = float(getattr(self.Portfolio[symbol], "Quantity", 0.0) or 0.0)
             current_w = (current_qty * price) / max(equity, 1e-9)
             delta_w = target_w - current_w
-            if abs(delta_w) < min_delta:
+            required_delta = min_delta if symbol in held_set else (min_delta * 0.5)
+            if abs(delta_w) < required_delta:
                 continue
             notional = abs(delta_w) * equity
             qty = round_quantity(self, symbol, notional / max(price, 1e-9))
@@ -426,11 +435,23 @@ class SweetWaterPhase1(QCAlgorithm):
         state, scored = self._score_candidates(data)
         if state == "risk_off":
             liquidate_all_positions(self, tag="RiskOff")
-        if self._rebalance_due():
-            if state == "risk_on":
-                self._rebalance_portfolio(scored)
-            else:
-                self.Debug("REB risk_off cash_target=true")
+        elif self._rebalance_due():
+            risk_scale = 1.0 if state == "risk_on" else 0.5
+            self._rebalance_portfolio(scored, risk_scale=risk_scale)
+
+        bars_since_trade = self._bar_count - self._last_trade_bar
+        if (
+            state == "risk_on"
+            and bars_since_trade > 168
+            and scored
+            and (self._bar_count - self._last_no_trade_log_bar >= 24)
+        ):
+            top_symbol, top_score, _ = scored[0]
+            self.Debug(
+                f"NO_TRADE_HB bars_since_trade={bars_since_trade} "
+                f"top_candidate={top_symbol.Value} top_score={top_score:.3f} state={state}"
+            )
+            self._last_no_trade_log_bar = self._bar_count
 
         for escalated in escalate_stale_orders(self):
             self.reporter.on_order_event({"status": "escalated", "symbol": getattr(escalated, "Value", str(escalated))})
@@ -438,6 +459,9 @@ class SweetWaterPhase1(QCAlgorithm):
         self.reporter.tick(state)
 
     def OnOrderEvent(self, event):  # pragma: no cover
+        status = getattr(event, "Status", None)
+        if status in ("Filled", 3) or str(getattr(event, "Status", "")).lower() == "filled":
+            self._last_trade_bar = self._bar_count
         self.reporter.on_order_event(self, event)
 
     def OnEndOfAlgorithm(self):  # pragma: no cover

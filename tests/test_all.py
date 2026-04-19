@@ -40,8 +40,8 @@ class TestPhaseRequirements:
 
     class _SymbolProps:
         MinimumPriceVariation = 0.01
-        LotSize = 0.00000001
-        MinimumOrderSize = 0.00000001
+        LotSize = 0.0001
+        MinimumOrderSize = 0.0001
 
     class _Security:
         def __init__(self, symbol, price):

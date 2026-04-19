@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 
 try:  # pragma: no cover
     from AlgorithmImports import OrderDirection, OrderType
@@ -116,7 +116,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
     ticket = algo.LimitOrder(symbol, quantity, limit_price, tag=tag)
     algo._submitted_orders[symbol] = {
         "order_id": ticket.OrderId,
-        "time": getattr(algo, "Time", datetime.utcnow()),
+        "time": getattr(algo, "Time", datetime.now(timezone.utc)),
         "quantity": float(quantity),
         "intent": "entry" if quantity > 0 else "exit",
     }

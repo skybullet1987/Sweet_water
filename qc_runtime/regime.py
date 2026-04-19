@@ -83,7 +83,7 @@ class RegimeEngine:
             return
         self._model = _ModelState(model=None, labels=None)
 
-    def update(self, btc_return: float, btc_vol: float, breadth: float, btc_above_ema200: bool = True) -> None:
+    def update(self, btc_return: float, btc_vol: float, breadth: float, btc_above_ema200: bool = False) -> None:
         self._x.append([float(btc_return), float(btc_vol), float(breadth)])
         self._ret.append(float(btc_return))
         self._btc_below_ema = not bool(btc_above_ema200)

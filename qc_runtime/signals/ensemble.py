@@ -9,6 +9,11 @@ from .vol_cone_breakout import VolConeBreakoutSignal
 
 
 class MicrostructureSignalEnsemble:
+    W_CVD = 0.30
+    W_OFI = 0.30
+    W_VOLC = 0.20
+    W_ROT = 0.20
+
     def __init__(self, algo=None, tracked_symbols: list[str] | None = None) -> None:
         self.cvd_divergence = CvdDivergenceSignal()
         self.order_flow_imbalance = OrderFlowImbalanceSignal()
@@ -41,12 +46,16 @@ class MicrostructureSignalEnsemble:
         }
 
     def composite_score(self, symbol) -> float:
+        return float(self.snapshot(symbol)["final"])
+
+    def snapshot(self, symbol) -> dict[str, float | str]:
         parts = self.component_scores(symbol)
-        raw = 0.30 * parts["cvd"] + 0.30 * parts["ofi"] + 0.20 * parts["volc"] + 0.20 * parts["rot"]
-        raw *= self.stablecoin_liquidity.multiplier()
-        if self.hurst_regime.regime(symbol) == "random":
-            return 0.0
-        return self._clamp(raw)
+        mult = self.stablecoin_liquidity.multiplier()
+        raw = self.W_CVD * parts["cvd"] + self.W_OFI * parts["ofi"] + self.W_VOLC * parts["volc"] + self.W_ROT * parts["rot"]
+        h = self.hurst_regime.hurst(symbol)
+        regime = self.hurst_regime.regime(symbol)
+        final = 0.0 if regime == "random" else self._clamp(raw * mult)
+        return {"cvd": parts["cvd"], "ofi": parts["ofi"], "volc": parts["volc"], "rot": parts["rot"], "mult": mult, "raw": raw, "hurst": h, "hurst_regime": regime, "final": final}
 
     def init_status(self) -> dict[str, str]:
         return {

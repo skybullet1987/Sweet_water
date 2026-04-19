@@ -54,7 +54,7 @@ class StablecoinLiquidityOverlay:
 
     @staticmethod
     def _fetch_json(url: str):
-        with urlopen(url, timeout=4) as resp:  # nosec B310
+        with urlopen(url, timeout=4) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     def _fetch_weekly_pct(self) -> float:
@@ -81,7 +81,7 @@ class StablecoinLiquidityOverlay:
             self._last_update = today
             self._save_cache()
         except Exception as exc:  # pragma: no cover
-            self._debug(f"stablecoin_liquidity fallback: {exc}")
+            self._debug(f"stablecoin_liquidity fallback: {type(exc).__name__}:{exc!r}")
             self._last_update = today
 
     def multiplier(self) -> float:

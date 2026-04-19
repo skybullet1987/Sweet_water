@@ -119,8 +119,8 @@ class SweetWaterPhase1(QCAlgorithm):
             try:
                 tick_obj = self.AddCrypto(ticker, Resolution.Tick, Market.Kraken)
                 self._configure_security_models(tick_obj)
-            except Exception:
-                pass
+            except Exception as exc:
+                self.Debug(f"SIG tick_subscribe_fallback symbol={ticker} err={type(exc).__name__}:{exc!r}")
         self._configure_security_models(sec_obj)
         self.symbol_by_ticker[ticker] = sec_obj.Symbol
         return sec_obj.Symbol
@@ -342,22 +342,19 @@ class SweetWaterPhase1(QCAlgorithm):
         candidates = []
         gate_ok = self.regime_engine.gates_pass(breadth)
         for symbol in self.symbols:
-            parts = self.micro_ensemble.component_scores(symbol)
-            mult = self.micro_ensemble.stablecoin_liquidity.multiplier()
-            raw = 0.30 * parts["cvd"] + 0.30 * parts["ofi"] + 0.20 * parts["volc"] + 0.20 * parts["rot"]
-            h = self.micro_ensemble.hurst_regime.hurst(symbol)
-            final = self.micro_ensemble.composite_score(symbol)
+            snap = self.micro_ensemble.snapshot(symbol)
+            composite_score = float(snap["final"])
             invested = is_invested_not_dust(self, symbol)
             action = "hold"
-            if invested and abs(final) < float(self.config.micro_flatten_threshold):
+            if invested and abs(composite_score) < float(self.config.micro_flatten_threshold):
                 if len(self.Transactions.GetOpenOrders(symbol)) == 0 and smart_liquidate(self, symbol, tag="SignalFlat"):
                     action = "flatten"
             elif (
                 gate_ok
                 and not invested
                 and len(self.Transactions.GetOpenOrders(symbol)) == 0
-                and final > 0
-                and abs(final) > float(self.config.micro_entry_threshold)
+                and composite_score > 0
+                and abs(composite_score) > float(self.config.micro_entry_threshold)
             ):
                 feats = self.feature_engine.current_features(symbol.Value)
                 atr_values = [
@@ -367,7 +364,7 @@ class SweetWaterPhase1(QCAlgorithm):
                 ] or [max(float(feats.get("atr", 1.0)), 1e-6)]
                 target = self.sizer.size_for_trade(
                     symbol.Value,
-                    final,
+                    composite_score,
                     {
                         "equity": equity,
                         "gross_exposure": gross,
@@ -390,13 +387,14 @@ class SweetWaterPhase1(QCAlgorithm):
                     sec = self.Securities[symbol]
                     notional = equity * abs(decision.adjusted_target_weight)
                     fee_model = getattr(sec, "FeeModel", None)
-                    if self.sizer.passes_cost_gate(symbol, final, notional, fee_model, is_limit=True):
-                        candidates.append((symbol, final, decision.adjusted_target_weight))
+                    if self.sizer.passes_cost_gate(symbol, composite_score, notional, fee_model, is_limit=True):
+                        candidates.append((symbol, composite_score, decision.adjusted_target_weight))
                         action = "enter"
             self.Debug(
                 "SIG "
-                f"sym={symbol.Value} cvd={parts['cvd']:+.2f} ofi={parts['ofi']:+.2f} vol={parts['volc']:+.2f} "
-                f"rot={parts['rot']:+.2f} mult={mult:.2f} H={h:.2f} raw={raw:+.2f} final={final:+.2f} action={action}"
+                f"sym={symbol.Value} cvd={float(snap['cvd']):+.2f} ofi={float(snap['ofi']):+.2f} vol={float(snap['volc']):+.2f} "
+                f"rot={float(snap['rot']):+.2f} mult={float(snap['mult']):.2f} H={float(snap['hurst']):.2f} "
+                f"raw={float(snap['raw']):+.2f} final={composite_score:+.2f} action={action}"
             )
         return state, candidates
 

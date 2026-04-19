@@ -32,6 +32,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     from .config import CONFIG, StrategyConfig  # type: ignore
 
+POSITION_TOLERANCE = 1e-9
+
 
 def get_effective_round_trip_fee(algo) -> float:
     return max(0.0, min(float(getattr(algo, "expected_round_trip_fees", CONFIG.expected_round_trip_fees)), 0.05))
@@ -113,7 +115,7 @@ def _safe_submit_order(algo, symbol, quantity: float, submit_fn):
         current = 0.0
     if qty < 0:
         post = current + qty
-        if current <= 0 or post < -1e-9:
+        if current <= 0 or post < -POSITION_TOLERANCE:
             sym = getattr(symbol, "Value", str(symbol))
             debug_limited(algo, f"ORD key=blocked_short symbol={sym} qty={qty:.8f} hold={current:.8f}")
             return None

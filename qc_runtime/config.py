@@ -29,8 +29,8 @@ class StrategyConfig:
     expected_round_trip_fees: float = 0.0065
     cost_gate_multiplier: float = 2.5
     # cost_gate_multiplier is retained for legacy paths; edge_cost_multiplier is used by the new cross-sectional momentum gate.
-    edge_cost_multiplier: float = 1.5
-    edge_scale: float = 0.02
+    edge_cost_multiplier: float = 1.2
+    edge_scale: float = 0.005
     assumed_spread_bps: float = 12.0
     assumed_slippage_bps: float = 8.0
     min_rebalance_weight_delta: float = 0.015
@@ -49,7 +49,7 @@ class StrategyConfig:
     chop_return_threshold: float = 0.002
 
     # Scoring
-    score_threshold: float = 0.20
+    score_threshold: float = 0.75
     chop_threshold_multiplier: float = 1.5
     cross_section_weight: float = 0.40
     micro_entry_threshold: float = 0.45
@@ -71,7 +71,7 @@ class StrategyConfig:
     feature_min_bars: int = 60
     regime_vol_window: int = 24
     stale_order_bars: int = 3
-    score_clip_value: float = 5.0
+    score_clip_value: float = 3.0
     min_rv_floor: float = 1e-4
     score_mom21_weight: float = 0.6
     score_mom63_weight: float = 0.4

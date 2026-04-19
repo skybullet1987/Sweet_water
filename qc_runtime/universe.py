@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Callable
 
@@ -8,7 +9,17 @@ from config import CONFIG
 
 REFERENCE_SYMBOLS = ("BTCUSD",)
 DEFAULT_UNIVERSE_SIZE = 30
-BLACKLIST: frozenset[str] = frozenset({"SKLUSD"})
+MIN_HOURLY_DOLLAR_VOLUME = 2_000_000.0
+BLACKLIST: frozenset[str] = frozenset({
+    "SKLUSD",
+    "PEPEUSD",
+    "SHIBUSD",
+    "BONKUSD",
+    "FLOKIUSD",
+    "WIFUSD",
+    "BANANAS31USD",
+    "CHILLHOUSEUSD",
+})
 
 KRAKEN_SAFE_LIST = (
     "BTCUSD",
@@ -114,7 +125,12 @@ def select_universe(history_provider: Callable[[str, object, object], pd.DataFra
             liquidity.append((symbol, 0.0))
             continue
         liquidity.append((symbol, _median_dollar_volume(frame)))
-    ranked = [s for s, _ in sorted(liquidity, key=lambda x: x[1], reverse=True)]
+    liquid_filtered = [(s, v) for s, v in liquidity if v >= MIN_HOURLY_DOLLAR_VOLUME]
+    if liquid_filtered:
+        ranked = [s for s, _ in sorted(liquid_filtered, key=lambda x: x[1], reverse=True)]
+    else:
+        ranked = [s for s, _ in sorted(liquidity, key=lambda x: x[1], reverse=True)]
+        logging.warning("UNIVERSE liquidity_filter_empty fallback=raw_rank")
     configured = int(getattr(CONFIG, "universe_size", DEFAULT_UNIVERSE_SIZE) or DEFAULT_UNIVERSE_SIZE)
     limit = max(1, min(configured, len(ranked)))
     return ranked[:limit]

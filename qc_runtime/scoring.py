@@ -25,9 +25,26 @@ class Scorer:
             "flow": 1.0 / 4.0,
         }
 
-    def cross_sectional_momentum_score(self, features: dict[str, float]) -> dict[str, float | str]:
-        rv_floor = max(float(getattr(self.config, "min_rv_floor", 1e-4) or 1e-4), 1e-9)
+    def cross_sectional_momentum_score(
+        self, features: dict[str, float], cross_section_zscore: float | None = None
+    ) -> dict[str, float | str]:
         clip = max(float(getattr(self.config, "score_clip_value", 5.0) or 5.0), 1.0)
+        if cross_section_zscore is not None:
+            score = self._clamp(float(cross_section_zscore), -clip, clip)
+            return {
+                "cvd": 0.0,
+                "ofi": 0.0,
+                "volc": 0.0,
+                "rot": 0.0,
+                "mult": 1.0,
+                "raw": score,
+                "vr": 1.0,
+                "vr_regime": "cs_z",
+                "hurst": 0.5,
+                "hurst_regime": "cs_z",
+                "final": score,
+            }
+        rv_floor = max(float(getattr(self.config, "min_rv_floor", 1e-4) or 1e-4), 1e-9)
         mom_21d = float(features.get("mom_21d", 0.0) or 0.0)
         mom_63d = float(features.get("mom_63d", 0.0) or 0.0)
         rv_21d = max(float(features.get("rv_21d", 0.0) or 0.0), rv_floor)
@@ -163,6 +180,7 @@ class Scorer:
         breadth=0.5,
         signal_stack=None,
         regime_engine=None,
+        cross_section_zscore=None,
     ):
         mode = str(getattr(self.config, "signal_mode", "cross_sectional_momentum"))
         if mode == "legacy":
@@ -190,4 +208,4 @@ class Scorer:
             }
         if mode == "microstructure":
             return self.composite_score(symbol, signal_stack, regime_engine, breadth=breadth)
-        return self.cross_sectional_momentum_score(features)
+        return self.cross_sectional_momentum_score(features, cross_section_zscore=cross_section_zscore)

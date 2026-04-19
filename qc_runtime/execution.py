@@ -225,6 +225,9 @@ def _safe_submit_order(algo, symbol, quantity: float, submit_fn):
 def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry", force_market=False, signal_score=None):
     _ = timeout_seconds, signal_score
     quantity = float(quantity or 0.0)
+    abandoned_dust = getattr(algo, "_abandoned_dust", None)
+    if quantity < 0 and abandoned_dust is not None and symbol in abandoned_dust:
+        return None
     if quantity < 0:
         hold = _holding_qty(algo, symbol)
         reserved = reserved_qty(algo, symbol)
@@ -324,18 +327,43 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
     qty = round_quantity(algo, symbol, qty)
     if qty <= 0:
         return False
+    min_qty = get_min_quantity(algo, symbol)
+    min_notional = get_min_notional_usd(algo, symbol)
+    price = float(getattr(algo.Securities.get(symbol), "Price", 0.0) or 0.0)
+    if qty < min_qty or (price > 0 and qty * price < min_notional):
+        if not hasattr(algo, "_abandoned_dust"):
+            algo._abandoned_dust = set()
+        algo._abandoned_dust.add(symbol)
+        _log_once_per_hour(
+            algo,
+            f"dust_skip:{getattr(symbol, 'Value', symbol)}",
+            (
+                "DUST key=skip "
+                f"sym={getattr(symbol, 'Value', symbol)} "
+                f"qty={qty:.10f} min_qty={min_qty:.10f} "
+                f"notional={qty * price:.6f} min_notional={min_notional:.4f}"
+            ),
+        )
+        return False
     ticket = place_limit_or_market(algo, symbol, -qty, tag=tag)
     return ticket is not None
 
 
 def liquidate_all_positions(algo, tag="Liquidate"):
+    if not hasattr(algo, "_abandoned_dust"):
+        algo._abandoned_dust = set()
     closed = []
     for item in list(getattr(algo, "Portfolio", [])):
         symbol = getattr(item, "Key", item)
+        if symbol in algo._abandoned_dust:
+            continue
         try:
             qty = float(getattr(algo.Portfolio[symbol], "Quantity", 0.0) or 0.0)
         except Exception:
             qty = 0.0
+        if not is_invested_not_dust(algo, symbol):
+            algo._abandoned_dust.add(symbol)
+            continue
         if qty > 0 and smart_liquidate(algo, symbol, tag=tag):
             closed.append(symbol)
     return closed

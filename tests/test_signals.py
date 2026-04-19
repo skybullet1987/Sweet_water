@@ -1,21 +1,20 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 QC_RUNTIME = REPO_ROOT / "qc_runtime"
 if str(QC_RUNTIME) not in sys.path:
     sys.path.insert(0, str(QC_RUNTIME))
 
-from signals.cvd_divergence import CvdDivergenceSignal
-from signals.hurst_regime import HurstRegimeSignal
-from signals.order_flow_imbalance import OrderFlowImbalanceSignal
-from signals.vol_cone_breakout import VolConeBreakoutSignal
+from features import CvdDivergenceFeature, OrderFlowImbalanceFeature, VolConeBreakoutFeature
+from regime import HurstRegimeModel
 
 
 class _Symbol:
@@ -43,7 +42,7 @@ class _Quote:
 
 
 def test_cvd_bearish_divergence_detected():
-    sig = CvdDivergenceSignal()
+    sig = CvdDivergenceFeature()
     sym = _Symbol("ADAUSD")
     t = datetime(2025, 1, 1, tzinfo=timezone.utc)
     for i in range(25):
@@ -53,7 +52,7 @@ def test_cvd_bearish_divergence_detected():
 
 
 def test_garman_klass_value_matches_formula():
-    gk = VolConeBreakoutSignal.gk_value(100.0, 105.0, 95.0, 102.0)
+    gk = VolConeBreakoutFeature.gk_value(100.0, 105.0, 95.0, 102.0)
     expected = 0.5 * (math.log(105.0 / 95.0) ** 2) - (2.0 * math.log(2.0) - 1.0) * (math.log(102.0 / 100.0) ** 2)
     assert abs(gk - expected) < 1e-12
 
@@ -66,16 +65,42 @@ def test_hurst_distinguishes_trend_vs_mean_reversion():
     for i in range(1, n):
         trend[i] = 0.8 * trend[i - 1] + rng.normal(0, 0.01)
         meanrev[i] = -0.8 * meanrev[i - 1] + rng.normal(0, 0.01)
-    h_trend = HurstRegimeSignal.hurst_rs(trend[200:])
-    h_mean = HurstRegimeSignal.hurst_rs(meanrev[200:])
+    h_trend = HurstRegimeModel.hurst_rs(trend[200:])
+    h_mean = HurstRegimeModel.hurst_rs(meanrev[200:])
     assert h_trend > h_mean
 
 
 def test_ofi_sign_convention_positive_bid_improves():
-    sig = OrderFlowImbalanceSignal()
+    sig = OrderFlowImbalanceFeature()
     sym = _Symbol("ETHUSD")
     t = datetime(2025, 1, 1, tzinfo=timezone.utc)
     sig.update(sym, _Quote(t, 100.0, 10.0, 101.0, 11.0))
     sig.update(sym, _Quote(t + timedelta(minutes=1), 100.5, 12.0, 100.9, 9.0))
     event = sig._event_ofi("ETHUSD", 100.6, 15.0, 100.8, 8.0)
     assert event > 0
+
+
+def test_module_count_and_size():
+    files = sorted([x for x in os.listdir(QC_RUNTIME) if x.endswith(".py")])
+    expected = {
+        "main.py",
+        "config.py",
+        "features.py",
+        "regime.py",
+        "scoring.py",
+        "sizing.py",
+        "execution.py",
+        "risk.py",
+        "reporting.py",
+        "universe.py",
+    }
+    assert set(files) == expected
+    assert len(files) == 10
+    assert not any(p.is_dir() and p.name != "__pycache__" for p in QC_RUNTIME.iterdir())
+    total_loc = 0
+    for f in files:
+        p = QC_RUNTIME / f
+        assert p.stat().st_size < 60_000
+        with p.open("r", encoding="utf-8") as fh:
+            total_loc += sum(1 for _ in fh)
+    assert total_loc < 6_000

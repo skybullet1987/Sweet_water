@@ -38,25 +38,22 @@ except ImportError:  # pragma: no cover
 from config import CONFIG
 from execution import (
     KrakenTieredFeeModel,
+    PositionState,
     RealisticCryptoSlippage,
     execute_regime_entries,
     escalate_stale_orders,
-    is_invested_not_dust,
     liquidate_all_positions,
     manage_open_positions,
+    position_status,
     smart_liquidate,
 )
-from features import FeatureEngine
+from features import FeatureEngine, SignalFeatureStack
 from regime import RegimeEngine
 from reporting import Reporter
 from risk import DrawdownCircuitBreaker, RiskManager
 from scoring import Scorer
 from sizing import Sizer
 from universe import KRAKEN_SAFE_LIST, REFERENCE_SYMBOLS, select_universe
-try:
-    from signals.ensemble import MicrostructureSignalEnsemble
-except ModuleNotFoundError:  # pragma: no cover
-    from .signals.ensemble import MicrostructureSignalEnsemble  # type: ignore
 
 
 class SweetWaterPhase1(QCAlgorithm):
@@ -71,8 +68,8 @@ class SweetWaterPhase1(QCAlgorithm):
 
         self.feature_engine = FeatureEngine()
         self.regime_engine = RegimeEngine(self.config)
-        self.scorer = Scorer()
-        self.micro_ensemble = MicrostructureSignalEnsemble(self)
+        self.scorer = Scorer(self.config)
+        self.signal_features = SignalFeatureStack(self)
         self.sizer = Sizer(self.config)
         self.risk = RiskManager(self.config)
         self.reporter = Reporter(self.config)
@@ -99,15 +96,16 @@ class SweetWaterPhase1(QCAlgorithm):
 
         initial_universe = select_universe(self._history_provider, pd.Timestamp.now(tz="UTC"))
         self.symbols = [self.symbol_by_ticker[t] for t in initial_universe if t in self.symbol_by_ticker]
-        self.micro_ensemble.set_tracked_symbols(
+        self.signal_features.set_tracked_symbols(
             [s.Value for s in [*self.reference_symbols, *self.symbols] if hasattr(s, "Value")]
         )
         now = self.Time if hasattr(self, "Time") else pd.Timestamp.now(tz="UTC")
         self._last_rebalance_month = (int(now.year), int(now.month))
-        status = self.micro_ensemble.init_status()
+        status = self.signal_features.init_status()
         self.Debug(
             "SIG init "
             + " ".join([f"{k}={v}" for k, v in status.items()])
+            + " hurst=R/S(500)"
             + f" mode={getattr(self.config, 'signal_mode', 'microstructure')}"
         )
 
@@ -160,10 +158,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self._entry_signal_combos = {}
         self._last_cash_gate_log = None
 
-        self.entry_prices = {}
-        self.highest_close = {}
-        self.entry_atrs = {}
-        self.entry_times = {}
+        self.position_state: dict[object, PositionState] = {}
         self.entry_volumes = {}
         self.peak_value = None
         self.winning_trades = 0
@@ -194,7 +189,7 @@ class SweetWaterPhase1(QCAlgorithm):
         for ticker in KRAKEN_SAFE_LIST:
             self._subscribe_symbol(ticker)
         self.symbols = [self.symbol_by_ticker[t] for t in select_universe(self._history_provider, self.Time) if t in self.symbol_by_ticker]
-        self.micro_ensemble.set_tracked_symbols(
+        self.signal_features.set_tracked_symbols(
             [s.Value for s in [*self.reference_symbols, *self.symbols] if hasattr(s, "Value")]
         )
         self._last_rebalance_month = current_month
@@ -222,145 +217,51 @@ class SweetWaterPhase1(QCAlgorithm):
         state = self.regime_engine.current_state()
         self.market_regime = state
         self.sizer.update_returns(btc_ret)
-        if getattr(self.config, "signal_mode", "microstructure") == "legacy":
-            return self._score_candidates_legacy(state, btc_ret, breadth)
-        return self._score_candidates_microstructure(state, breadth)
-
-    def _ingest_data(self, data: Slice):
-        btc_ret = 0.0
-        breadth_votes = []
-        feed_symbols = [*self.reference_symbols, *self.symbols]
-        seen = set()
-        for symbol in feed_symbols:
-            if symbol in seen:
-                continue
-            seen.add(symbol)
-            bar = data.Bars.get(symbol)
-            if bar is None:
-                continue
-            self._update_symbol_series(symbol, bar)
-            self.feature_engine.update(
-                {
-                    "symbol": symbol.Value,
-                    "open": bar.Open,
-                    "high": bar.High,
-                    "low": bar.Low,
-                    "close": bar.Close,
-                    "volume": bar.Volume,
-                }
-            )
-            if getattr(self.config, "signal_mode", "microstructure") == "microstructure":
-                self.micro_ensemble.update(symbol, bar)
-                ticks = getattr(data, "Ticks", {}).get(symbol, []) if hasattr(data, "Ticks") else []
-                for tick in ticks:
-                    self.micro_ensemble.update(symbol, tick)
-            feats = self.feature_engine.current_features(symbol.Value)
-            if feats:
-                breadth_votes.append(1.0 if feats.get("ema20", 0.0) > feats.get("ema50", 0.0) else 0.0)
-            if symbol.Value == "BTCUSD":
-                btc_ret = math.log(max(bar.Close, 1e-9) / max(bar.Open, 1e-9))
-        breadth = sum(breadth_votes) / len(breadth_votes) if breadth_votes else 0.5
-        return btc_ret, breadth
-
-    def _score_candidates_legacy(self, state: str, btc_ret: float, breadth: float):
-        equity, gross = self._portfolio_state()
-        candidates = []
-        if not self.regime_engine.gates_pass(breadth):
-            return state, candidates
-        threshold = self.config.score_threshold * (
-            self.config.chop_threshold_multiplier if state == "chop" else 1.0
+        entry_threshold = (
+            self.config.score_threshold * (self.config.chop_threshold_multiplier if state == "chop" else 1.0)
+            if self.config.signal_mode == "legacy"
+            else self.config.micro_entry_threshold
         )
-        symbol_scores = []
-        for symbol in self.symbols:
-            if is_invested_not_dust(self, symbol):
-                continue
-            if len(self.Transactions.GetOpenOrders(symbol)) > 0:
-                continue
-            feats = self.feature_engine.current_features(symbol.Value)
-            if not feats:
-                continue
-            symbol_scores.append((symbol, feats))
+        equity, gross = self._portfolio_state()
+        gate_ok = self.regime_engine.gates_pass(breadth)
+        candidates = []
+        symbol_scores = [(symbol, self.feature_engine.current_features(symbol.Value)) for symbol in self.symbols]
+        symbol_scores = [(symbol, feats) for symbol, feats in symbol_scores if feats]
         mom24 = [float(feats.get("mom_24", 0.0)) for _, feats in symbol_scores]
         mom168 = [float(feats.get("mom_168", 0.0)) for _, feats in symbol_scores]
+
         def _rank(values, idx):
             if not values:
                 return 0.5
             v = values[idx]
             return (sum(1 for x in values if x < v) + 0.5 * sum(1 for x in values if x == v)) / len(values)
+
         for idx, (symbol, feats) in enumerate(symbol_scores):
-            score = self.scorer.score(
-                symbol.Value,
-                feats,
-                state,
-                {"btc_trend": btc_ret},
+            snap = self.scorer.score(
+                symbol=symbol,
+                features=feats,
+                regime_state=state,
+                btc_context={"btc_trend": btc_ret},
                 rank_24h=_rank(mom24, idx),
                 rank_168h=_rank(mom168, idx),
-                cross_section_weight=self.config.cross_section_weight,
+                signal_stack=self.signal_features,
+                regime_engine=self.regime_engine,
             )
-            if self.long_only and float(score) < 0:
-                continue
-            if abs(score) < threshold:
-                continue
-            atr_values = [
-                float(self.feature_engine.current_features(sym.Value).get("atr", 1.0))
-                for sym in self.symbols
-                if is_invested_not_dust(self, sym)
-            ] or [max(float(feats.get("atr", 1.0)), 1e-6)]
-            target = self.sizer.size_for_trade(
-                symbol.Value,
-                score,
-                {
-                    "equity": equity,
-                    "gross_exposure": gross,
-                    "realized_vol_annual": float(feats.get("realized_vol_30", self.config.target_annual_vol)),
-                    "atr": float(feats.get("atr", 1.0)),
-                    "open_position_atrs": atr_values,
-                },
-            )
-            decision = self.risk.evaluate(
-                {
-                    "symbol": symbol.Value,
-                    "target_weight": target,
-                    "equity": equity,
-                    "gross_exposure": gross,
-                    "net_exposure": 0.0,
-                    "correlation": 0.0,
-                }
-            )
-            if not decision.approved:
-                continue
-            sec = self.Securities[symbol]
-            notional = equity * abs(decision.adjusted_target_weight)
-            fee_model = getattr(sec, "FeeModel", None)
-            if not self.sizer.passes_cost_gate(symbol, score, notional, fee_model, is_limit=True):
-                continue
-            candidates.append((symbol, score, decision.adjusted_target_weight))
-        return state, candidates
-
-    def _score_candidates_microstructure(self, state: str, breadth: float):
-        equity, gross = self._portfolio_state()
-        candidates = []
-        gate_ok = self.regime_engine.gates_pass(breadth)
-        for symbol in self.symbols:
-            snap = self.micro_ensemble.snapshot(symbol)
             composite_score = float(snap["final"])
-            invested = is_invested_not_dust(self, symbol)
             action = "hold"
-            if invested and abs(composite_score) < float(self.config.micro_flatten_threshold):
-                if len(self.Transactions.GetOpenOrders(symbol)) == 0 and smart_liquidate(self, symbol, tag="Flatten"):
+            if position_status(self, symbol) == "long" and abs(composite_score) < float(self.config.micro_flatten_threshold):
+                if smart_liquidate(self, symbol, tag="Flatten"):
                     action = "flatten"
             elif (
                 gate_ok
-                and not invested
-                and len(self.Transactions.GetOpenOrders(symbol)) == 0
+                and position_status(self, symbol) == "flat"
                 and composite_score > 0
-                and abs(composite_score) > float(self.config.micro_entry_threshold)
+                and abs(composite_score) > float(entry_threshold)
             ):
-                feats = self.feature_engine.current_features(symbol.Value)
                 atr_values = [
                     float(self.feature_engine.current_features(sym.Value).get("atr", 1.0))
                     for sym in self.symbols
-                    if is_invested_not_dust(self, sym)
+                    if position_status(self, sym) == "long"
                 ] or [max(float(feats.get("atr", 1.0)), 1e-6)]
                 target = self.sizer.size_for_trade(
                     symbol.Value,
@@ -397,6 +298,43 @@ class SweetWaterPhase1(QCAlgorithm):
                 f"raw={float(snap['raw']):+.2f} final={composite_score:+.2f} action={action}"
             )
         return state, candidates
+
+    def _ingest_data(self, data: Slice):
+        btc_ret = 0.0
+        breadth_votes = []
+        feed_symbols = [*self.reference_symbols, *self.symbols]
+        seen = set()
+        for symbol in feed_symbols:
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            bar = data.Bars.get(symbol)
+            if bar is None:
+                continue
+            self._update_symbol_series(symbol, bar)
+            self.feature_engine.update(
+                {
+                    "symbol": symbol.Value,
+                    "open": bar.Open,
+                    "high": bar.High,
+                    "low": bar.Low,
+                    "close": bar.Close,
+                    "volume": bar.Volume,
+                }
+            )
+            if getattr(self.config, "signal_mode", "microstructure") == "microstructure":
+                self.signal_features.update(symbol, bar)
+                self.regime_engine.hurst.update(symbol, bar)
+                ticks = getattr(data, "Ticks", {}).get(symbol, []) if hasattr(data, "Ticks") else []
+                for tick in ticks:
+                    self.signal_features.update(symbol, tick)
+            feats = self.feature_engine.current_features(symbol.Value)
+            if feats:
+                breadth_votes.append(1.0 if feats.get("ema20", 0.0) > feats.get("ema50", 0.0) else 0.0)
+            if symbol.Value == "BTCUSD":
+                btc_ret = math.log(max(bar.Close, 1e-9) / max(bar.Open, 1e-9))
+        breadth = sum(breadth_votes) / len(breadth_votes) if breadth_votes else 0.5
+        return btc_ret, breadth
 
     def OnData(self, data: Slice):  # pragma: no cover
         self._ensure_monthly_universe()

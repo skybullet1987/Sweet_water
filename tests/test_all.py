@@ -13,7 +13,15 @@ if str(QC_RUNTIME) not in sys.path:
     sys.path.insert(0, str(QC_RUNTIME))
 
 from config import CONFIG, StrategyConfig
-from execution import Executor, PositionState, execute_regime_entries, manage_open_positions
+from execution import (
+    Executor,
+    PositionState,
+    execute_regime_entries,
+    manage_open_positions,
+    place_limit_or_market,
+    reserved_qty,
+    smart_liquidate,
+)
 from main import SweetWaterPhase1
 from reporting import walk_forward_run
 from scoring import Scorer
@@ -303,6 +311,44 @@ class TestPhaseRequirements:
         manage_open_positions(algo, self._make_slice(algo, symbol, 107.0, 107.2, 101.5, 102.0))
         assert any(o[3] == "Chandelier" for o in algo._order_calls)
 
+    def test_reserved_qty_blocks_duplicate_exit(self):
+        algo = self._build_algo()
+        algo.Initialize()
+        symbol = algo.symbol_by_ticker["SOLUSD"]
+        hold = algo.Portfolio[symbol]
+        hold.Quantity = 1.0
+        hold.Invested = True
+        algo.LimitOrder(symbol, -1.0, 100.0, tag="TP")
+
+        assert reserved_qty(algo, symbol) >= 1.0
+        before = len(algo._order_calls)
+        assert not smart_liquidate(algo, symbol, tag="SL")
+        assert len(algo._order_calls) == before
+
+    def test_time_stop_respects_min_hold(self):
+        algo = self._build_algo()
+        algo.Initialize()
+        symbol = algo.symbol_by_ticker["SOLUSD"]
+        hold = algo.Portfolio[symbol]
+        hold.Quantity = 1.0
+        hold.Invested = True
+        algo.position_state[symbol] = PositionState(100.0, 100.0, 2.0, algo.Time - timedelta(hours=2))
+
+        manage_open_positions(algo, self._make_slice(algo, symbol, 100, 100.5, 99.8, 100.1))
+        assert not any(o[2] < 0 and o[3] == "TimeStop" for o in algo._order_calls)
+
+    def test_daily_order_cap_blocks_extra_orders(self):
+        algo = self._build_algo()
+        algo.Initialize()
+        symbol = algo.symbol_by_ticker["SOLUSD"]
+        for i in range(6):
+            algo.Time = datetime(2025, 1, 6, i, tzinfo=timezone.utc)
+            assert place_limit_or_market(algo, symbol, 0.01, force_market=True, tag=f"manual{i}") is not None
+        before = len(algo._order_calls)
+        algo.Time = datetime(2025, 1, 6, 7, tzinfo=timezone.utc)
+        assert place_limit_or_market(algo, symbol, 0.01, force_market=True, tag="manual7") is None
+        assert len(algo._order_calls) == before
+
     def test_vol_stress_gate_blocks_entries(self):
         algo = self._build_algo()
         algo.Initialize()
@@ -375,6 +421,33 @@ def test_heartbeat_logs_every_24_bars():
         algo.Time = datetime(2025, 1, 4, i, tzinfo=timezone.utc)
         algo.OnData(t._make_slice(algo, symbol, 100.0, 101.0, 99.0, 100.0))
     assert any(msg.startswith("HB t=") for msg in algo._debug_logs)
+
+
+def test_hold_sig_logs_are_throttled():
+    t = TestPhaseRequirements()
+    algo = t._build_algo()
+    algo.Initialize()
+    algo.config = StrategyConfig(sig_hold_log_every_bars=3)
+    symbol = algo.symbol_by_ticker["SOLUSD"]
+    t._warm_and_configure_single_symbol(algo, symbol)
+    algo.scorer.score = lambda *_args, **_kwargs: {
+        "cvd": 0.0,
+        "ofi": 0.0,
+        "volc": 0.0,
+        "rot": 0.0,
+        "mult": 1.0,
+        "hurst": 0.6,
+        "hurst_regime": "trend",
+        "raw": 0.0,
+        "final": 0.0,
+    }
+    algo.log_budget = 1000
+    algo._debug_logs = []
+    for i in range(6):
+        algo.Time = datetime(2025, 1, 7, i, tzinfo=timezone.utc)
+        algo.OnData(t._make_slice(algo, symbol, 100.0, 101.0, 99.0, 100.0))
+    sig_lines = [msg for msg in algo._debug_logs if msg.startswith("SIG sym=")]
+    assert len(sig_lines) <= 2
 
 def test_cross_section_score_orders_winners_first():
     s = Scorer()

@@ -159,6 +159,8 @@ class SweetWaterPhase1(QCAlgorithm):
         self._entry_signal_combos = {}
         self._last_cash_gate_log = None
         self._bar_count = 0
+        self._last_sig_hold_log_bar = {}
+        self._last_daily_summary_date = None
 
         self.position_state: dict[object, PositionState] = {}
         self.entry_volumes = {}
@@ -252,8 +254,13 @@ class SweetWaterPhase1(QCAlgorithm):
             )
             composite_score = float(snap["final"])
             action = "hold"
+            pstate = self.position_state.get(symbol)
+            bars_held = 0
+            if pstate is not None and getattr(pstate, "entry_time", None) is not None:
+                bars_held = int((self.Time - pstate.entry_time).total_seconds() / 3600)
+            min_hold = int(getattr(self.config, "min_hold_hours", 0) or 0)
             if position_status(self, symbol) == "long" and abs(composite_score) < float(self.config.micro_flatten_threshold):
-                if smart_liquidate(self, symbol, tag="Flatten"):
+                if bars_held >= min_hold and smart_liquidate(self, symbol, tag="Flatten"):
                     action = "flatten"
             elif (
                 gate_ok
@@ -294,14 +301,21 @@ class SweetWaterPhase1(QCAlgorithm):
                     if self.sizer.passes_cost_gate(symbol, composite_score, notional, fee_model, is_limit=True):
                         candidates.append((symbol, composite_score, decision.adjusted_target_weight))
                         action = "enter"
-            # Throttle per-symbol SIG logging to avoid OOM/log flooding during backtests.
-            debug_limited(
-                self,
-                "SIG "
-                f"sym={symbol.Value} cvd={float(snap['cvd']):+.2f} ofi={float(snap['ofi']):+.2f} vol={float(snap['volc']):+.2f} "
-                f"rot={float(snap['rot']):+.2f} mult={float(snap['mult']):.2f} vr={float(snap.get('vr', 1.0)):.2f} vr_reg={snap.get('vr_regime', 'n/a')} "
-                f"raw={float(snap['raw']):+.2f} final={composite_score:+.2f} action={action}"
-            )
+            hold_every = int(getattr(self.config, "sig_hold_log_every_bars", 24) or 24)
+            allow_hold_log = False
+            if action == "hold":
+                last = int(self._last_sig_hold_log_bar.get(symbol, -10**9))
+                if (self._bar_count - last) >= max(1, hold_every):
+                    self._last_sig_hold_log_bar[symbol] = self._bar_count
+                    allow_hold_log = True
+            if action != "hold" or allow_hold_log:
+                debug_limited(
+                    self,
+                    "SIG "
+                    f"sym={symbol.Value} cvd={float(snap['cvd']):+.2f} ofi={float(snap['ofi']):+.2f} vol={float(snap['volc']):+.2f} "
+                    f"rot={float(snap['rot']):+.2f} mult={float(snap['mult']):.2f} vr={float(snap.get('vr', 1.0)):.2f} vr_reg={snap.get('vr_regime', 'n/a')} "
+                    f"raw={float(snap['raw']):+.2f} final={composite_score:+.2f} action={action}"
+                )
         return state, candidates
 
     def _ingest_data(self, data: Slice):
@@ -345,6 +359,12 @@ class SweetWaterPhase1(QCAlgorithm):
     def OnData(self, data: Slice):  # pragma: no cover
         self._ensure_monthly_universe()
         self._bar_count += 1
+        day_key = self.Time.date() if hasattr(self, "Time") else None
+        if day_key is not None and self._last_daily_summary_date is not None and day_key != self._last_daily_summary_date:
+            daily = self.reporter.daily_report()
+            self.Debug(f"DAY date={self._last_daily_summary_date} trades={int(daily.get('daily_trade_count', 0.0))}")
+        if day_key is not None:
+            self._last_daily_summary_date = day_key
         if self._bar_count % 24 == 0:
             equity = float(getattr(self.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
             self.Debug(

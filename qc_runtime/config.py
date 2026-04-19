@@ -37,6 +37,10 @@ class StrategyConfig:
     regime_vol_window: int = 24
     stale_order_bars: int = 3
     fee_maker_ratio: float = 0.70
+    take_profit_pct: float = 0.05
+    stop_loss_pct: float = 0.025
+    trailing_stop_pct: float = 0.02
+    activate_trailing_above_pct: float = 0.01
 
 
 CONFIG = StrategyConfig()

@@ -117,18 +117,15 @@ class DrawdownCircuitBreaker:
         current_equity = float(getattr(algorithm.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
         if current_equity > self.peak_equity:
             self.peak_equity = current_equity
-            if self.breaker_triggered:
-                recovery_target = self.equity_at_trigger * (1 + self.recovery_pct)
-                if current_equity >= recovery_target:
-                    try:
-                        algorithm.Debug(
-                            f"BREAKER RESET: Equity recovered from ${self.equity_at_trigger:.2f} "
-                            f"to ${current_equity:.2f}"
-                        )
-                    except Exception:
-                        pass
-                    self.breaker_triggered = False
-                    self.trigger_time = None
+        if self.breaker_triggered:
+            recovery_target = self.equity_at_trigger * (1 + self.recovery_pct)
+            if current_equity >= recovery_target:
+                try:
+                    algorithm.Debug(f"BREAKER RESET: equity recovered to ${current_equity:.2f}")
+                except Exception:
+                    pass
+                self.breaker_triggered = False
+                self.trigger_time = None
 
         if self.peak_equity > 0:
             drawdown = (current_equity - self.peak_equity) / self.peak_equity
@@ -139,8 +136,8 @@ class DrawdownCircuitBreaker:
                 self.equity_at_trigger = current_equity
                 try:
                     algorithm.Debug(
-                        f"⚠️ CIRCUIT BREAKER TRIGGERED: Drawdown {drawdown:.2%} "
-                        f"from peak ${self.peak_equity:.2f} to ${current_equity:.2f}"
+                        f"⚠️ CIRCUIT BREAKER: drawdown={drawdown:.2%}, "
+                        f"equity=${current_equity:.2f}, peak=${self.peak_equity:.2f}. Pausing new entries."
                     )
                 except Exception:
                     pass

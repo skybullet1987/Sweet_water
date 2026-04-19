@@ -36,6 +36,7 @@ from execution import (
     RealisticCryptoSlippage,
     execute_regime_entries,
     escalate_stale_orders,
+    is_invested_not_dust,
     manage_open_positions,
 )
 from features import FeatureEngine
@@ -113,9 +114,11 @@ class SweetWaterPhase1(QCAlgorithm):
         self.disable_recent_outcome_cash_mode = True
         self.disable_adaptive_ranking_memory = True
         self.expected_round_trip_fees = 0.0065
-        self.stop_loss_pct = 0.025
-        self.take_profit_pct = 0.05
-        self.max_hold_hours = self.config.time_stop_bars
+        self.stop_loss_pct = float(getattr(self.config, "stop_loss_pct", 0.025))
+        self.take_profit_pct = float(getattr(self.config, "take_profit_pct", 0.05))
+        self.trailing_stop_pct = float(getattr(self.config, "trailing_stop_pct", 0.02))
+        self.activate_trailing_above_pct = float(getattr(self.config, "activate_trailing_above_pct", 0.01))
+        self.max_hold_hours = float(getattr(self.config, "time_stop_bars", 24))
         self.stale_order_bars = 3
         self.enable_queue_rejection = False
         self.stress_spread_mult = 1.0
@@ -144,6 +147,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self._chop_engine = {}
         self._last_live_trade_time = None
         self._cash_mode_until = None
+        self._last_cash_gate_log = None
 
         self.entry_prices = {}
         self.highest_prices = {}
@@ -233,6 +237,10 @@ class SweetWaterPhase1(QCAlgorithm):
         equity, gross = self._portfolio_state()
         candidates = []
         for symbol in self.symbols:
+            if is_invested_not_dust(self, symbol):
+                continue
+            if len(self.Transactions.GetOpenOrders(symbol)) > 0:
+                continue
             feats = self.feature_engine.current_features(symbol.Value)
             if not feats:
                 continue
@@ -273,7 +281,7 @@ class SweetWaterPhase1(QCAlgorithm):
         state, candidates = self._score_candidates(data)
         execute_regime_entries(self, candidates, regime_tag=state)
 
-        manage_open_positions(self)
+        manage_open_positions(self, data)
 
         for escalated in escalate_stale_orders(self):
             self.reporter.on_order_event({"status": "escalated", "symbol": getattr(escalated, "Value", str(escalated))})

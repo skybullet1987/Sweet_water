@@ -15,6 +15,7 @@ class StrategyConfig:
     bar_resolution: str = "Hour"
     warmup_bars: int = 200
     universe_size: int = 8
+    signal_mode: str = "microstructure"
 
     # Sizing
     target_annual_vol: float = 0.30
@@ -43,6 +44,8 @@ class StrategyConfig:
     score_threshold: float = 0.40
     chop_threshold_multiplier: float = 1.5
     cross_section_weight: float = 0.40
+    micro_entry_threshold: float = 0.35
+    micro_flatten_threshold: float = 0.10
 
     # Legacy knobs still consumed in risk/tests
     hmm_train_window_bars: int = 24 * 120

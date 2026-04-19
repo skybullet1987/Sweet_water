@@ -17,7 +17,6 @@ KRAKEN_SAFE_LIST = (
     "DOTUSD",
     "AVAXUSD",
     "BCHUSD",
-    "DOGEUSD",
 )
 
 

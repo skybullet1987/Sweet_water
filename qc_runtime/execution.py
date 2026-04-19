@@ -1335,6 +1335,8 @@ def place_entry(algo, symbol, quantity, tag='Entry', force_market=False, signal_
     if sym_val in SYMBOL_BLACKLIST_STRUCTURAL:
         algo.Debug(f"BLACKLIST reject: {sym_val}")
         return None
+    if getattr(algo, 'long_only', True) and float(quantity) < 0:
+        return None
     sec = algo.Securities.get(symbol) if hasattr(algo, 'Securities') else None
     price = float(getattr(sec, 'Price', 0.0) or 0.0) if sec is not None else 0.0
     min_qty = get_min_quantity(algo, symbol)
@@ -1354,6 +1356,11 @@ def manage_open_positions(algo):
     exits = []
     for symbol in list(algo.entry_prices.keys()):
         if not is_invested_not_dust(algo, symbol):
+            cleanup_position(algo, symbol)
+            continue
+        holding = algo.Portfolio[symbol] if symbol in algo.Portfolio else None
+        holding_qty = float(getattr(holding, 'Quantity', 0.0) or 0.0) if holding is not None else 0.0
+        if holding_qty <= 0:
             cleanup_position(algo, symbol)
             continue
         sec = algo.Securities.get(symbol)
@@ -1386,6 +1393,17 @@ def manage_open_positions(algo):
 def execute_regime_entries(algo, candidates, regime_tag='regime'):
     placed = []
     for symbol, score, fraction in candidates:
+        if getattr(algo, 'long_only', True) and float(score) < 0:
+            if not getattr(algo, '_logged_long_only_short_filter', False):
+                msg = "LONG_ONLY gate: filtered short candidate(s) in cash mode."
+                debug_budget = int(getattr(algo, 'log_budget', 0) or 0)
+                if debug_budget > 0:
+                    algo.Debug(msg)
+                    algo.log_budget = debug_budget - 1
+                elif getattr(algo, 'LiveMode', False):
+                    algo.Debug(msg)
+                algo._logged_long_only_short_filter = True
+            continue
         if symbol in getattr(algo, '_pending_orders', {}) and algo._pending_orders[symbol] > 0:
             continue
         sec = algo.Securities.get(symbol)

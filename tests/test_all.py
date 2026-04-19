@@ -207,6 +207,7 @@ def test_universe_selector_excludes_reference_symbols():
 
     selected = select_universe(_hist, pd.Timestamp("2026-01-01", tz="UTC"))
     assert "BTCUSD" not in selected
+    assert "DOGEUSD" not in selected
     assert all(sym not in REFERENCE_SYMBOLS for sym in selected)
 
 
@@ -543,6 +544,7 @@ class TestSweetWaterPhase1Integration:
 
         assert "BTCUSD" in [s.Value for s in algo.reference_symbols]
         assert "BTCUSD" not in [s.Value for s in algo.symbols]
+        assert "DOGEUSD" not in [s.Value for s in algo.symbols]
         assert any(s.Value != "BTCUSD" for s in algo.symbols)
 
         algo.sizer.passes_cost_gate = lambda *_args, **_kwargs: True
@@ -571,3 +573,5 @@ class TestSweetWaterPhase1Integration:
 
         non_btc_orders = [o for o in algo._order_calls if o[1] != "BTCUSD"]
         assert non_btc_orders, f"Expected non-BTC entry order, got {algo._order_calls}"
+        assert all(o[1] != "DOGEUSD" for o in algo._order_calls), f"DOGEUSD should never be ordered: {algo._order_calls}"
+        assert all(float(o[2]) > 0 for o in algo._order_calls), f"Expected long-only entries, got {algo._order_calls}"

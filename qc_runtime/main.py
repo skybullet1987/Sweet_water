@@ -51,6 +51,7 @@ class SweetWaterPhase1(QCAlgorithm):
     def Initialize(self):  # pragma: no cover
         self.config = CONFIG
         self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
+        self.long_only = True
         self.SetCash(self.config.starting_cash)
         self.SetStartDate(self.config.start_year, self.config.start_month, self.config.start_day)
         self.SetEndDate(self.config.end_year, self.config.end_month, self.config.end_day)
@@ -236,6 +237,8 @@ class SweetWaterPhase1(QCAlgorithm):
             if not feats:
                 continue
             score = self.scorer.score(symbol.Value, feats, state, {"btc_trend": btc_ret})
+            if self.long_only and float(score) < 0:
+                continue
             if abs(score) < self.config.score_threshold:
                 continue
             target = self.sizer.size_for_trade(symbol.Value, score, {"equity": equity, "gross_exposure": gross})

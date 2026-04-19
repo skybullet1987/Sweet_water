@@ -126,6 +126,83 @@ def debug_limited(algo, msg: str) -> None:
         algo.log_budget = budget - 1
 
 
+def _hour_bucket(algo):
+    now = getattr(algo, "Time", None)
+    if now is None:
+        return None
+    try:
+        return now.replace(minute=0, second=0, microsecond=0)
+    except Exception:
+        return now
+
+
+def _log_once_per_hour(algo, key: str, message: str) -> None:
+    bucket = _hour_bucket(algo)
+    if not hasattr(algo, "_hourly_log_keys"):
+        algo._hourly_log_keys = {}
+    stamp = algo._hourly_log_keys.get(key)
+    if stamp != bucket:
+        debug_limited(algo, message)
+        algo._hourly_log_keys[key] = bucket
+
+
+def _order_qty(order) -> float:
+    qty = float(getattr(order, "Quantity", 0.0) or 0.0)
+    if qty != 0.0:
+        return qty
+    abs_qty = float(getattr(order, "AbsoluteQuantity", 0.0) or 0.0)
+    direction = getattr(order, "Direction", None)
+    if abs_qty <= 0 or direction is None:
+        return 0.0
+    return abs_qty if direction == OrderDirection.Buy else -abs_qty
+
+
+def reserved_qty(algo, symbol) -> float:
+    reserved = 0.0
+    try:
+        open_orders = algo.Transactions.GetOpenOrders(symbol)
+    except Exception:
+        open_orders = []
+    for order in open_orders:
+        qty = _order_qty(order)
+        if qty < 0:
+            reserved += abs(qty)
+    return max(0.0, reserved)
+
+
+def _holding_qty(algo, symbol) -> float:
+    try:
+        return max(0.0, float(getattr(algo.Portfolio[symbol], "Quantity", 0.0) or 0.0))
+    except Exception:
+        return 0.0
+
+
+def _free_qty(algo, symbol) -> float:
+    return max(0.0, _holding_qty(algo, symbol) - reserved_qty(algo, symbol))
+
+
+def has_open_exit_order(algo, symbol) -> bool:
+    return reserved_qty(algo, symbol) > POSITION_TOLERANCE
+
+
+def _order_cap_allows_submit(algo, *, is_entry: bool) -> bool:
+    if not is_entry:
+        return True
+    limit = int(getattr(getattr(algo, "config", CONFIG), "max_orders_per_day", 0) or 0)
+    if limit <= 0:
+        return True
+    now = getattr(algo, "Time", None)
+    day_key = getattr(now, "date", lambda: None)()
+    if getattr(algo, "_orders_today_date", None) != day_key:
+        algo._orders_today_date = day_key
+        algo._orders_today = 0
+    used = int(getattr(algo, "_orders_today", 0) or 0)
+    if used >= limit:
+        _log_once_per_hour(algo, "order_cap", f"ORD key=cap_reached used={used} max={limit}")
+        return False
+    return True
+
+
 def _safe_submit_order(algo, symbol, quantity: float, submit_fn):
     qty = float(quantity or 0.0)
     if qty == 0:
@@ -147,8 +224,42 @@ def _safe_submit_order(algo, symbol, quantity: float, submit_fn):
 
 def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry", force_market=False, signal_score=None):
     _ = timeout_seconds, signal_score
+    quantity = float(quantity or 0.0)
+    if quantity < 0:
+        hold = _holding_qty(algo, symbol)
+        reserved = reserved_qty(algo, symbol)
+        free_qty = max(0.0, hold - reserved)
+        if free_qty <= POSITION_TOLERANCE:
+            _log_once_per_hour(
+                algo,
+                f"exit_reserved:{getattr(symbol, 'Value', symbol)}",
+                f"ORD key=exit_skipped_reserved sym={getattr(symbol, 'Value', symbol)} hold={hold:.8f} reserved={reserved:.8f}",
+            )
+            return None
+        desired = abs(quantity)
+        sized = round_quantity(algo, symbol, min(free_qty, desired))
+        if sized <= POSITION_TOLERANCE:
+            _log_once_per_hour(
+                algo,
+                f"exit_rounded:{getattr(symbol, 'Value', symbol)}",
+                f"ORD key=exit_skipped_round sym={getattr(symbol, 'Value', symbol)} free={free_qty:.8f}",
+            )
+            return None
+        if has_open_exit_order(algo, symbol):
+            _log_once_per_hour(
+                algo,
+                f"exit_duplicate:{getattr(symbol, 'Value', symbol)}",
+                f"ORD key=exit_skipped_duplicate sym={getattr(symbol, 'Value', symbol)}",
+            )
+            return None
+        quantity = -sized
+    if not _order_cap_allows_submit(algo, is_entry=(quantity > 0)):
+        return None
     if force_market:
-        return _safe_submit_order(algo, symbol, quantity, lambda: algo.MarketOrder(symbol, quantity, tag=tag))
+        ticket = _safe_submit_order(algo, symbol, quantity, lambda: algo.MarketOrder(symbol, quantity, tag=tag))
+        if ticket is not None and quantity > 0:
+            algo._orders_today = int(getattr(algo, "_orders_today", 0) or 0) + 1
+        return ticket
     sec = algo.Securities[symbol]
     price = float(getattr(sec, "Price", 0.0) or 0.0)
     if price <= 0:
@@ -162,6 +273,8 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
     ticket = _safe_submit_order(algo, symbol, quantity, lambda: algo.LimitOrder(symbol, quantity, limit_price, tag=tag))
     if ticket is None:
         return None
+    if quantity > 0:
+        algo._orders_today = int(getattr(algo, "_orders_today", 0) or 0) + 1
     algo._submitted_orders[symbol] = {
         "order_id": ticket.OrderId,
         "time": getattr(algo, "Time", datetime.now(timezone.utc)),
@@ -205,10 +318,9 @@ def cleanup_position(algo, symbol, record_pnl=False, exit_price=None):
 def smart_liquidate(algo, symbol, tag="Liquidate"):
     if symbol not in algo.Portfolio:
         return False
-    qty = float(getattr(algo.Portfolio[symbol], "Quantity", 0.0) or 0.0)
+    qty = _free_qty(algo, symbol)
     if qty <= 0:
         return False
-    qty = min(qty, float(getattr(algo.Portfolio[symbol], "Quantity", 0.0) or 0.0))
     qty = round_quantity(algo, symbol, qty)
     if qty <= 0:
         return False
@@ -277,13 +389,14 @@ def manage_open_positions(algo, data=None):
             tag = "TimeStop"
             exit_px = close
 
-        if tag:
+        allow_time_stop = (
+            tag != "TimeStop" or bars_held >= int(getattr(algo.config, "min_hold_hours", 0) or 0)
+        )
+        if tag and allow_time_stop:
             algo._last_exit_tag = tag
             if smart_liquidate(algo, symbol, tag=tag):
                 cleanup_position(algo, symbol, record_pnl=True, exit_price=exit_px)
-            else:
-                cleanup_position(algo, symbol)
-            exits.append((symbol, tag))
+                exits.append((symbol, tag))
     return exits
 
 
@@ -353,9 +466,16 @@ def escalate_stale_orders(algo):
         except Exception:
             pass
         qty = float(info.get("quantity", 0.0) or 0.0)
+        intent = str(info.get("intent", "") or "")
         if qty != 0:
-            place_limit_or_market(algo, symbol, qty, tag="[StaleEsc]", force_market=True)
-        algo._submitted_orders.pop(symbol, None)
+            if intent == "exit" and has_open_exit_order(algo, symbol):
+                algo._submitted_orders.pop(symbol, None)
+                continue
+            replacement = place_limit_or_market(algo, symbol, qty, tag="[StaleEsc]", force_market=True)
+            if replacement is None:
+                continue
+        else:
+            algo._submitted_orders.pop(symbol, None)
         escalated.append(symbol)
     return escalated
 

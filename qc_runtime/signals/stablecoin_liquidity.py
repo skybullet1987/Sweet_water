@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 from datetime import date
 from urllib.request import urlopen
 
@@ -54,7 +55,7 @@ class StablecoinLiquidityOverlay:
 
     @staticmethod
     def _fetch_json(url: str):
-        with urlopen(url, timeout=4) as resp:
+        with urlopen(url, timeout=4, context=ssl.create_default_context()) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     def _fetch_weekly_pct(self) -> float:

@@ -115,6 +115,7 @@ def _safe_submit_order(algo, symbol, quantity: float, submit_fn):
         current = 0.0
     if qty < 0:
         post = current + qty
+        # Cash account guard: allow only reductions of an existing long; never open/extend shorts.
         if current <= 0 or post < -POSITION_TOLERANCE:
             sym = getattr(symbol, "Value", str(symbol))
             debug_limited(algo, f"ORD key=blocked_short symbol={sym} qty={qty:.8f} hold={current:.8f}")

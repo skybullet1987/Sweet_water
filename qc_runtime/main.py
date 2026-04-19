@@ -64,6 +64,9 @@ from universe import KRAKEN_SAFE_LIST, REFERENCE_SYMBOLS, select_universe
 INFINITE_HELD_HOURS = 10**9
 DEFAULT_MISSING_SCORE = -1e9
 HARD_RISK_OFF_VOL_STRESS = 0.9
+NEW_ENTRANT_MIN_DELTA_MULTIPLIER = 0.5
+NO_TRADE_HEARTBEAT_THRESHOLD_BARS = 168
+NO_TRADE_HEARTBEAT_LOG_CADENCE_BARS = 24
 
 
 class SweetWaterPhase1(QCAlgorithm):
@@ -350,7 +353,7 @@ class SweetWaterPhase1(QCAlgorithm):
             current_qty = float(getattr(self.Portfolio[symbol], "Quantity", 0.0) or 0.0)
             current_w = (current_qty * price) / max(equity, 1e-9)
             delta_w = target_w - current_w
-            required_delta = min_delta if symbol in held_set else (min_delta * 0.5)
+            required_delta = min_delta if symbol in held_set else (min_delta * NEW_ENTRANT_MIN_DELTA_MULTIPLIER)
             if abs(delta_w) < required_delta:
                 continue
             notional = abs(delta_w) * equity
@@ -442,9 +445,9 @@ class SweetWaterPhase1(QCAlgorithm):
         bars_since_trade = self._bar_count - self._last_trade_bar
         if (
             state == "risk_on"
-            and bars_since_trade > 168
+            and bars_since_trade > NO_TRADE_HEARTBEAT_THRESHOLD_BARS
             and scored
-            and (self._bar_count - self._last_no_trade_log_bar >= 24)
+            and (self._bar_count - self._last_no_trade_log_bar >= NO_TRADE_HEARTBEAT_LOG_CADENCE_BARS)
         ):
             top_symbol, top_score, _ = scored[0]
             self.Debug(

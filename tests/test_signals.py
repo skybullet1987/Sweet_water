@@ -16,6 +16,9 @@ if str(QC_RUNTIME) not in sys.path:
 from features import CvdDivergenceFeature, OrderFlowImbalanceFeature, VolConeBreakoutFeature
 from regime import HurstRegimeModel
 
+MAX_FILE_BYTES = 60_000
+MAX_TOTAL_LOC = 6_000
+
 
 class _Symbol:
     def __init__(self, value: str):
@@ -100,7 +103,7 @@ def test_module_count_and_size():
     total_loc = 0
     for f in files:
         p = QC_RUNTIME / f
-        assert p.stat().st_size < 60_000
+        assert p.stat().st_size < MAX_FILE_BYTES
         with p.open("r", encoding="utf-8") as fh:
             total_loc += sum(1 for _ in fh)
-    assert total_loc < 6_000
+    assert total_loc < MAX_TOTAL_LOC

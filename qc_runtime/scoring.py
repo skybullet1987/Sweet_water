@@ -28,7 +28,7 @@ class Scorer:
 
     def composite_score(self, symbol, signal_stack, regime_engine) -> dict[str, float | str]:
         parts = signal_stack.component_scores(symbol)
-        mult = signal_stack.stablecoin.multiplier()
+        mult = signal_stack.stablecoin_liquidity.multiplier()
         raw = self.W_CVD * parts["cvd"] + self.W_OFI * parts["ofi"] + self.W_VOLC * parts["volc"] + self.W_ROT * parts["rot"]
         h = regime_engine.hurst.hurst(symbol)
         hreg = regime_engine.hurst.regime(symbol)
@@ -96,7 +96,3 @@ class Scorer:
             )
             return {"cvd": 0.0, "ofi": float(features.get("ofi", 0.0)), "volc": 0.0, "rot": 0.0, "mult": 1.0, "raw": val, "hurst": 0.5, "hurst_regime": "legacy", "final": val}
         return self.composite_score(symbol, signal_stack, regime_engine)
-
-
-def composite_score(scorer: Scorer, symbol, signal_stack, regime_engine) -> dict[str, float | str]:
-    return scorer.composite_score(symbol, signal_stack, regime_engine)

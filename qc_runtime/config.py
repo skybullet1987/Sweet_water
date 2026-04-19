@@ -39,6 +39,7 @@ class StrategyConfig:
     vol_stress_threshold: float = 0.7
     breadth_threshold: float = 0.30
     btc_trend_ema: int = 200
+    chop_return_threshold: float = 0.002
 
     # Scoring
     score_threshold: float = 0.40

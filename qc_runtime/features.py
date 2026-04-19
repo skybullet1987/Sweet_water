@@ -575,26 +575,26 @@ class SignalFeatureStack:
     def __init__(self, algo=None, tracked_symbols: list[str] | None = None) -> None:
         self.cvd = CvdDivergenceFeature()
         self.ofi = OrderFlowImbalanceFeature()
-        self.vol = VolConeBreakoutFeature()
-        self.rotation = BtcDominanceRotationFeature(tracked_symbols or [])
-        self.stablecoin = StablecoinLiquidityFeature(algo)
+        self.vol_cone = VolConeBreakoutFeature()
+        self.btc_rotation = BtcDominanceRotationFeature(tracked_symbols or [])
+        self.stablecoin_liquidity = StablecoinLiquidityFeature(algo)
 
     def set_tracked_symbols(self, symbols: list[str]) -> None:
-        self.rotation.set_tracked_symbols(symbols)
+        self.btc_rotation.set_tracked_symbols(symbols)
 
     def update(self, symbol, bar_or_tick) -> None:
         self.cvd.update(symbol, bar_or_tick)
         self.ofi.update(symbol, bar_or_tick)
-        self.vol.update(symbol, bar_or_tick)
-        self.rotation.update(symbol, bar_or_tick)
-        self.stablecoin.update(getattr(bar_or_tick, "EndTime", getattr(bar_or_tick, "Time", None)))
+        self.vol_cone.update(symbol, bar_or_tick)
+        self.btc_rotation.update(symbol, bar_or_tick)
+        self.stablecoin_liquidity.update(getattr(bar_or_tick, "EndTime", getattr(bar_or_tick, "Time", None)))
 
     def component_scores(self, symbol) -> dict[str, float]:
         return {
             "cvd": self.cvd.score(symbol),
             "ofi": self.ofi.score(symbol),
-            "volc": self.vol.score(symbol),
-            "rot": self.rotation.score(symbol),
+            "volc": self.vol_cone.score(symbol),
+            "rot": self.btc_rotation.score(symbol),
         }
 
     def init_status(self) -> dict[str, str]:
@@ -604,4 +604,5 @@ class SignalFeatureStack:
             "vol_cone": "garman-klass",
             "btc_rotation": "active",
             "stablecoin_overlay": "coingecko+cache",
+            "hurst": "R/S(500)",
         }

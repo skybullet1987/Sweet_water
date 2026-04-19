@@ -105,7 +105,6 @@ class SweetWaterPhase1(QCAlgorithm):
         self.Debug(
             "SIG init "
             + " ".join([f"{k}={v}" for k, v in status.items()])
-            + " hurst=R/S(500)"
             + f" mode={getattr(self.config, 'signal_mode', 'microstructure')}"
         )
 

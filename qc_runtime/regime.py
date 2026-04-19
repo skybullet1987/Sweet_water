@@ -81,7 +81,7 @@ class RegimeEngine:
             self.vol_stress = 0.0
         if self.vol_stress > self.config.vol_stress_threshold:
             self._state = "risk_off"
-        elif abs(float(btc_return)) < 0.002:
+        elif abs(float(btc_return)) < float(self.config.chop_return_threshold):
             self._state = "chop"
         else:
             self._state = "risk_on"

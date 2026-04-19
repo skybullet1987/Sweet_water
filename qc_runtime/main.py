@@ -244,6 +244,7 @@ class SweetWaterPhase1(QCAlgorithm):
                 btc_context={"btc_trend": btc_ret},
                 rank_24h=_rank(mom24, idx),
                 rank_168h=_rank(mom168, idx),
+                breadth=breadth,
                 signal_stack=self.signal_features,
                 regime_engine=self.regime_engine,
             )
@@ -296,7 +297,7 @@ class SweetWaterPhase1(QCAlgorithm):
                 self,
                 "SIG "
                 f"sym={symbol.Value} cvd={float(snap['cvd']):+.2f} ofi={float(snap['ofi']):+.2f} vol={float(snap['volc']):+.2f} "
-                f"rot={float(snap['rot']):+.2f} mult={float(snap['mult']):.2f} H={float(snap['hurst']):.2f} "
+                f"rot={float(snap['rot']):+.2f} mult={float(snap['mult']):.2f} vr={float(snap.get('vr', 1.0)):.2f} vr_reg={snap.get('vr_regime', 'n/a')} "
                 f"raw={float(snap['raw']):+.2f} final={composite_score:+.2f} action={action}"
             )
         return state, candidates
@@ -327,6 +328,7 @@ class SweetWaterPhase1(QCAlgorithm):
             if getattr(self.config, "signal_mode", "microstructure") == "microstructure":
                 self.signal_features.update(symbol, bar)
                 self.regime_engine.hurst.update(symbol, bar)
+                self.regime_engine.vr.update(symbol, bar)
                 ticks = getattr(data, "Ticks", {}).get(symbol, []) if hasattr(data, "Ticks") else []
                 for tick in ticks:
                     self.signal_features.update(symbol, tick)

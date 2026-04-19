@@ -26,14 +26,52 @@ class Scorer:
     def _clip(value: float) -> float:
         return max(-1.0, min(1.0, float(value)))
 
-    def composite_score(self, symbol, signal_stack, regime_engine) -> dict[str, float | str]:
+    @staticmethod
+    def _clamp(value: float, lo: float, hi: float) -> float:
+        return max(float(lo), min(float(hi), float(value)))
+
+    @staticmethod
+    def _vr_multiplier(vr_regime: str) -> float:
+        if vr_regime == "trend":
+            return 1.0
+        if vr_regime == "meanrev":
+            return 0.8
+        return 0.6
+
+    @staticmethod
+    def _vol_stress_multiplier(vol_stress: float, threshold: float) -> float:
+        return 0.7 if float(vol_stress) > float(threshold) else 1.0
+
+    @staticmethod
+    def _breadth_multiplier(breadth: float) -> float:
+        return 0.7 if float(breadth) < 0.30 else 1.0
+
+    def composite_score(self, symbol, signal_stack, regime_engine, breadth: float = 0.5) -> dict[str, float | str]:
         parts = signal_stack.component_scores(symbol)
-        mult = signal_stack.stablecoin_liquidity.multiplier()
         raw = self.W_CVD * parts["cvd"] + self.W_OFI * parts["ofi"] + self.W_VOLC * parts["volc"] + self.W_ROT * parts["rot"]
+        vr = regime_engine.vr.variance_ratio(symbol)
+        vr_reg = regime_engine.vr.regime(symbol)
+        mult = 1.0
+        mult *= self._vr_multiplier(vr_reg)
+        mult *= self._vol_stress_multiplier(regime_engine.vol_stress, self.config.vol_stress_threshold)
+        mult *= self._breadth_multiplier(breadth)
+        mult = self._clamp(mult, 0.4, 1.3)
         h = regime_engine.hurst.hurst(symbol)
         hreg = regime_engine.hurst.regime(symbol)
-        final = 0.0 if hreg == "random" else self._clip(raw * mult)
-        return {"cvd": parts["cvd"], "ofi": parts["ofi"], "volc": parts["volc"], "rot": parts["rot"], "mult": mult, "raw": raw, "hurst": h, "hurst_regime": hreg, "final": final}
+        final = self._clip(raw * mult)
+        return {
+            "cvd": parts["cvd"],
+            "ofi": parts["ofi"],
+            "volc": parts["volc"],
+            "rot": parts["rot"],
+            "mult": mult,
+            "raw": raw,
+            "vr": vr,
+            "vr_regime": vr_reg,
+            "hurst": h,
+            "hurst_regime": hreg,
+            "final": final,
+        }
 
     def indicator_score(self, symbol: str, features: dict[str, float], regime_state: str, btc_context: dict[str, float]) -> float:
         _ = symbol
@@ -83,7 +121,19 @@ class Scorer:
         w = max(0.0, min(1.0, float(cross_section_weight)))
         return self._clip((1.0 - w) * base + w * cross_section_score)
 
-    def score(self, *, symbol, features, regime_state, btc_context, rank_24h=0.5, rank_168h=0.5, signal_stack=None, regime_engine=None):
+    def score(
+        self,
+        *,
+        symbol,
+        features,
+        regime_state,
+        btc_context,
+        rank_24h=0.5,
+        rank_168h=0.5,
+        breadth=0.5,
+        signal_stack=None,
+        regime_engine=None,
+    ):
         if self.config.signal_mode == "legacy":
             val = self.legacy_score(
                 str(getattr(symbol, "Value", symbol)),
@@ -94,5 +144,17 @@ class Scorer:
                 rank_168h=rank_168h,
                 cross_section_weight=self.config.cross_section_weight,
             )
-            return {"cvd": 0.0, "ofi": float(features.get("ofi", 0.0)), "volc": 0.0, "rot": 0.0, "mult": 1.0, "raw": val, "hurst": 0.5, "hurst_regime": "legacy", "final": val}
-        return self.composite_score(symbol, signal_stack, regime_engine)
+            return {
+                "cvd": 0.0,
+                "ofi": float(features.get("ofi", 0.0)),
+                "volc": 0.0,
+                "rot": 0.0,
+                "mult": 1.0,
+                "raw": val,
+                "vr": 1.0,
+                "vr_regime": "legacy",
+                "hurst": 0.5,
+                "hurst_regime": "legacy",
+                "final": val,
+            }
+        return self.composite_score(symbol, signal_stack, regime_engine, breadth=breadth)

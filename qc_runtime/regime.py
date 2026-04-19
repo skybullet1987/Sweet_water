@@ -58,6 +58,62 @@ class HurstRegimeModel:
         return "random"
 
 
+class VarianceRatioRegimeModel:
+    def __init__(self, window: int = 500, min_samples: int = 120, k_short: int = 6, k_long: int = 24) -> None:
+        self.window = int(window)
+        self.min_samples = int(min_samples)
+        self.k_short = int(k_short)
+        self.k_long = int(k_long)
+        self._rets = defaultdict(lambda: deque(maxlen=self.window))
+        self._last_close = {}
+        self._vr = {}
+
+    @staticmethod
+    def _variance_ratio(log_returns: np.ndarray, k: int) -> float:
+        r = np.asarray(log_returns, dtype=float)
+        n = len(r)
+        if n < max(20, int(k) + 2):
+            return 1.0
+        var1 = float(np.var(r, ddof=1))
+        if not np.isfinite(var1) or var1 <= 0:
+            return 1.0
+        k = int(max(2, k))
+        rolling = np.convolve(r, np.ones(k, dtype=float), mode="valid")
+        if len(rolling) < 2:
+            return 1.0
+        vark = float(np.var(rolling, ddof=1))
+        if not np.isfinite(vark):
+            return 1.0
+        return vark / (k * var1)
+
+    def update(self, symbol, bar_or_tick) -> None:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        close = float(getattr(bar_or_tick, "Close", getattr(bar_or_tick, "Price", 0.0)) or 0.0)
+        if close <= 0:
+            return
+        prev = self._last_close.get(key)
+        self._last_close[key] = close
+        if prev and prev > 0:
+            self._rets[key].append(math.log(close / prev))
+        if len(self._rets[key]) >= self.min_samples:
+            r = np.asarray(self._rets[key], dtype=float)
+            vr_short = self._variance_ratio(r, self.k_short)
+            vr_long = self._variance_ratio(r, self.k_long)
+            self._vr[key] = 0.5 * (vr_short + vr_long)
+
+    def variance_ratio(self, symbol) -> float:
+        key = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+        return float(self._vr.get(key, 1.0))
+
+    def regime(self, symbol) -> str:
+        vr = self.variance_ratio(symbol)
+        if vr > 1.05:
+            return "trend"
+        if vr < 0.95:
+            return "meanrev"
+        return "random"
+
+
 class RegimeEngine:
     def __init__(self, config: StrategyConfig = CONFIG) -> None:
         self.config = config
@@ -67,6 +123,7 @@ class RegimeEngine:
         self.vol_stress = 0.0
         self._btc_below_ema = False
         self.hurst = HurstRegimeModel(window=500)
+        self.vr = VarianceRatioRegimeModel(window=500, min_samples=120)
 
     def update(self, btc_return: float, btc_vol: float, breadth: float, btc_above_ema200: bool = False) -> None:
         self._btc_below_ema = not bool(btc_above_ema200)

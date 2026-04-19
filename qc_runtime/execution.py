@@ -68,6 +68,8 @@ random.seed(42)
 # Additive non-fill penalty for breakout/momentum entries (vol-ignition-only, no mean-reversion support).
 # Configurable via algo.breakout_nonfill_penalty; conservative default 0.08 (+8 pp above base rate).
 _BREAKOUT_NONFILL_PENALTY_DEFAULT = 0.08
+# 10% buffer over min-notional to avoid immediate invalids from fee/slippage drift.
+CASH_GATE_SAFETY_MARGIN = 1.10
 
 
 def reseed_non_fill_simulation(seed):
@@ -1403,8 +1405,6 @@ def manage_open_positions(algo, data=None):
         if high > highest:
             algo.highest_prices[symbol] = high
             highest = high
-        else:
-            algo.highest_prices[symbol] = highest
         stop = entry * (1.0 - float(getattr(algo, 'stop_loss_pct', 0.025)))
         tp = entry * (1.0 + float(getattr(algo, 'take_profit_pct', 0.05)))
         trailing_pct = float(getattr(algo, 'trailing_stop_pct', 0.02))
@@ -1416,6 +1416,10 @@ def manage_open_positions(algo, data=None):
             bars_held = (algo.Time - algo.entry_times[symbol]).total_seconds() / 3600.0
         reason = None
         exit_price = close
+        # Exit precedence for bars that can touch multiple barriers:
+        # TakeProfit -> StopLoss -> TrailingStop -> TimeStop.
+        # With OHLC-only bars, intrabar path is unknown; this deterministic order
+        # resolves ties consistently and matches the requested precedence.
         if high >= tp:
             reason = 'TakeProfit'
             exit_price = tp
@@ -1430,12 +1434,15 @@ def manage_open_positions(algo, data=None):
             exit_price = close
         if reason:
             ticket = smart_liquidate(algo, symbol, tag=reason)
+            pnl_pct = (exit_price - entry) / entry if entry > 0 else 0.0
             if ticket:
                 cleanup_position(algo, symbol, record_pnl=True, exit_price=exit_price)
-            pnl_pct = (exit_price - entry) / entry if entry > 0 else 0.0
-            algo.Debug(
-                f"EXIT {reason}: {symbol.Value} entry=${entry:.4f} exit=${exit_price:.4f} pnl={pnl_pct:+.2%}"
-            )
+            try:
+                algo.Debug(
+                    f"EXIT {reason}: {symbol.Value} entry=${entry:.4f} exit=${exit_price:.4f} pnl={pnl_pct:+.2%}"
+                )
+            except Exception:
+                pass
             exits.append((symbol, reason, ticket))
     return exits
 
@@ -1450,7 +1457,7 @@ def execute_regime_entries(algo, candidates, regime_tag='regime'):
     current_hour = getattr(algo, 'Time', None)
     if current_hour is not None:
         current_hour = current_hour.replace(minute=0, second=0, microsecond=0)
-    if available_cash < (min_notional * 1.1):
+    if available_cash < (min_notional * CASH_GATE_SAFETY_MARGIN):
         last_log = getattr(algo, '_last_cash_gate_log', None)
         if current_hour != last_log:
             budget = int(getattr(algo, 'log_budget', 0) or 0)

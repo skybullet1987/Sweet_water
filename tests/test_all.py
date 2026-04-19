@@ -624,7 +624,8 @@ class TestSweetWaterPhase1Integration:
         algo.LiveMode = True
         symbol = algo.symbol_by_ticker["SOLUSD"]
         self._configure_single_symbol_entry_path(algo, symbol)
-        algo.Portfolio.Cash = 0.50
+        below_threshold_cash = 0.50
+        algo.Portfolio.Cash = below_threshold_cash
 
         for i in range(10):
             algo.Time = datetime(2025, 1, 3, i, tzinfo=timezone.utc)
@@ -679,6 +680,7 @@ class TestSweetWaterPhase1Integration:
         hold.AveragePrice = 100.0
         hold.Price = 100.0
         sec.Price = 100.0
+        # Raise TP so trailing logic can arm/trigger without TakeProfit firing first.
         algo.take_profit_pct = 0.20
         algo.entry_prices[symbol] = 100.0
         algo.highest_prices[symbol] = 100.0

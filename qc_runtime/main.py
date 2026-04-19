@@ -40,6 +40,7 @@ from execution import (
     KrakenTieredFeeModel,
     PositionState,
     RealisticCryptoSlippage,
+    debug_limited,
     execute_regime_entries,
     escalate_stale_orders,
     liquidate_all_positions,
@@ -290,7 +291,9 @@ class SweetWaterPhase1(QCAlgorithm):
                     if self.sizer.passes_cost_gate(symbol, composite_score, notional, fee_model, is_limit=True):
                         candidates.append((symbol, composite_score, decision.adjusted_target_weight))
                         action = "enter"
-            self.Debug(
+            # Throttle per-symbol SIG logging to avoid OOM/log flooding during backtests.
+            debug_limited(
+                self,
                 "SIG "
                 f"sym={symbol.Value} cvd={float(snap['cvd']):+.2f} ofi={float(snap['ofi']):+.2f} vol={float(snap['volc']):+.2f} "
                 f"rot={float(snap['rot']):+.2f} mult={float(snap['mult']):.2f} H={float(snap['hurst']):.2f} "

@@ -14,6 +14,28 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
-      - name: Validate walk-forward fixture baseline
-        run: python tests/walk_forward_ci_check.py
+        run: pip install -r requirements-dev.txt pytest
+      - name: Run consolidated tests
+        run: pytest tests/test_all.py -v
+      - name: Validate walk-forward gates
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('.').resolve()
+          sys.path.insert(0, str(root / 'qc_runtime'))
+          from config import CONFIG
+          from reporting import walk_forward_run
+
+          fixture = pd.read_csv(root / 'tests/fixtures/walk_forward_bars.csv')
+          out = walk_forward_run(fixture, CONFIG)
+          assert out['oos_sharpe'] >= 0.5, out
+          assert out['oos_avg_win_avg_loss'] >= 1.0, out
+          assert 15 <= out['oos_trade_count'] <= 200, out
+          assert out['oos_cancel_rate'] < 0.20, out
+          regime_dist = out['regime_distribution']
+          active = [k for k, v in regime_dist.items() if v >= 0.05]
+          assert len(active) >= 2, out
+          PY

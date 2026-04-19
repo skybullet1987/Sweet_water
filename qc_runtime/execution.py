@@ -389,10 +389,10 @@ def manage_open_positions(algo, data=None):
             tag = "TimeStop"
             exit_px = close
 
-        if tag == "TimeStop" and bars_held < int(getattr(algo.config, "min_hold_hours", 0) or 0):
-            tag = None
-
-        if tag:
+        allow_time_stop = (
+            tag != "TimeStop" or bars_held >= int(getattr(algo.config, "min_hold_hours", 0) or 0)
+        )
+        if tag and allow_time_stop:
             algo._last_exit_tag = tag
             if smart_liquidate(algo, symbol, tag=tag):
                 cleanup_position(algo, symbol, record_pnl=True, exit_price=exit_px)
@@ -467,11 +467,15 @@ def escalate_stale_orders(algo):
             pass
         qty = float(info.get("quantity", 0.0) or 0.0)
         intent = str(info.get("intent", "") or "")
-        algo._submitted_orders.pop(symbol, None)
         if qty != 0:
             if intent == "exit" and has_open_exit_order(algo, symbol):
+                algo._submitted_orders.pop(symbol, None)
                 continue
-            place_limit_or_market(algo, symbol, qty, tag="[StaleEsc]", force_market=True)
+            replacement = place_limit_or_market(algo, symbol, qty, tag="[StaleEsc]", force_market=True)
+            if replacement is None:
+                continue
+        else:
+            algo._submitted_orders.pop(symbol, None)
         escalated.append(symbol)
     return escalated
 

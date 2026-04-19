@@ -362,7 +362,7 @@ class SweetWaterPhase1(QCAlgorithm):
         day_key = self.Time.date() if hasattr(self, "Time") else None
         if day_key is not None and self._last_daily_summary_date is not None and day_key != self._last_daily_summary_date:
             daily = self.reporter.daily_report()
-            self.Debug(f"DAY date={self._last_daily_summary_date} trades={int(daily.get('daily_trade_count', 0.0))}")
+            self.Debug(f"DAY_SUMMARY prev_date={self._last_daily_summary_date} trades={int(daily.get('daily_trade_count', 0.0))}")
         if day_key is not None:
             self._last_daily_summary_date = day_key
         if self._bar_count % 24 == 0:

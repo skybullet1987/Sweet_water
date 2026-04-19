@@ -328,6 +328,7 @@ class TestPhaseRequirements:
     def test_time_stop_respects_min_hold(self):
         algo = self._build_algo()
         algo.Initialize()
+        algo.config = StrategyConfig(min_hold_hours=6)
         symbol = algo.symbol_by_ticker["SOLUSD"]
         hold = algo.Portfolio[symbol]
         hold.Quantity = 1.0
@@ -344,6 +345,7 @@ class TestPhaseRequirements:
         for i in range(6):
             algo.Time = datetime(2025, 1, 6, i, tzinfo=timezone.utc)
             assert place_limit_or_market(algo, symbol, 0.01, force_market=True, tag=f"manual{i}") is not None
+            assert int(getattr(algo, "_orders_today", 0) or 0) == i + 1
         before = len(algo._order_calls)
         algo.Time = datetime(2025, 1, 6, 7, tzinfo=timezone.utc)
         assert place_limit_or_market(algo, symbol, 0.01, force_market=True, tag="manual7") is None

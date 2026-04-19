@@ -85,7 +85,7 @@ class SweetWaterPhase1(QCAlgorithm):
 
         initial_universe = select_universe(self._history_provider, pd.Timestamp.now(tz="UTC"))
         self.symbols = [self.symbol_by_ticker[t] for t in initial_universe if t in self.symbol_by_ticker]
-        now = getattr(self, "Time", pd.Timestamp.now(tz="UTC"))
+        now = self.Time if hasattr(self, "Time") else pd.Timestamp.now(tz="UTC")
         self._last_rebalance_month = (int(now.year), int(now.month))
 
     def _subscribe_symbol(self, ticker: str):  # pragma: no cover

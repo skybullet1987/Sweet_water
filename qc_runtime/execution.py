@@ -244,7 +244,7 @@ def estimate_min_qty(algo, symbol):
 
 def get_min_notional_usd(algo, symbol):
     ticker = symbol.Value if hasattr(symbol, 'Value') else str(symbol)
-    min_notional = float(getattr(algo, 'min_notional', 1.0) or 1.0)
+    min_notional = float(getattr(algo, 'min_notional', None) or 1.0)
     fallback = MIN_NOTIONAL_FALLBACK.get(ticker, min_notional)
     try:
         price = algo.Securities[symbol].Price

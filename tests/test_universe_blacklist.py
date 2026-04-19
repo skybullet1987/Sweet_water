@@ -38,9 +38,9 @@ def test_select_universe_filters_low_hourly_dollar_volume(monkeypatch):
     def history_provider(symbol, _start, _end):
         if symbol == "GOODUSD":
             return pd.DataFrame({"close": [200.0, 200.0], "volume": [20_000.0, 20_000.0]})
-        return pd.DataFrame({"close": [10.0, 10.0], "volume": [100_000.0, 100_000.0]})
+        return pd.DataFrame({"close": [10.0, 10.0], "volume": [20_000.0, 20_000.0]})
 
     selected = select_universe(history_provider, pd.Timestamp("2025-10-01", tz="UTC"))
     assert "GOODUSD" in selected
     assert "LOWUSD" not in selected
-    assert MIN_HOURLY_DOLLAR_VOLUME == 2_000_000.0
+    assert MIN_HOURLY_DOLLAR_VOLUME == 250_000.0

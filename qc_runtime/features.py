@@ -277,6 +277,17 @@ class FeatureEngine:
         mom_21d = float((daily_close[-1] / daily_close[-22]) - 1.0) if len(daily_close) >= 22 else 0.0
         mom_63d = float((daily_close[-1] / daily_close[-64]) - 1.0) if len(daily_close) >= 64 else 0.0
         mom_90d = float((daily_close[-1] / daily_close[-91]) - 1.0) if len(daily_close) >= 91 else 0.0
+        def _skip_mom(daily, skip, lookback):
+            if len(daily) < skip + lookback + 1:
+                return 0.0
+            end_px = float(daily[-(skip + 1)])
+            start_px = float(daily[-(skip + lookback + 1)])
+            if start_px <= 0:
+                return 0.0
+            return end_px / start_px - 1.0
+        mom_21d_skip = _skip_mom(daily_close, 5, 21)
+        mom_63d_skip = _skip_mom(daily_close, 5, 63)
+        mom_90d_skip = _skip_mom(daily_close, 5, 90)
         rv_21d = self._std(deque(list(daily_ret)[-21:], maxlen=21)) * math.sqrt(365.0) if len(daily_ret) >= 21 else 0.0
         dd_63d = 0.0
         if len(daily_close) >= 63:
@@ -307,6 +318,9 @@ class FeatureEngine:
             "mom_21d": self._clip(self._to_float(mom_21d, 0.0), -3.0, 3.0),
             "mom_63d": self._clip(self._to_float(mom_63d, 0.0), -4.0, 4.0),
             "mom_90d": self._clip(self._to_float(mom_90d, 0.0), -5.0, 5.0),
+            "mom_21d_skip": self._clip(self._to_float(mom_21d_skip, 0.0), -3.0, 3.0),
+            "mom_63d_skip": self._clip(self._to_float(mom_63d_skip, 0.0), -4.0, 4.0),
+            "mom_90d_skip": self._clip(self._to_float(mom_90d_skip, 0.0), -5.0, 5.0),
             "rv_21d": self._to_float(rv_21d, 0.0),
             "dd_63d": self._clip(self._to_float(dd_63d, 0.0), 0.0, 1.0),
             "vol_stress_21d": self._clip(self._to_float(vol_stress_21d, 0.0), 0.0, 1.0),

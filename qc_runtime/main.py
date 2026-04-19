@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import statistics
 from collections import defaultdict, deque
+from datetime import timedelta
 
 import pandas as pd
 
@@ -113,6 +114,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self.signal_features.set_tracked_symbols(
             [s.Value for s in [*self.reference_symbols, *self.symbols] if hasattr(s, "Value")]
         )
+        self._prime_features_from_history()
         now = self.Time if hasattr(self, "Time") else pd.Timestamp.now(tz="UTC")
         self._last_rebalance_month = (int(now.year), int(now.month))
         status = self.signal_features.init_status()
@@ -182,6 +184,9 @@ class SweetWaterPhase1(QCAlgorithm):
         self._last_regime_state = None
         self._breaker_liquidated = False
         self._abandoned_dust = set()
+        self._dispersion_history = deque(maxlen=60)
+        self._last_dispersion_date = None
+        self._last_dispersion_log_date = None
 
         self.position_state: dict[object, PositionState] = {}
         self.entry_volumes = {}
@@ -207,6 +212,44 @@ class SweetWaterPhase1(QCAlgorithm):
             return pd.DataFrame()
         return hist[["open", "high", "low", "close", "volume"]]
 
+    def _prime_features_from_history(self):
+        class _PrimeBar:
+            __slots__ = ("Close",)
+
+            def __init__(self, c):
+                self.Close = c
+
+        prime_days = 140
+        end = self.Time if hasattr(self, "Time") else pd.Timestamp.now(tz="UTC")
+        start = end - timedelta(days=prime_days)
+        primed = 0
+        for ticker, sym in list(self.symbol_by_ticker.items()):
+            try:
+                hist = self.History(sym, start, end, Resolution.Hour)
+            except Exception:
+                continue
+            if hist is None or hist.empty:
+                continue
+            for ts, row in hist.iterrows():
+                ts_clean = ts[1] if isinstance(ts, tuple) else ts
+                close = float(row["close"])
+                self.feature_engine.update(
+                    {
+                        "symbol": ticker,
+                        "open": float(row["open"]),
+                        "high": float(row["high"]),
+                        "low": float(row["low"]),
+                        "close": close,
+                        "volume": float(row["volume"]),
+                        "time": ts_clean,
+                    }
+                )
+                bar_proxy = _PrimeBar(close)
+                self.regime_engine.hurst.update(sym, bar_proxy)
+                self.regime_engine.vr.update(sym, bar_proxy)
+            primed += 1
+        self.Debug(f"PRIME features symbols={primed}")
+
     def _ensure_monthly_universe(self):  # pragma: no cover
         current_month = (int(self.Time.year), int(self.Time.month))
         if current_month == self._last_rebalance_month:
@@ -230,23 +273,44 @@ class SweetWaterPhase1(QCAlgorithm):
         return equity, gross
 
     def _collect_scores(self, regime_state: str, btc_ret: float):
-        raw_signals = []
+        rows = []
         for symbol in self.symbols:
             feats = self.feature_engine.current_features(symbol.Value)
             if not feats:
                 continue
             rv = max(float(feats.get("rv_21d", 0.0) or 0.0), 1e-4)
-            mom = float(feats.get("mom_21d", 0.0) or 0.0)
-            raw_signals.append((symbol, feats, mom / rv))
-        if not raw_signals:
+            m21 = float(feats.get("mom_21d_skip", 0.0) or 0.0) / rv
+            m63 = float(feats.get("mom_63d_skip", 0.0) or 0.0) / rv
+            m90 = float(feats.get("mom_90d_skip", 0.0) or 0.0) / rv
+            feats["hurst"] = self.regime_engine.hurst.hurst(symbol)
+            feats["dhurst_30d"] = self.regime_engine.hurst.hurst_change_30d(symbol)
+            feats["vr_regime"] = self.regime_engine.vr.regime(symbol)
+            rows.append((symbol, feats, m21, m63, m90))
+        if len(rows) < 4:
             return []
-        values = [v for _, _, v in raw_signals]
-        mu = statistics.fmean(values) if values else 0.0
-        sigma = statistics.pstdev(values) if len(values) > 1 else 0.0
-        sigma = max(sigma, 1e-6)
+
+        def _z(values):
+            mu = statistics.fmean(values)
+            sd = statistics.pstdev(values) if len(values) > 1 else 0.0
+            sd = max(sd, 1e-6)
+            return [(v - mu) / sd for v in values]
+
+        m21_vals = [r[2] for r in rows]
+        z21 = _z(m21_vals)
+        z63 = _z([r[3] for r in rows])
+        z90 = _z([r[4] for r in rows])
+        if len(m21_vals) > 1:
+            disp = statistics.pstdev(m21_vals)
+            day_key = self.Time.date() if hasattr(self, "Time") else None
+            if day_key is not None and day_key != self._last_dispersion_date:
+                self._dispersion_history.append(float(disp))
+                self._last_dispersion_date = day_key
+        if getattr(self, "_bar_count", 0) % 24 == 0 and rows:
+            avg_hurst = statistics.fmean([float(r[1].get("hurst", 0.5) or 0.5) for r in rows])
+            self.Debug(f"HURST avg={avg_hurst:.4f} n={len(rows)}")
         scored = []
-        for symbol, feats, val in raw_signals:
-            z = (val - mu) / sigma
+        for i, (symbol, feats, *_rest) in enumerate(rows):
+            z_avg = (z21[i] + z63[i] + z90[i]) / 3.0
             snap = self.scorer.score(
                 symbol=symbol,
                 features=feats,
@@ -254,11 +318,24 @@ class SweetWaterPhase1(QCAlgorithm):
                 btc_context={"btc_trend": btc_ret},
                 signal_stack=self.signal_features,
                 regime_engine=self.regime_engine,
-                cross_section_zscore=z,
+                cross_section_zscore=z_avg,
             )
             scored.append((symbol, float(snap.get("final", 0.0)), feats))
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored
+
+    def _dispersion_regime(self):
+        if len(self._dispersion_history) < 20:
+            return "full"
+        sorted_disp = sorted(self._dispersion_history)
+        p15 = sorted_disp[max(0, int(0.15 * len(sorted_disp)) - 1)]
+        p30 = sorted_disp[max(0, int(0.30 * len(sorted_disp)) - 1)]
+        current = self._dispersion_history[-1]
+        if current < p15:
+            return "flat"
+        if current < p30:
+            return "half"
+        return "full"
 
     def _current_holdings(self):
         holdings = []
@@ -291,10 +368,11 @@ class SweetWaterPhase1(QCAlgorithm):
         return state
 
     def _rebalance_due(self):
-        cadence = max(1, int(getattr(self.config, "rebalance_cadence_hours", 6) or 6))
+        cadence = max(1, int(getattr(self.config, "rebalance_cadence_hours", 24) or 24))
         if self._last_rebalance_time is None:
-            return True
-        return (self.Time - self._last_rebalance_time).total_seconds() >= cadence * 3600
+            return self.Time.hour == 16
+        elapsed_h = (self.Time - self._last_rebalance_time).total_seconds() / 3600
+        return elapsed_h >= cadence and self.Time.hour == 16
 
     def _score_candidates(self, data: Slice):
         btc_ret, breadth = self._ingest_data(data)
@@ -309,10 +387,16 @@ class SweetWaterPhase1(QCAlgorithm):
         max_repl = max(0, int(getattr(self.config, "max_replacements_per_rebalance", 2)))
         min_hold = max(0, int(getattr(self.config, "min_hold_hours", 0)))
         min_delta = max(0.0, float(getattr(self.config, "min_rebalance_weight_delta", 0.03)))
-        score_threshold = float(getattr(self.config, "score_threshold", 0.0) or 0.0)
         holdings = self._current_holdings()
+        loser_floor_z = -0.5
+        for sym in list(holdings):
+            score = next((s for sy, s, _ in scored if sy == sym), 0.0)
+            if score < loser_floor_z:
+                if smart_liquidate(self, sym, tag="ZScoreLoser"):
+                    self.Debug(f"FORCE_EXIT sym={sym.Value} z={score:.3f}")
+                holdings = [h for h in holdings if h != sym]
         held_set = set(holdings)
-        ranked = [(s, score, feats) for s, score, feats in scored if score >= score_threshold]
+        ranked = [(s, score, feats) for s, score, feats in scored if score >= 0.0]
         top = ranked[:effective_top_k]
         top_symbols = [s for s, _, _ in top]
         top_set = set(top_symbols)
@@ -360,16 +444,25 @@ class SweetWaterPhase1(QCAlgorithm):
         equity = float(getattr(self.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
         if equity <= 0 or not target_set:
             return
-        inv_vols = {}
+        weights_raw = {}
         for sym in target_list:
             feats = next((f for s, _, f in scored if s == sym), {})
             rv = max(float(feats.get("rv_21d", 0.0) or 0.0), 0.05)
-            inv_vols[sym] = 1.0 / rv
-        total_inv = sum(inv_vols.values()) or 1.0
-        target_weights = {sym: max(0.0, float(risk_scale)) * (iv / total_inv) for sym, iv in inv_vols.items()}
-        max_position_pct = float(getattr(self.config, "max_position_pct", 1.0) or 1.0)
+            sec = self.Securities.get(sym)
+            bid = float(getattr(sec, "BidPrice", 0.0) or 0.0)
+            ask = float(getattr(sec, "AskPrice", 0.0) or 0.0)
+            mid = 0.5 * (bid + ask) if (bid > 0 and ask > 0) else float(getattr(sec, "Price", 0.0) or 0.0)
+            spread_bps = (
+                ((ask - bid) / mid * 1e4)
+                if (bid > 0 and ask > 0 and mid > 0)
+                else float(getattr(self.config, "assumed_spread_bps", 12.0))
+            )
+            spread_penalty = 1.0 + max(0.0, spread_bps - 10.0) / 50.0
+            weights_raw[sym] = 1.0 / (rv * spread_penalty)
+        total = sum(weights_raw.values()) or 1.0
+        target_weights = {sym: max(0.0, float(risk_scale)) * (w / total) for sym, w in weights_raw.items()}
         for sym in list(target_weights):
-            target_weights[sym] = min(target_weights[sym], max_position_pct)
+            target_weights[sym] = min(target_weights[sym], float(self.config.max_position_pct))
         cost_skips = []
         for symbol in target_list:
             sec = self.Securities.get(symbol)
@@ -424,10 +517,10 @@ class SweetWaterPhase1(QCAlgorithm):
                     "volume": bar.Volume,
                 }
             )
+            self.regime_engine.hurst.update(symbol, bar)
+            self.regime_engine.vr.update(symbol, bar)
             if getattr(self.config, "signal_mode", "cross_sectional_momentum") == "microstructure":
                 self.signal_features.update(symbol, bar)
-                self.regime_engine.hurst.update(symbol, bar)
-                self.regime_engine.vr.update(symbol, bar)
                 ticks = getattr(data, "Ticks", {}).get(symbol, []) if hasattr(data, "Ticks") else []
                 for tick in ticks:
                     self.signal_features.update(symbol, tick)
@@ -471,11 +564,30 @@ class SweetWaterPhase1(QCAlgorithm):
                 self.Debug("BREAKER disengaged")
             self._breaker_liquidated = False
 
+        exits = manage_open_positions(self, data)
+        for sym, tag in exits:
+            self.Debug(f"EXIT sym={sym.Value} tag={tag}")
+
         state, scored = self._score_candidates(data)
-        if state == "risk_off":
-            liquidate_all_positions(self, tag="RiskOff")
+        disp = self._dispersion_regime()
+        if self._dispersion_history:
+            day_key = self.Time.date() if hasattr(self, "Time") else None
+            if day_key is not None and day_key != self._last_dispersion_log_date:
+                self.Debug(
+                    f"DISP regime={disp} current={self._dispersion_history[-1]:.4f} n={len(self._dispersion_history)}"
+                )
+                self._last_dispersion_log_date = day_key
+        if state == "risk_off" or disp == "flat":
+            liquidate_all_positions(self, tag="RiskOff" if state == "risk_off" else "FlatDispersion")
         elif self._rebalance_due():
-            risk_scale = 1.0 if state == "risk_on" else 0.5
+            if state == "risk_on" and disp == "full":
+                risk_scale = 1.0
+            elif state == "risk_on" and disp == "half":
+                risk_scale = 0.5
+            elif state == "risk_reduce" and disp == "full":
+                risk_scale = 0.5
+            else:
+                risk_scale = 0.25
             self._rebalance_portfolio(scored, risk_scale=risk_scale)
 
         bars_since_trade = self._bar_count - self._last_trade_bar
@@ -521,6 +633,17 @@ class SweetWaterPhase1(QCAlgorithm):
                     self._abandoned_dust.add(symbol)
             except Exception:
                 pass
+        if qty_now > 0 and symbol not in self.position_state:
+            feats = self.feature_engine.current_features(symbol.Value)
+            atr = float(feats.get("atr", 0.0) or 0.0)
+            fill_px = float(getattr(event, "FillPrice", 0.0) or 0.0)
+            if fill_px > 0:
+                self.position_state[symbol] = PositionState(
+                    entry_price=fill_px,
+                    highest_close=fill_px,
+                    entry_atr=atr if atr > 0 else fill_px * 0.02,
+                    entry_time=self.Time,
+                )
 
     def OnEndOfAlgorithm(self):  # pragma: no cover
         self.reporter.final_report()

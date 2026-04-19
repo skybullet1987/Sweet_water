@@ -104,28 +104,41 @@ class UnifiedRiskEngine:
 class DrawdownCircuitBreaker:
     """Stops entries when drawdown breaches threshold; resets only on recovery."""
 
-    def __init__(self, max_drawdown_pct: float = -0.10, recovery_pct: float = 0.02):
+    def __init__(self, max_drawdown_pct: float = -0.10, recovery_pct: float = 0.02, max_triggered_bars: int = 168):
         self.max_drawdown_pct = float(max_drawdown_pct)
         self.recovery_pct = float(recovery_pct)
+        self.max_triggered_bars = int(max_triggered_bars)
         self.peak_equity = 0.0
         self.breaker_triggered = False
         self.trigger_time = None
         self.trigger_equity = None
         self.equity_at_trigger = 0.0
+        self._bars_triggered = 0
 
     def update(self, algorithm) -> None:
         current_equity = float(getattr(algorithm.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
         if current_equity > self.peak_equity:
             self.peak_equity = current_equity
         if self.breaker_triggered:
+            self._bars_triggered += 1
             recovery_target = self.equity_at_trigger * (1 + self.recovery_pct)
+            reason = None
             if current_equity >= recovery_target:
+                reason = "equity_recovery"
+            elif self._bars_triggered >= self.max_triggered_bars:
+                reason = "time_expiry"
+            if reason is not None:
                 try:
-                    algorithm.Debug(f"BREAKER RESET eq=${current_equity:.2f}")
+                    algorithm.Debug(
+                        f"BREAKER RESET reason={reason} bars={self._bars_triggered} "
+                        f"eq=${current_equity:.2f}"
+                    )
                 except Exception:
                     pass
                 self.breaker_triggered = False
                 self.trigger_time = None
+                self.trigger_equity = None
+                self._bars_triggered = 0
 
         if self.peak_equity > 0:
             drawdown = (current_equity - self.peak_equity) / self.peak_equity
@@ -134,6 +147,8 @@ class DrawdownCircuitBreaker:
                 self.trigger_time = getattr(algorithm, "Time", None)
                 self.trigger_equity = current_equity
                 self.equity_at_trigger = current_equity
+                self._bars_triggered = 0
+                self.peak_equity = current_equity
                 try:
                     algorithm.Debug(f"BREAKER TRIP dd={drawdown:.2%} peak=${self.peak_equity:.2f} eq=${current_equity:.2f}")
                 except Exception:

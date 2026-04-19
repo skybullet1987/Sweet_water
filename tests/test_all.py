@@ -42,8 +42,10 @@ def test_strategy_config_defaults_updated():
     assert cfg.universe_size == 30
     assert cfg.top_k == 6
     assert cfg.max_positions == 6
-    assert cfg.edge_cost_multiplier == 1.5
-    assert cfg.score_threshold == 0.20
+    assert cfg.edge_cost_multiplier == 1.2
+    assert cfg.edge_scale == 0.005
+    assert cfg.score_threshold == 0.75
+    assert cfg.score_clip_value == 3.0
     assert cfg.min_rebalance_weight_delta == 0.015
     assert cfg.max_replacements_per_rebalance == 4
     assert cfg.rebalance_cadence_hours == 4

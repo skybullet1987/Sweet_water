@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from collections import defaultdict, deque
 
 import pandas as pd
@@ -79,7 +80,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self.SetEndDate(self.config.end_year, self.config.end_month, self.config.end_day)
         self.SetWarmup(self.config.warmup_bars, Resolution.Hour)
 
-        self.feature_engine = FeatureEngine(signal_mode=getattr(self.config, "signal_mode", "microstructure"))
+        self.feature_engine = FeatureEngine(signal_mode=getattr(self.config, "signal_mode", "cross_sectional_momentum"))
         self.regime_engine = RegimeEngine(self.config)
         self.scorer = Scorer(self.config)
         self.signal_features = SignalFeatureStack(self)
@@ -90,7 +91,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self.max_participation_rate = 0.15
         self.spread_limit_pct = 0.025
 
-        self._drawdown_breaker = DrawdownCircuitBreaker(max_drawdown_pct=-0.10)
+        self._drawdown_breaker = DrawdownCircuitBreaker(max_drawdown_pct=-0.18, max_triggered_bars=168)
 
         self.symbols = []
         self.reference_symbols = []
@@ -118,14 +119,17 @@ class SweetWaterPhase1(QCAlgorithm):
         self.Debug(
             "SIG init "
             + " ".join([f"{k}={v}" for k, v in status.items()])
-            + f" mode={getattr(self.config, 'signal_mode', 'microstructure')}"
+            + f" mode={getattr(self.config, 'signal_mode', 'cross_sectional_momentum')}"
         )
 
     def _subscribe_symbol(self, ticker: str):  # pragma: no cover
         if ticker in self.symbol_by_ticker:
             return self.symbol_by_ticker[ticker]
         sec_obj = self.AddCrypto(ticker, Resolution.Hour, Market.Kraken)
-        if getattr(self.config, "signal_mode", "microstructure") == "microstructure" and bool(getattr(self, "LiveMode", False)):
+        if (
+            getattr(self.config, "signal_mode", "cross_sectional_momentum") == "microstructure"
+            and bool(getattr(self, "LiveMode", False))
+        ):
             try:
                 tick_obj = self.AddCrypto(ticker, Resolution.Tick, Market.Kraken)
                 self._configure_security_models(tick_obj)
@@ -176,6 +180,8 @@ class SweetWaterPhase1(QCAlgorithm):
         self._last_daily_summary_date = None
         self._last_rebalance_time = None
         self._last_regime_state = None
+        self._breaker_liquidated = False
+        self._abandoned_dust = set()
 
         self.position_state: dict[object, PositionState] = {}
         self.entry_volumes = {}
@@ -224,11 +230,23 @@ class SweetWaterPhase1(QCAlgorithm):
         return equity, gross
 
     def _collect_scores(self, regime_state: str, btc_ret: float):
-        scored = []
+        raw_signals = []
         for symbol in self.symbols:
             feats = self.feature_engine.current_features(symbol.Value)
             if not feats:
                 continue
+            rv = max(float(feats.get("rv_21d", 0.0) or 0.0), 1e-4)
+            mom = float(feats.get("mom_21d", 0.0) or 0.0)
+            raw_signals.append((symbol, feats, mom / rv))
+        if not raw_signals:
+            return []
+        values = [v for _, _, v in raw_signals]
+        mu = statistics.fmean(values) if values else 0.0
+        sigma = statistics.pstdev(values) if len(values) > 1 else 0.0
+        sigma = max(sigma, 1e-6)
+        scored = []
+        for symbol, feats, val in raw_signals:
+            z = (val - mu) / sigma
             snap = self.scorer.score(
                 symbol=symbol,
                 features=feats,
@@ -236,6 +254,7 @@ class SweetWaterPhase1(QCAlgorithm):
                 btc_context={"btc_trend": btc_ret},
                 signal_stack=self.signal_features,
                 regime_engine=self.regime_engine,
+                cross_section_zscore=z,
             )
             scored.append((symbol, float(snap.get("final", 0.0)), feats))
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -341,7 +360,16 @@ class SweetWaterPhase1(QCAlgorithm):
         equity = float(getattr(self.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
         if equity <= 0 or not target_set:
             return
-        target_w = max(0.0, float(risk_scale)) / len(target_set)
+        inv_vols = {}
+        for sym in target_list:
+            feats = next((f for s, _, f in scored if s == sym), {})
+            rv = max(float(feats.get("rv_21d", 0.0) or 0.0), 0.05)
+            inv_vols[sym] = 1.0 / rv
+        total_inv = sum(inv_vols.values()) or 1.0
+        target_weights = {sym: max(0.0, float(risk_scale)) * (iv / total_inv) for sym, iv in inv_vols.items()}
+        max_position_pct = float(getattr(self.config, "max_position_pct", 1.0) or 1.0)
+        for sym in list(target_weights):
+            target_weights[sym] = min(target_weights[sym], max_position_pct)
         cost_skips = []
         for symbol in target_list:
             sec = self.Securities.get(symbol)
@@ -352,6 +380,7 @@ class SweetWaterPhase1(QCAlgorithm):
                 continue
             current_qty = float(getattr(self.Portfolio[symbol], "Quantity", 0.0) or 0.0)
             current_w = (current_qty * price) / max(equity, 1e-9)
+            target_w = target_weights.get(symbol, 0.0)
             delta_w = target_w - current_w
             required_delta = min_delta if symbol in held_set else (min_delta * NEW_ENTRANT_MIN_DELTA_MULTIPLIER)
             if abs(delta_w) < required_delta:
@@ -395,7 +424,7 @@ class SweetWaterPhase1(QCAlgorithm):
                     "volume": bar.Volume,
                 }
             )
-            if getattr(self.config, "signal_mode", "microstructure") == "microstructure":
+            if getattr(self.config, "signal_mode", "cross_sectional_momentum") == "microstructure":
                 self.signal_features.update(symbol, bar)
                 self.regime_engine.hurst.update(symbol, bar)
                 self.regime_engine.vr.update(symbol, bar)
@@ -431,9 +460,16 @@ class SweetWaterPhase1(QCAlgorithm):
 
         self._drawdown_breaker.update(self)
         if self._drawdown_breaker.is_triggered():
-            liquidate_all_positions(self, tag="Breaker")
+            if not self._breaker_liquidated:
+                liquidate_all_positions(self, tag="Breaker")
+                self._breaker_liquidated = True
+                self.Debug("BREAKER liquidate_once=true")
             self.reporter.tick("breaker")
             return
+        else:
+            if self._breaker_liquidated:
+                self.Debug("BREAKER disengaged")
+            self._breaker_liquidated = False
 
         state, scored = self._score_candidates(data)
         if state == "risk_off":
@@ -462,10 +498,29 @@ class SweetWaterPhase1(QCAlgorithm):
         self.reporter.tick(state)
 
     def OnOrderEvent(self, event):  # pragma: no cover
-        status = getattr(event, "Status", None)
-        if status in ("Filled", 3) or str(getattr(event, "Status", "")).lower() == "filled":
-            self._last_trade_bar = self._bar_count
         self.reporter.on_order_event(self, event)
+        status = getattr(event, "Status", None)
+        status_str = str(status).lower() if status is not None else ""
+        is_filled = "filled" in status_str and "partial" not in status_str
+        if not is_filled:
+            return
+        self._last_trade_bar = self._bar_count
+        symbol = getattr(event, "Symbol", None)
+        if symbol is None:
+            return
+        try:
+            qty_now = float(getattr(self.Portfolio[symbol], "Quantity", 0.0) or 0.0)
+        except Exception:
+            qty_now = 0.0
+        if qty_now <= 0:
+            self.position_state.pop(symbol, None)
+            try:
+                from execution import is_invested_not_dust
+
+                if not is_invested_not_dust(self, symbol):
+                    self._abandoned_dust.add(symbol)
+            except Exception:
+                pass
 
     def OnEndOfAlgorithm(self):  # pragma: no cover
         self.reporter.final_report()

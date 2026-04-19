@@ -2,6 +2,8 @@ from __future__ import annotations
 
 
 class Scorer:
+    ADX_TREND_THRESHOLD = 25.0
+
     def __init__(self) -> None:
         self.weights = {
             "trend": 1.0 / 4.0,
@@ -22,7 +24,7 @@ class Scorer:
         if regime_state == "risk_on":
             trend = 1.0 if features.get("ema20", 0.0) > features.get("ema50", 0.0) else -1.0
             momentum = 1.0 if features.get("mom_24", 0.0) > 0 else -1.0
-            strength = 1.0 if features.get("adx", 0.0) > 25 else -1.0
+            strength = 1.0 if features.get("adx", 0.0) > self.ADX_TREND_THRESHOLD else -1.0
             flow = 1.0 if features.get("ofi", 0.0) > 0 else -1.0
             raw = (
                 self.weights["trend"] * trend

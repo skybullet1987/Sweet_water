@@ -19,6 +19,11 @@ try:
 except Exception:  # pragma: no cover
     GaussianMixture = None
 
+HMM_COMPONENTS = 3
+HMM_MAX_ITER = 200
+HMM_RANDOM_STATE = 7
+GMM_COMPONENTS = 2
+
 
 @dataclass
 class _ModelState:
@@ -56,18 +61,23 @@ class RegimeEngine:
         y = np.asarray(self._ret[-window:], dtype=float)
         if HAS_HMM:
             try:
-                model = GaussianHMM(n_components=3, covariance_type="diag", n_iter=200, random_state=7)
+                model = GaussianHMM(
+                    n_components=HMM_COMPONENTS,
+                    covariance_type="diag",
+                    n_iter=HMM_MAX_ITER,
+                    random_state=HMM_RANDOM_STATE,
+                )
                 model.fit(x)
                 states = model.predict(x)
-                self._model = _ModelState(model=model, labels=self._label_states(states, y, 3))
+                self._model = _ModelState(model=model, labels=self._label_states(states, y, HMM_COMPONENTS))
                 return
             except Exception:
                 pass
         if GaussianMixture is not None:
-            model = GaussianMixture(n_components=2, covariance_type="full", random_state=7)
+            model = GaussianMixture(n_components=GMM_COMPONENTS, covariance_type="full", random_state=HMM_RANDOM_STATE)
             model.fit(x)
             states = model.predict(x)
-            self._model = _ModelState(model=model, labels=self._label_states(states, y, 2))
+            self._model = _ModelState(model=model, labels=self._label_states(states, y, GMM_COMPONENTS))
             return
         self._model = _ModelState(model=None, labels=None)
 

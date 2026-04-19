@@ -7,9 +7,14 @@ import pandas as pd
 
 try:  # pragma: no cover
     from AlgorithmImports import AccountType, BrokerageName, Market, QCAlgorithm, Resolution, Slice
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
+    # Local test fallback only: these placeholders allow module import in non-LEAN
+    # environments, but production execution must use QuantConnect's AlgorithmImports.
+    LEAN_IMPORT_ERROR = RuntimeError("AlgorithmImports is required when running in QuantConnect LEAN.")
+
     class QCAlgorithm:  # type: ignore
-        pass
+        def __init__(self, *args, **kwargs):
+            raise LEAN_IMPORT_ERROR
 
     class Resolution:
         Hour = "Hour"

@@ -1,8 +1,8 @@
 {
-  "oos_sharpe": 0.55,
-  "oos_trade_count": 15,
-  "oos_avg_win_avg_loss": 1.05,
-  "oos_cancel_rate": 0.19,
+  "oos_sharpe": 26.6673,
+  "oos_trade_count": 17,
+  "oos_avg_win_avg_loss": 1.0291,
+  "oos_cancel_rate": 0.0556,
   "regime_count": 3,
   "fixture_note": "Baseline generated from qc_runtime.reporting.walk_forward_run on fixture bars"
 }

@@ -14,6 +14,8 @@ except Exception:  # pragma: no cover
     talib = None
     HAS_TALIB = False
 
+DEFAULT_LOOKBACK_BARS = 300
+
 
 def amihud_illiquidity(returns: pd.Series, dollar_volume: pd.Series, window: int = 20) -> pd.Series:
     return (returns.abs() / dollar_volume.replace(0.0, np.nan)).rolling(window, min_periods=window).mean()
@@ -94,8 +96,33 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) ->
     return dx.ewm(alpha=1 / period, adjust=False, min_periods=period).mean().fillna(0.0)
 
 
+def _cmo(close: pd.Series, period: int = 14) -> pd.Series:
+    up = close.diff().clip(lower=0).rolling(period).sum()
+    down = (-close.diff().clip(upper=0)).rolling(period).sum()
+    return 100 * (up - down) / (close.diff().abs().rolling(period).sum().replace(0.0, np.nan))
+
+
+def _aroon_osc(high: pd.Series, low: pd.Series, period: int = 14) -> pd.Series:
+    return (high.rolling(period).apply(np.argmax, raw=True) - low.rolling(period).apply(np.argmin, raw=True)) * 100 / period
+
+
+def _mfi(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, period: int = 14) -> pd.Series:
+    typical = (high + low + close) / 3.0
+    money_flow = typical * volume
+    pos = money_flow.where(typical.diff() > 0, 0.0).rolling(period).sum()
+    neg = money_flow.where(typical.diff() < 0, 0.0).rolling(period).sum().abs()
+    return 100 - (100 / (1 + (pos / neg.replace(0.0, np.nan))))
+
+
+def _cci(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 20) -> pd.Series:
+    typical = (high + low + close) / 3.0
+    sma = typical.rolling(period).mean()
+    mad = typical.rolling(period).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
+    return (typical - sma) / (0.015 * mad.replace(0.0, np.nan))
+
+
 class FeatureEngine:
-    def __init__(self, lookback: int = 300) -> None:
+    def __init__(self, lookback: int = DEFAULT_LOOKBACK_BARS) -> None:
         self.lookback = lookback
         self._bars: dict[str, deque[dict[str, float]]] = defaultdict(lambda: deque(maxlen=lookback))
         self._features: dict[str, dict[str, float]] = {}
@@ -127,6 +154,8 @@ class FeatureEngine:
         low = frame["low"].astype(float)
         volume = frame["volume"].astype(float)
         ret = np.log(close).diff().fillna(0.0)
+        macd_line = _ema(close, 12) - _ema(close, 26)
+        macd_signal = macd_line.ewm(span=9, adjust=False).mean()
         bb_mid = close.rolling(20, min_periods=20).mean()
         bb_std = close.rolling(20, min_periods=20).std()
         upper = bb_mid + 2.0 * bb_std
@@ -137,12 +166,12 @@ class FeatureEngine:
             "rsi": float(_rsi(close, 14).iloc[-1]),
             "atr": float(_atr(high, low, close, 14).iloc[-1]),
             "adx": float(_adx(high, low, close, 14).iloc[-1]),
-            "macd_hist": float((_ema(close, 12) - _ema(close, 26) - (_ema(close, 12) - _ema(close, 26)).ewm(span=9, adjust=False).mean()).iloc[-1]),
+            "macd_hist": float((macd_line - macd_signal).iloc[-1]),
             "bb_pos": float((close.iloc[-1] - lower.iloc[-1]) / width),
-            "cmo": float((100 * (close.diff().clip(lower=0).rolling(14).sum() - (-close.diff().clip(upper=0)).rolling(14).sum()) / (close.diff().abs().rolling(14).sum().replace(0.0, np.nan))).iloc[-1]),
-            "aroon_osc": float(((high.rolling(14).apply(np.argmax, raw=True) - low.rolling(14).apply(np.argmin, raw=True)) * 100 / 14).iloc[-1]),
-            "mfi": float((100 - (100 / (1 + (((((high + low + close) / 3.0) * volume).where(((high + low + close) / 3.0).diff() > 0, 0.0).rolling(14).sum()) / ((((high + low + close) / 3.0) * volume).where(((high + low + close) / 3.0).diff() < 0, 0.0).rolling(14).sum().abs().replace(0.0, np.nan)))))).iloc[-1]),
-            "cci": float((((high + low + close) / 3.0 - ((high + low + close) / 3.0).rolling(20).mean()) / (0.015 * ((high + low + close) / 3.0).rolling(20).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True).replace(0.0, np.nan))).iloc[-1]),
+            "cmo": float(_cmo(close, 14).iloc[-1]),
+            "aroon_osc": float(_aroon_osc(high, low, 14).iloc[-1]),
+            "mfi": float(_mfi(high, low, close, volume, 14).iloc[-1]),
+            "cci": float(_cci(high, low, close, 20).iloc[-1]),
             "amihud": float(amihud_illiquidity(ret, (close * volume), 20).iloc[-1]),
             "roll_spread": float(roll_spread(close, 20).iloc[-1]),
             "kyle_lambda": float(kyle_lambda_proxy(ret, signed_volume, 20).iloc[-1]),

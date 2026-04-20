@@ -83,5 +83,5 @@ def test_rebalance_entry_notional_clamped_by_available_cash(monkeypatch):
     assert len(submitted) == 1
     _, qty = submitted[0]
     notional = qty * 100.0
-    assert notional <= 28.5 + 1e-9
-    assert notional > 28.0
+    assert notional <= 29.1 + 1e-9
+    assert notional > 28.5

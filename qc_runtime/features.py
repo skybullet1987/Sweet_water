@@ -290,12 +290,15 @@ class FeatureEngine:
         )
         closes7 = list(state["close_history_7h"])
         base_features = {
+            "close": self._to_float(close, 0.0),
             "sma_20h": self._to_float(sma_20h, 0.0),
             "std_20h": self._to_float(std_20h, 0.0),
             "z_20h": self._to_float(z_score_20h(closes24, close), 0.0),
             "rsi_14": self._to_float(rsi_14(closes24), 50.0),
             "ret_1h": self._to_float(ret_pct(closes24[-2], closes24[-1]) if len(closes24) >= 2 else 0.0, 0.0),
             "ret_6h": self._to_float(ret_pct(closes7[-7], closes7[-1]) if len(closes7) >= 7 else 0.0, 0.0),
+            "new_high_24h": float(close >= max(closes24[-24:])) if len(closes24) >= 24 else 0.0,
+            "new_low_24h": float(close <= min(closes24[-24:])) if len(closes24) >= 24 else 0.0,
         }
 
         if state["count"] < 60:
@@ -367,10 +370,12 @@ class FeatureEngine:
             "dd_63d": self._clip(self._to_float(dd_63d, 0.0), 0.0, 1.0),
             "vol_stress_21d": self._clip(self._to_float(vol_stress_21d, 0.0), 0.0, 1.0),
             "vol_ratio_24h_7d": self._to_float(vol_ratio_24h_7d, 1.0),
+            "volume_rel_20h": self._to_float(volume / max((sum(list(state["volume"])[-20:]) / 20.0) if len(state["volume"]) >= 20 else volume, 1e-9), 1.0),
             "daily_count": float(len(daily_close)),
             "ema20": self._to_float(state["ema20"], float("nan")) if state["count"] >= 20 else float("nan"),
             "ema50": self._to_float(state["ema50"], float("nan")) if state["count"] >= 50 else float("nan"),
             "ema200": self._to_float(state["ema200"], float("nan")) if state["count"] >= 200 else float("nan"),
+            "atr_pct": self._to_float((float(state["atr"] or 0.0) / close) if close > 0 else 0.0, 0.0),
             "rsi": 50.0,
             "adx": 0.0,
             "ofi": 0.0,
@@ -406,6 +411,11 @@ class FeatureEngine:
             )
         else:
             features["realized_vol"] = features["realized_vol_30"]
+            if len(state["high"]) >= 30:
+                high_s = pd.Series(state["high"], dtype=float)
+                low_s = pd.Series(state["low"], dtype=float)
+                close_s = pd.Series(state["close"], dtype=float)
+                features["adx"] = self._to_float(_adx(high_s, low_s, close_s, 14).iloc[-1], 0.0)
 
         self._features[symbol] = features
 

@@ -78,6 +78,9 @@ class StrategyConfig:
     feature_min_bars: int = 60
     regime_vol_window: int = 24
     stale_order_bars: int = 3
+    stale_price_minutes: int = 90
+    cash_safety_factor: float = 0.97
+    rebalance_invalid_retry_cap: int = 3
     score_clip_value: float = 3.0
     min_rv_floor: float = 1e-4
     score_mom21_weight: float = 0.6
@@ -97,6 +100,10 @@ class StrategyConfig:
     scalper_btc_6h_floor: float = -0.04
     scalper_btc_panic_threshold: float = -0.025
     scalper_use_btc_ema_gate: bool = False
+    scalper_adx_range_max: float = 20.0
+    scalper_adx_trend_min: float = 30.0
+    scalper_breakout_z_entry: float = 2.0
+    scalper_breakout_volume_mult: float = 1.5
 
     # Position management
     scalper_position_size_pct: float = 0.15
@@ -105,8 +112,19 @@ class StrategyConfig:
     scalper_time_stop_hours: float = 6.0
     scalper_anti_churn_hours: float = 3.0
     scalper_consecutive_loss_brake: int = 3
-    scalper_daily_loss_brake: float = -0.03
+    scalper_daily_loss_brake: float = -0.02
     scalper_universe_size: int = 20
+    scalper_loss_cooldown_after: int = 2
+    scalper_loss_cooldown_hours: float = 24.0
+    scalper_risk_per_trade_pct: float = 0.005
+    scalper_max_symbol_exposure_pct: float = 0.25
+    scalper_max_gross_exposure_pct: float = 0.90
+    scalper_corr_threshold: float = 0.70
+    scalper_corr_block_count: int = 2
+    scalper_trail_atr_mult_mr: float = 2.0
+    scalper_trail_atr_mult_mom: float = 3.0
+    scalper_tp_atr_mult_mr: float = 2.0
+    scalper_tp_atr_mult_mom: float = 5.0
 
     min_qty_fallback: dict[str, float] = field(default_factory=lambda: {
         'AXSUSD': 5.0, 'SANDUSD': 10.0, 'MANAUSD': 10.0, 'ADAUSD': 10.0,

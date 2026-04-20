@@ -33,6 +33,15 @@ try:
     from config import CONFIG, StrategyConfig
 except ModuleNotFoundError:  # pragma: no cover
     from .config import CONFIG, StrategyConfig  # type: ignore
+from sizing import (
+    Executor,
+    can_afford,
+    clear_rebalance_failure,
+    free_cash_usd,
+    is_price_stale,
+    mark_rebalance_failure,
+    rebalance_symbol_blocked,
+)
 
 POSITION_TOLERANCE = 1e-9
 DEFAULT_LAZY_ATR_PCT = 0.05
@@ -117,7 +126,9 @@ def is_invested_not_dust(algo, symbol) -> bool:
     qty = float(getattr(holding, "Quantity", 0.0) or 0.0)
     if qty <= 0:
         return False
-    price = float(getattr(algo.Securities.get(symbol), "Price", getattr(holding, "Price", 0.0)) or 0.0)
+    securities = getattr(algo, "Securities", {})
+    sec = securities.get(symbol) if hasattr(securities, "get") else None
+    price = float(getattr(sec, "Price", getattr(holding, "Price", 0.0)) or 0.0)
     return qty >= get_min_quantity(algo, symbol) * 0.5 or qty * price >= get_min_notional_usd(algo, symbol) * 0.5
 
 
@@ -298,7 +309,31 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
         quantity = -sized
     if not _order_cap_allows_submit(algo, is_entry=(quantity > 0)):
         return None
+    if quantity > 0 and rebalance_symbol_blocked(algo, symbol) and str(tag).startswith("Rebalance"):
+        _log_once_per_hour(
+            algo,
+            f"rebalance_blocked:{getattr(symbol, 'Value', symbol)}",
+            f"REBAL_BLOCK sym={getattr(symbol, 'Value', symbol)} reason=retry_cap",
+        )
+        return None
     if force_market:
+        securities = getattr(algo, "Securities", {})
+        sec = securities.get(symbol) if hasattr(securities, "get") else None
+        est_px = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
+        ok, required, available = can_afford(algo, symbol, quantity, est_px) if est_px > 0 else (True, 0.0, 0.0)
+        if quantity > 0 and est_px > 0 and not ok:
+            _log_once_per_hour(
+                algo,
+                f"insuff:{getattr(symbol, 'Value', symbol)}",
+                (
+                    "INSUFF_FUNDS "
+                    f"sym={getattr(symbol, 'Value', symbol)} req={required:.4f} avail={available:.4f} "
+                    f"tag={tag}"
+                ),
+            )
+            if str(tag).startswith("Rebalance") or str(tag).startswith("[StaleEsc]"):
+                mark_rebalance_failure(algo, symbol, "insuff_funds")
+            return None
         ticket = _safe_submit_order(algo, symbol, quantity, lambda: algo.MarketOrder(symbol, quantity, tag=tag))
         if ticket is not None and quantity > 0:
             algo._orders_today = int(getattr(algo, "_orders_today", 0) or 0) + 1
@@ -313,11 +348,38 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
         limit_price = bid if quantity > 0 else ask
     else:
         limit_price = price
+    if is_price_stale(algo, symbol, limit_price):
+        _log_once_per_hour(
+            algo,
+            f"stale_px:{getattr(symbol, 'Value', symbol)}",
+            (
+                "STALE_PRICE "
+                f"sym={getattr(symbol, 'Value', symbol)} px={limit_price} "
+                f"tag={tag}"
+            ),
+        )
+        return None
+    ok, required, available = can_afford(algo, symbol, quantity, limit_price)
+    if quantity > 0 and not ok:
+        _log_once_per_hour(
+            algo,
+            f"insuff:{getattr(symbol, 'Value', symbol)}",
+            (
+                "INSUFF_FUNDS "
+                f"sym={getattr(symbol, 'Value', symbol)} req={required:.4f} avail={available:.4f} "
+                f"tag={tag}"
+            ),
+        )
+        if str(tag).startswith("Rebalance"):
+            mark_rebalance_failure(algo, symbol, "insuff_funds")
+        return None
     ticket = _safe_submit_order(algo, symbol, quantity, lambda: algo.LimitOrder(symbol, quantity, limit_price, tag=tag))
     if ticket is None:
         return None
     if quantity > 0:
         algo._orders_today = int(getattr(algo, "_orders_today", 0) or 0) + 1
+        if str(tag).startswith("Rebalance"):
+            clear_rebalance_failure(algo, symbol)
     algo._submitted_orders[symbol] = {
         "order_id": ticket.OrderId,
         "time": getattr(algo, "Time", datetime.now(timezone.utc)),
@@ -373,17 +435,19 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
     if qty < min_qty or (price > 0 and qty * price < min_notional):
         if not hasattr(algo, "_abandoned_dust"):
             algo._abandoned_dust = set()
+        already_dust = symbol in algo._abandoned_dust
         algo._abandoned_dust.add(symbol)
-        _log_once_per_hour(
-            algo,
-            f"dust_skip:{getattr(symbol, 'Value', symbol)}",
-            (
-                "DUST key=skip "
-                f"sym={getattr(symbol, 'Value', symbol)} "
-                f"qty={qty:.10f} min_qty={min_qty:.10f} "
-                f"notional={qty * price:.6f} min_notional={min_notional:.4f}"
-            ),
-        )
+        _position_state(algo).pop(symbol, None)
+        if not already_dust:
+            debug_limited(
+                algo,
+                (
+                    "DUST key=skip "
+                    f"sym={getattr(symbol, 'Value', symbol)} "
+                    f"qty={qty:.10f} min_qty={min_qty:.10f} "
+                    f"notional={qty * price:.6f} min_notional={min_notional:.4f}"
+                ),
+            )
         return False
     ticket = place_limit_or_market(algo, symbol, -qty, tag=tag)
     return ticket is not None
@@ -676,46 +740,3 @@ class RealisticCryptoSlippage:
         )
         return price * pct
 
-
-class Executor:
-    def __init__(self, config: StrategyConfig = CONFIG) -> None:
-        self.config = config
-        self.entry_prices: dict[str, float] = {}
-        self.entry_atrs: dict[str, float] = {}
-        self.highest_close: dict[str, float] = {}
-
-    def place_entry(self, symbol: str, target_weight: float, score: float) -> dict[str, float | str]:
-        return {
-            "symbol": symbol,
-            "target_weight": float(target_weight),
-            "score": float(score),
-            "estimated_cost": float(KrakenTieredFeeModel().estimate_round_trip_cost(symbol, 100.0, is_limit=True) / 100.0),
-            "type": "limit",
-        }
-
-    def register_fill(self, symbol: str, price: float, atr: float, side: int, bar_index: int) -> None:
-        _ = side, bar_index
-        self.entry_prices[symbol] = float(price)
-        self.entry_atrs[symbol] = float(atr)
-        self.highest_close[symbol] = float(price)
-
-    def manage_exits(self, open_positions: dict[str, dict[str, float]], bar_index: int | None = None) -> list[tuple[str, str]]:
-        _ = bar_index
-        out = []
-        for symbol, snap in open_positions.items():
-            entry = self.entry_prices.get(symbol)
-            atr = self.entry_atrs.get(symbol, 0.0)
-            if entry is None or atr <= 0:
-                continue
-            high = float(snap.get("high", entry))
-            low = float(snap.get("low", entry))
-            close = float(snap.get("close", entry))
-            self.highest_close[symbol] = max(self.highest_close.get(symbol, entry), close)
-            tp = entry + self.config.tp_atr_mult * atr
-            sl = entry - self.config.sl_atr_mult * atr
-            chand = self.highest_close[symbol] - self.config.chandelier_atr_mult * atr
-            if high >= tp:
-                out.append((symbol, "TP"))
-            elif low <= max(sl, chand):
-                out.append((symbol, "Chandelier" if chand >= sl else "SL"))
-        return out

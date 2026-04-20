@@ -44,16 +44,21 @@ from execution import (
     KrakenTieredFeeModel,
     PositionState,
     RealisticCryptoSlippage,
+    can_afford,
+    clear_rebalance_failure,
     debug_limited,
     execute_regime_entries,
     escalate_stale_orders,
+    free_cash_usd,
     get_min_notional_usd,
     is_invested_not_dust,
     liquidate_all_positions,
+    mark_rebalance_failure,
     manage_open_positions,
     place_entry,
     place_limit_or_market,
     position_status,
+    rebalance_symbol_blocked,
     round_quantity,
     smart_liquidate,
 )
@@ -64,6 +69,7 @@ from risk import DrawdownCircuitBreaker, RiskManager
 from scoring import Scorer
 from sizing import Sizer
 from universe import KRAKEN_SAFE_LIST, REFERENCE_SYMBOLS, select_universe
+from scalper import regime_for, vol_target_qty
 
 INFINITE_HELD_HOURS = 10**9
 DEFAULT_MISSING_SCORE = -1e9
@@ -206,6 +212,9 @@ class SweetWaterPhase1(QCAlgorithm):
         self._scalper_daily_anchor_date = None
         self._scalper_session_brake_until = None
         self._scalper_recent_pnls = deque(maxlen=6)
+        self._scalper_sleeve_pnls = {"meanrev": deque(maxlen=180), "momentum": deque(maxlen=180)}
+        self._scalper_symbol_cooldown_until = {}
+        self._scalper_entry_sleeve = {}
 
         self.position_state: dict[object, PositionState] = {}
         self.entry_volumes = {}
@@ -395,10 +404,13 @@ class SweetWaterPhase1(QCAlgorithm):
             available_cash = float(self.Portfolio.CashBook["USD"].Amount)
         except Exception:
             available_cash = float(getattr(self.Portfolio, "Cash", 0.0) or 0.0)
+        cash_safety = float(getattr(self.config, "cash_safety_factor", 0.97) or 0.97)
         equity = float(getattr(self.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
         submitted = 0
         for entry in self._pending_rotation_entries:
             sym = entry["symbol"]
+            if rebalance_symbol_blocked(self, sym):
+                continue
             if available_cash < float(self.config.min_position_floor_usd):
                 break
             sec = self.Securities.get(sym)
@@ -417,15 +429,21 @@ class SweetWaterPhase1(QCAlgorithm):
                 self.Debug(f"NO_VOLUME sym={getattr(sym,'Value',sym)} vol_ratio={vol_ratio:.2f}")
                 continue
             desired = equity * float(entry["target_weight"])
-            notional = min(desired, available_cash * 0.95)
+            notional = min(desired, available_cash * cash_safety)
             if notional < float(self.config.min_position_floor_usd):
                 continue
             qty = round_quantity(self, sym, notional / max(price, 1e-9))
             if qty <= 0:
                 continue
+            ok, required, afford = can_afford(self, sym, qty, price)
+            if not ok:
+                self.Debug(f"INSUFF_FUNDS sym={sym.Value} req={required:.2f} avail={afford:.2f} tag=Rebalance:entry-deferred")
+                mark_rebalance_failure(self, sym, "insuff_funds")
+                continue
             ticket = place_entry(self, sym, qty, tag="Rebalance:entry-deferred", signal_score=float(entry["score"]))
             if ticket is not None:
                 available_cash -= qty * price
+                clear_rebalance_failure(self, sym)
                 submitted += 1
         self.Debug(f"REBAL deferred_entries submitted={submitted} of {len(self._pending_rotation_entries)}")
         self._pending_rotation_entries = []
@@ -461,7 +479,16 @@ class SweetWaterPhase1(QCAlgorithm):
             except Exception:
                 qty = 0.0
             if qty > 0:
-                out.append(sym)
+                securities = getattr(self, "Securities", None)
+                if securities is None:
+                    out.append(sym)
+                elif is_invested_not_dust(self, sym):
+                    out.append(sym)
+                else:
+                    self.position_state.pop(sym, None)
+                    if not hasattr(self, "_abandoned_dust"):
+                        self._abandoned_dust = set()
+                    self._abandoned_dust.add(sym)
         return out
 
     def _market_regime_state(self, btc_ret: float, breadth: float):
@@ -635,9 +662,13 @@ class SweetWaterPhase1(QCAlgorithm):
             available_cash = float(self.Portfolio.CashBook["USD"].Amount)
         except Exception:
             available_cash = float(getattr(self.Portfolio, "Cash", 0.0) or 0.0)
-        notional_cap = max(0.0, available_cash * 0.95)
+        cash_safety = float(getattr(self.config, "cash_safety_factor", 0.97) or 0.97)
+        notional_cap = max(0.0, available_cash * cash_safety)
         cost_skips = []
         for symbol in target_list:
+            if rebalance_symbol_blocked(self, symbol):
+                self.Debug(f"REBAL skip sym={symbol.Value} reason=retry_cap")
+                continue
             sec = self.Securities.get(symbol)
             if sec is None:
                 continue
@@ -675,13 +706,19 @@ class SweetWaterPhase1(QCAlgorithm):
                 qty = round_quantity(self, symbol, notional / max(price, 1e-9))
                 if qty <= 0 or qty * price < get_min_notional_usd(self, symbol):
                     continue
+                ok, required, afford = can_afford(self, symbol, qty, price)
+                if not ok:
+                    self.Debug(f"INSUFF_FUNDS sym={symbol.Value} req={required:.2f} avail={afford:.2f} tag=Rebalance:entry")
+                    mark_rebalance_failure(self, symbol, "insuff_funds")
+                    continue
                 if not self.sizer.passes_cost_gate(symbol, score, notional, fee_model, is_limit=True):
                     cost_skips.append(symbol.Value)
                     continue
                 ticket = place_entry(self, symbol, qty, tag="Rebalance:entry", signal_score=score)
                 if ticket is not None:
                     available_cash -= qty * price
-                    notional_cap = max(0.0, available_cash * 0.95)
+                    notional_cap = max(0.0, available_cash * cash_safety)
+                    clear_rebalance_failure(self, symbol)
                     if available_cash < float(self.config.min_position_floor_usd):
                         self.Debug("REBAL cash exhausted -- defer remaining entries to next rebalance")
                         break
@@ -857,11 +894,54 @@ class SweetWaterPhase1(QCAlgorithm):
 
         self.reporter.tick(state)
 
+    def _scalper_sleeve_allocations(self) -> dict[str, float]:
+        def _sharpe(values):
+            if len(values) < 5:
+                return 0.0
+            mu = statistics.fmean(values)
+            sd = statistics.pstdev(values)
+            return 0.0 if sd <= 1e-9 else mu / sd
+
+        sleeve_pnls = getattr(self, "_scalper_sleeve_pnls", {"meanrev": [], "momentum": []})
+        mr = _sharpe(sleeve_pnls.get("meanrev", []))
+        mom = _sharpe(sleeve_pnls.get("momentum", []))
+        mr_w = max(0.05, mr + 1.0)
+        mom_w = max(0.05, mom + 1.0)
+        total = mr_w + mom_w
+        return {"meanrev": mr_w / total, "momentum": mom_w / total}
+
+    def _scalper_corr_hits(self, symbol, held: list) -> int:
+        threshold = float(getattr(self.config, "scalper_corr_threshold", 0.70) or 0.70)
+        state = getattr(self.feature_engine, "_state", {})
+        cand = state.get(getattr(symbol, "Value", str(symbol)), {})
+        cand_ret = list(cand.get("daily_logret", []))[-30:]
+        if len(cand_ret) < 10:
+            return 0
+        hits = 0
+        for held_sym in held:
+            other = state.get(getattr(held_sym, "Value", str(held_sym)), {})
+            other_ret = list(other.get("daily_logret", []))[-30:]
+            n = min(len(cand_ret), len(other_ret))
+            if n < 10:
+                continue
+            s1 = pd.Series(cand_ret[-n:], dtype=float)
+            s2 = pd.Series(other_ret[-n:], dtype=float)
+            corr = float(s1.corr(s2)) if n > 1 else 0.0
+            if math.isfinite(corr) and corr >= threshold:
+                hits += 1
+        return hits
+
     def _scalper_on_data(self, data: Slice):
         try:
             from scalper import evaluate_entry, evaluate_exit
         except ModuleNotFoundError:  # pragma: no cover
             from .scalper import evaluate_entry, evaluate_exit  # type: ignore
+        if not hasattr(self, "_scalper_sleeve_pnls"):
+            self._scalper_sleeve_pnls = {"meanrev": deque(maxlen=180), "momentum": deque(maxlen=180)}
+        if not hasattr(self, "_scalper_symbol_cooldown_until"):
+            self._scalper_symbol_cooldown_until = {}
+        if not hasattr(self, "_scalper_entry_sleeve"):
+            self._scalper_entry_sleeve = {}
 
         today = self.Time.date()
         if self._scalper_daily_anchor_date != today:
@@ -881,14 +961,15 @@ class SweetWaterPhase1(QCAlgorithm):
             if self._scalper_consec_losses != decayed:
                 self.Debug(f"SCALPER_DECAY consec_losses_before={dict(self._scalper_consec_losses)} after={decayed}")
             self._scalper_consec_losses = decayed
+            self._scalper_symbol_cooldown_until = {
+                s: t for s, t in self._scalper_symbol_cooldown_until.items() if t is not None and self.Time < t
+            }
         equity = float(self.Portfolio.TotalPortfolioValue or 0.0)
         anchor = self._scalper_daily_anchor_equity or equity
         self._scalper_daily_pnl = (equity / anchor - 1.0) if anchor > 0 else 0.0
         held = self._current_holdings()
-        try:
-            cash = float(self.Portfolio.CashBook["USD"].Amount)
-        except Exception:
-            cash = float(getattr(self.Portfolio, "Cash", 0.0) or 0.0)
+        cash = free_cash_usd(self)
+        alloc = self._scalper_sleeve_allocations()
         brake_until = getattr(self, "_scalper_session_brake_until", None)
         brake_active = brake_until is not None and self.Time < brake_until
         breaker_state = getattr(self, "_breaker_liquidated", False)
@@ -897,7 +978,8 @@ class SweetWaterPhase1(QCAlgorithm):
             f"cash={cash:.2f} daily_pnl={self._scalper_daily_pnl*100:.2f}% "
             f"brake_active={brake_active} breaker={breaker_state} "
             f"consec_losses_syms={len(self._scalper_consec_losses)} "
-            f"failed_esc={len(getattr(self, '_failed_escalations', {}))}"
+            f"failed_esc={len(getattr(self, '_failed_escalations', {}))} "
+            f"alloc_mr={alloc['meanrev']:.2f} alloc_mom={alloc['momentum']:.2f}"
         )
 
         btc_sym = self.symbol_by_ticker.get("BTCUSD")
@@ -932,6 +1014,8 @@ class SweetWaterPhase1(QCAlgorithm):
                 )
             sec = self.Securities.get(sym)
             px = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
+            state.highest_close = max(float(getattr(state, "highest_close", state.entry_price) or state.entry_price), px)
+            sleeve = "momentum" if "momentum" in str(getattr(state, "strategy_owner", "meanrev")) else "meanrev"
             should_exit, tag = evaluate_exit(
                 symbol=sym,
                 feats=feats,
@@ -940,6 +1024,9 @@ class SweetWaterPhase1(QCAlgorithm):
                 current_time=self.Time,
                 current_price=px,
                 btc_ret_1h=btc_ret_1h,
+                highest_close=state.highest_close,
+                entry_atr=state.entry_atr,
+                sleeve=sleeve,
                 config=self.config,
             )
             if should_exit:
@@ -947,12 +1034,19 @@ class SweetWaterPhase1(QCAlgorithm):
                 if smart_liquidate(self, sym, tag=tag):
                     self.Debug(f"SCALPER_EXIT sym={sym.Value} tag={tag} pnl={pnl_frac*100:.2f}%")
                     self.position_state.pop(sym, None)
+                    self._scalper_entry_sleeve.pop(sym, None)
+                    self._scalper_sleeve_pnls.setdefault(sleeve, deque(maxlen=180)).append(pnl_frac)
                     self._scalper_recent_pnls.append(pnl_frac)
                     if len(self._scalper_recent_pnls) >= 3 and all(p < 0 for p in list(self._scalper_recent_pnls)[-3:]):
                         self._scalper_session_brake_until = self.Time + timedelta(hours=6)
                         self.Debug(f"SCALPER_BRAKE session=3consec_losses until={self._scalper_session_brake_until}")
                     if pnl_frac < 0:
-                        self._scalper_consec_losses[sym] = self._scalper_consec_losses.get(sym, 0) + 1
+                        streak = self._scalper_consec_losses.get(sym, 0) + 1
+                        self._scalper_consec_losses[sym] = streak
+                        if streak >= int(getattr(self.config, "scalper_loss_cooldown_after", 2) or 2):
+                            until = self.Time + timedelta(hours=float(getattr(self.config, "scalper_loss_cooldown_hours", 24.0) or 24.0))
+                            self._scalper_symbol_cooldown_until[sym] = until
+                            self.Debug(f"COOLDOWN_BLOCK sym={sym.Value} until={until} streak={streak}")
                     else:
                         self._scalper_consec_losses[sym] = 0
                     self._scalper_last_trade_time[sym] = self.Time
@@ -968,10 +1062,7 @@ class SweetWaterPhase1(QCAlgorithm):
         if len(held) >= int(self.config.scalper_max_concurrent):
             return
 
-        try:
-            available_cash = float(self.Portfolio.CashBook["USD"].Amount)
-        except Exception:
-            available_cash = float(getattr(self.Portfolio, "Cash", 0.0) or 0.0)
+        available_cash = free_cash_usd(self)
         available_cash_pct = (available_cash / equity) if equity > 0 else 0.0
 
         reg_engine = getattr(self, "regime_engine", None)
@@ -979,7 +1070,7 @@ class SweetWaterPhase1(QCAlgorithm):
         if bool(getattr(self.config, "scalper_use_btc_ema_gate", False)) and not btc_gate_open:
             return
 
-        candidates = []
+        candidates = {"meanrev": [], "momentum": []}
         rejection_counts = {}
         for symbol in self.symbols[: int(self.config.scalper_universe_size)]:
             feats = self.feature_engine.current_features(symbol.Value) or {}
@@ -987,55 +1078,111 @@ class SweetWaterPhase1(QCAlgorithm):
                 reason = "missing_feats"
                 rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
                 continue
+            cool_until = self._scalper_symbol_cooldown_until.get(symbol)
+            if cool_until is not None and self.Time < cool_until:
+                rejection_counts["COOLDOWN_BLOCK"] = rejection_counts.get("COOLDOWN_BLOCK", 0) + 1
+                continue
+            corr_hits = self._scalper_corr_hits(symbol, held)
+            if corr_hits >= int(getattr(self.config, "scalper_corr_block_count", 2) or 2):
+                self.Debug(f"CORR_BLOCK sym={symbol.Value} hits={corr_hits}")
+                rejection_counts["CORR_BLOCK"] = rejection_counts.get("CORR_BLOCK", 0) + 1
+                continue
             last_t = self._scalper_last_trade_time.get(symbol)
             last_trade_hours_ago = (
                 (self.Time - last_t).total_seconds() / 3600.0 if last_t else INFINITE_HELD_HOURS
             )
-            ok, reason = evaluate_entry(
-                symbol=symbol,
-                feats=feats,
-                btc_ret_1h=btc_ret_1h,
-                btc_ret_6h=btc_ret_6h,
-                has_position=(symbol in held),
-                last_trade_hours_ago=last_trade_hours_ago,
-                available_cash_pct=available_cash_pct,
-                daily_pnl_pct=self._scalper_daily_pnl,
-                consecutive_losses_for_symbol=self._scalper_consec_losses.get(symbol, 0),
-                config=self.config,
-            )
-            if ok:
-                candidates.append((symbol, float(feats.get("z_20h", 0.0) or 0.0)))
-            else:
-                rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+            for sleeve in ("meanrev", "momentum"):
+                ok, reason = evaluate_entry(
+                    symbol=symbol,
+                    feats=feats,
+                    btc_ret_1h=btc_ret_1h,
+                    btc_ret_6h=btc_ret_6h,
+                    has_position=(symbol in held),
+                    last_trade_hours_ago=last_trade_hours_ago,
+                    available_cash_pct=available_cash_pct,
+                    daily_pnl_pct=self._scalper_daily_pnl,
+                    consecutive_losses_for_symbol=self._scalper_consec_losses.get(symbol, 0),
+                    sleeve=sleeve,
+                    config=self.config,
+                )
+                if ok:
+                    z = float(feats.get("z_20h", 0.0) or 0.0)
+                    regime = regime_for(feats, config=self.config)
+                    candidates[sleeve].append((symbol, z, regime))
+                else:
+                    if reason.startswith("REGIME_BLOCK"):
+                        self.Debug(f"REGIME_BLOCK sym={symbol.Value} sleeve={sleeve} reason={reason}")
+                    rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
 
         if rejection_counts:
             top = sorted(rejection_counts.items(), key=lambda x: -x[1])[:5]
             self.Debug(f"SCALPER_REJ top={top}")
 
-        candidates.sort(key=lambda x: x[1])
         slots_remaining = int(self.config.scalper_max_concurrent) - len(held)
-        for symbol, z in candidates[:slots_remaining]:
-            sec = self.Securities.get(symbol)
-            price = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
-            if price <= 0:
-                continue
-            notional = min(equity * float(self.config.scalper_position_size_pct), available_cash * 0.95)
-            if notional < float(self.config.min_position_floor_usd):
-                continue
-            qty = round_quantity(self, symbol, notional / max(price, 1e-9))
-            if qty <= 0:
-                continue
-            ticket = place_entry(self, symbol, qty, tag="Scalper:entry", signal_score=float(-z))
-            if ticket is not None:
-                available_cash -= qty * price
-                self.Debug(f"SCALPER_ENTRY sym={symbol.Value} z={z:.2f} qty={qty:.6f} px={price:.4f}")
-                self._scalper_last_trade_time[symbol] = self.Time
+        if slots_remaining <= 0:
+            return
+        alloc = self._scalper_sleeve_allocations()
+        by_sleeve_slots = {
+            "meanrev": max(0, int(round(slots_remaining * alloc["meanrev"]))),
+            "momentum": max(0, int(round(slots_remaining * alloc["momentum"]))),
+        }
+        if by_sleeve_slots["meanrev"] + by_sleeve_slots["momentum"] < slots_remaining:
+            by_sleeve_slots["meanrev"] += slots_remaining - (by_sleeve_slots["meanrev"] + by_sleeve_slots["momentum"])
+        ordered = {
+            "meanrev": sorted(candidates["meanrev"], key=lambda x: x[1]),
+            "momentum": sorted(candidates["momentum"], key=lambda x: x[1], reverse=True),
+        }
+        placed_symbols = set()
+        gross_now = float(getattr(self.Portfolio, "TotalHoldingsValue", 0.0) or 0.0) / max(equity, 1.0)
+        for sleeve in ("meanrev", "momentum"):
+            for symbol, z, regime in ordered[sleeve]:
+                if by_sleeve_slots[sleeve] <= 0 or len(placed_symbols) >= slots_remaining:
+                    break
+                if symbol in placed_symbols:
+                    continue
+                sec = self.Securities.get(symbol)
+                price = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
+                if price <= 0:
+                    continue
+                feats = self.feature_engine.current_features(symbol.Value) or {}
+                atr_pct = float(feats.get("atr_pct", 0.0) or 0.0)
+                qty_raw, notional = vol_target_qty(
+                    equity=equity,
+                    price=price,
+                    atr_pct=atr_pct,
+                    available_cash=available_cash,
+                    current_gross_exposure_pct=gross_now,
+                    risk_per_trade_pct=float(getattr(self.config, "scalper_risk_per_trade_pct", 0.005) or 0.005),
+                    max_symbol_exposure_pct=float(getattr(self.config, "scalper_max_symbol_exposure_pct", 0.25) or 0.25),
+                    max_gross_exposure_pct=float(getattr(self.config, "scalper_max_gross_exposure_pct", 0.90) or 0.90),
+                )
+                qty = round_quantity(self, symbol, qty_raw)
+                if qty <= 0 or notional < float(self.config.min_position_floor_usd):
+                    continue
+                ok, required, afford = can_afford(self, symbol, qty, price)
+                if not ok:
+                    self.Debug(f"INSUFF_FUNDS sym={symbol.Value} req={required:.2f} avail={afford:.2f} tag=Scalper:{sleeve}")
+                    continue
+                tag = "ScalperMom:entry" if sleeve == "momentum" else "Scalper:entry"
+                ticket = place_entry(self, symbol, qty, tag=tag, signal_score=float(abs(z)))
+                if ticket is not None:
+                    available_cash -= qty * price
+                    gross_now += (qty * price) / max(equity, 1.0)
+                    placed_symbols.add(symbol)
+                    by_sleeve_slots[sleeve] -= 1
+                    self._scalper_last_trade_time[symbol] = self.Time
+                    self._scalper_entry_sleeve[symbol] = sleeve
+                    self.Debug(
+                        f"VOL_TARGET sym={symbol.Value} qty={qty:.6f} atr_pct={max(atr_pct,0.0):.4f} notional={qty*price:.2f}"
+                    )
+                    self.Debug(f"SCALPER_ENTRY sym={symbol.Value} sleeve={sleeve} regime={regime} z={z:.2f} qty={qty:.6f} px={price:.4f}")
 
     def OnOrderEvent(self, event):  # pragma: no cover
         self.reporter.on_order_event(self, event)
         status = getattr(event, "Status", None)
         status_str = str(status).lower() if status is not None else ""
         symbol = getattr(event, "Symbol", None)
+        tag = str(getattr(event, "Tag", "") or "")
         is_invalid = "invalid" in status_str
         if is_invalid:
             if symbol is not None:
@@ -1043,6 +1190,8 @@ class SweetWaterPhase1(QCAlgorithm):
                 if not hasattr(self, "_failed_escalations"):
                     self._failed_escalations = {}
                 self._failed_escalations[symbol] = self.Time
+                if tag.startswith("Rebalance") or tag.startswith("[StaleEsc]"):
+                    mark_rebalance_failure(self, symbol, "invalid")
                 self.Debug(f"INVALID sym={symbol.Value} cooldown=24h")
             return
         is_canceled = "canceled" in status_str or "cancelled" in status_str
@@ -1077,13 +1226,18 @@ class SweetWaterPhase1(QCAlgorithm):
             fill_px = float(getattr(event, "FillPrice", 0.0) or 0.0)
             if fill_px > 0:
                 mode = str(getattr(getattr(self, "config", None), "strategy_mode", "momentum"))
+                owner = "scalper" if mode == "scalper" else "momentum"
+                if "ScalperMom" in tag:
+                    owner = "scalper_momentum"
                 self.position_state[symbol] = PositionState(
                     entry_price=fill_px,
                     highest_close=fill_px,
                     entry_atr=atr if atr > 0 else fill_px * 0.02,
                     entry_time=self.Time,
-                    strategy_owner="scalper" if mode == "scalper" else "momentum",
+                    strategy_owner=owner,
                 )
+        if symbol is not None and tag.startswith("Rebalance"):
+            clear_rebalance_failure(self, symbol)
 
     def OnEndOfAlgorithm(self):  # pragma: no cover
         self.reporter.final_report()

@@ -493,8 +493,9 @@ class SweetWaterPhase1(QCAlgorithm):
         elapsed_h = (self.Time - self._last_rebalance_time).total_seconds() / 3600
         return elapsed_h >= cadence and self.Time.hour == 16
 
-    def _score_candidates(self, data: Slice):
-        btc_ret, breadth = self._ingest_data(data)
+    def _score_candidates(self, data: Slice, btc_ret: float | None = None, breadth: float | None = None):
+        if btc_ret is None or breadth is None:
+            btc_ret, breadth = self._ingest_data(data)
         state = self._market_regime_state(btc_ret, breadth)
         scored = self._collect_scores(state, btc_ret)
         return state, scored
@@ -697,7 +698,7 @@ class SweetWaterPhase1(QCAlgorithm):
     def _ingest_data(self, data: Slice):
         btc_ret = 0.0
         breadth_votes = []
-        feed_symbols = [*self.reference_symbols, *self.symbols]
+        feed_symbols = [*getattr(self, "reference_symbols", []), *getattr(self, "symbols", [])]
         seen = set()
         for symbol in feed_symbols:
             if symbol in seen:
@@ -754,36 +755,54 @@ class SweetWaterPhase1(QCAlgorithm):
             self._ingest_data(data)
             return
 
+        btc_ret, breadth = self._ingest_data(data)
+        was_triggered = bool(self._drawdown_breaker.is_triggered())
         self._drawdown_breaker.update(self)
-        if self._drawdown_breaker.is_triggered():
+        is_triggered = bool(self._drawdown_breaker.is_triggered())
+        if is_triggered and not was_triggered:
             if not self._breaker_liquidated:
                 liquidate_all_positions(self, tag="Breaker")
                 self._breaker_liquidated = True
                 self.Debug("BREAKER liquidate_once=true")
             self.reporter.tick("breaker")
             return
+        if is_triggered:
+            self.reporter.tick("breaker")
         else:
             if self._breaker_liquidated:
                 self.Debug("BREAKER disengaged")
                 self._breaker_disengaged_at = self.Time
+                self._scalper_session_brake_until = None
+                self._scalper_consec_losses = {}
+                self._scalper_recent_pnls.clear()
+                self._failed_escalations = {}
+                self._pending_rotation_entries = []
+                self._pending_rotation_entry_time = None
+                self.Debug("BREAKER_DISENGAGE_CLEAR scalper_state_reset=True")
             self._breaker_liquidated = False
-
-        exits = manage_open_positions(self, data)
-        for sym, tag in exits:
-            self.Debug(f"EXIT sym={sym.Value} tag={tag}")
 
         cfg = getattr(self, "config", None)
         mode = str(getattr(cfg, "strategy_mode", "scalper"))
+        exits = []
+        if mode == "momentum":  # momentum-only
+            exits = manage_open_positions(self, data)
+        for sym, tag in exits:
+            self.Debug(f"EXIT sym={sym.Value} tag={tag}")
+        if mode == "momentum":  # momentum-only
+            self._process_pending_entries(scored_lookup=None)
         if mode == "scalper":
             self._scalper_on_data(data)
             return
-        self._momentum_on_data(data)
+        try:
+            self._momentum_on_data(data, btc_ret=btc_ret, breadth=breadth)
+        except TypeError:
+            self._momentum_on_data(data)
 
-    def _momentum_on_data(self, data: Slice):
-        # Tier 7: drain deferred entries every bar (cash-aware, idempotent if list empty)
-        self._process_pending_entries(scored_lookup=None)
-
-        state, scored = self._score_candidates(data)
+    def _momentum_on_data(self, data: Slice, btc_ret: float | None = None, breadth: float | None = None):
+        try:
+            state, scored = self._score_candidates(data, btc_ret=btc_ret, breadth=breadth)
+        except TypeError:
+            state, scored = self._score_candidates(data)
         if self.Time.hour == 8 and getattr(self, "_last_scored", None):
             if getattr(self, "_last_force_exit_date", None) != self.Time.date():
                 self._force_exit_losers(self._last_scored)
@@ -841,16 +860,44 @@ class SweetWaterPhase1(QCAlgorithm):
         except ModuleNotFoundError:  # pragma: no cover
             from .scalper import evaluate_entry, evaluate_exit  # type: ignore
 
-        self._ingest_data(data)
-
         today = self.Time.date()
         if self._scalper_daily_anchor_date != today:
             self._scalper_daily_anchor_date = today
             self._scalper_daily_anchor_equity = float(self.Portfolio.TotalPortfolioValue or 0.0)
             self._scalper_daily_pnl = 0.0
+            decayed = {}
+            for sym, n in self._scalper_consec_losses.items():
+                last_t = self._scalper_last_trade_time.get(sym)
+                hours_since = ((self.Time - last_t).total_seconds() / 3600.0) if last_t else 1e9
+                if hours_since >= 24.0:
+                    new_n = max(0, int(n) - 1)
+                    if new_n > 0:
+                        decayed[sym] = new_n
+                else:
+                    decayed[sym] = n
+            if len(self._scalper_consec_losses) != len(decayed) or any(
+                decayed.get(s, 0) != n for s, n in self._scalper_consec_losses.items()
+            ):
+                self.Debug(f"SCALPER_DECAY consec_losses_before={dict(self._scalper_consec_losses)} after={decayed}")
+            self._scalper_consec_losses = decayed
         equity = float(self.Portfolio.TotalPortfolioValue or 0.0)
         anchor = self._scalper_daily_anchor_equity or equity
         self._scalper_daily_pnl = (equity / anchor - 1.0) if anchor > 0 else 0.0
+        held = self._current_holdings()
+        try:
+            cash = float(self.Portfolio.CashBook["USD"].Amount)
+        except Exception:
+            cash = float(getattr(self.Portfolio, "Cash", 0.0) or 0.0)
+        brake_until = getattr(self, "_scalper_session_brake_until", None)
+        brake_active = brake_until is not None and self.Time < brake_until
+        breaker_state = getattr(self, "_breaker_liquidated", False)
+        self.Debug(
+            f"SCALPER_HB t={self.Time} held={len(held)}/{int(self.config.scalper_max_concurrent)} "
+            f"cash={cash:.2f} daily_pnl={self._scalper_daily_pnl*100:.2f}% "
+            f"brake_active={brake_active} breaker={breaker_state} "
+            f"consec_losses_syms={len(self._scalper_consec_losses)} "
+            f"failed_esc={len(getattr(self, '_failed_escalations', {}))}"
+        )
 
         btc_sym = self.symbol_by_ticker.get("BTCUSD")
         btc_feats = self.feature_engine.current_features("BTCUSD") if btc_sym is not None else {}
@@ -863,9 +910,25 @@ class SweetWaterPhase1(QCAlgorithm):
             if state is None:
                 avg_px = float(self.Portfolio[sym].AveragePrice or 0.0)
                 if avg_px <= 0:
+                    sec = self.Securities.get(sym)
+                    avg_px = float(getattr(sec, "Price", 0.0) or 0.0)
+                if avg_px <= 0:
                     continue
-                state = PositionState(entry_price=avg_px, highest_close=avg_px, entry_atr=avg_px * 0.05, entry_time=self.Time)
+                atr = float(feats.get("atr", 0.0) or 0.0)
+                if atr <= 0:
+                    atr = avg_px * 0.05
+                state = PositionState(
+                    entry_price=avg_px,
+                    highest_close=avg_px,
+                    entry_atr=atr,
+                    entry_time=self.Time - timedelta(hours=1),
+                    strategy_owner="scalper",
+                )
                 self.position_state[sym] = state
+                self.Debug(
+                    f"LAZY_SEED sym={getattr(sym,'Value',sym)} "
+                    f"entry_time_set={self.Time - timedelta(hours=1)} avg_px={avg_px:.6f} atr={atr:.6f} reason=missing_state"
+                )
             sec = self.Securities.get(sym)
             px = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
             should_exit, tag = evaluate_exit(
@@ -901,7 +964,6 @@ class SweetWaterPhase1(QCAlgorithm):
         if self._scalper_daily_pnl < self.config.scalper_daily_loss_brake:
             return
 
-        held = self._current_holdings()
         if len(held) >= int(self.config.scalper_max_concurrent):
             return
 
@@ -911,14 +973,22 @@ class SweetWaterPhase1(QCAlgorithm):
             available_cash = float(getattr(self.Portfolio, "Cash", 0.0) or 0.0)
         available_cash_pct = (available_cash / equity) if equity > 0 else 0.0
 
+        reg_engine = getattr(self, "regime_engine", None)
+        btc_gate_open = reg_engine.btc_above_ema30d() if reg_engine is not None else True
+        if bool(getattr(self.config, "scalper_use_btc_ema_gate", False)) and not btc_gate_open:
+            return
+
         candidates = []
+        rejection_counts = {}
         for symbol in self.symbols[: int(self.config.scalper_universe_size)]:
             feats = self.feature_engine.current_features(symbol.Value) or {}
             if not feats:
+                reason = "missing_feats"
+                rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
                 continue
             last_t = self._scalper_last_trade_time.get(symbol)
             last_trade_hours_ago = ((self.Time - last_t).total_seconds() / 3600.0) if last_t else 1e9
-            ok, _reason = evaluate_entry(
+            ok, reason = evaluate_entry(
                 symbol=symbol,
                 feats=feats,
                 btc_ret_1h=btc_ret_1h,
@@ -932,6 +1002,12 @@ class SweetWaterPhase1(QCAlgorithm):
             )
             if ok:
                 candidates.append((symbol, float(feats.get("z_20h", 0.0) or 0.0)))
+            else:
+                rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+
+        if rejection_counts:
+            top = sorted(rejection_counts.items(), key=lambda x: -x[1])[:5]
+            self.Debug(f"SCALPER_REJ top={top}")
 
         candidates.sort(key=lambda x: x[1])
         slots_remaining = int(self.config.scalper_max_concurrent) - len(held)
@@ -997,11 +1073,13 @@ class SweetWaterPhase1(QCAlgorithm):
             atr = float(feats.get("atr", 0.0) or 0.0)
             fill_px = float(getattr(event, "FillPrice", 0.0) or 0.0)
             if fill_px > 0:
+                mode = str(getattr(getattr(self, "config", None), "strategy_mode", "momentum"))
                 self.position_state[symbol] = PositionState(
                     entry_price=fill_px,
                     highest_close=fill_px,
                     entry_atr=atr if atr > 0 else fill_px * 0.02,
                     entry_time=self.Time,
+                    strategy_owner="scalper" if mode == "scalper" else "momentum",
                 )
 
     def OnEndOfAlgorithm(self):  # pragma: no cover

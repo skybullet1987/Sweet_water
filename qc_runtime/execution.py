@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 try:  # pragma: no cover
@@ -44,6 +44,7 @@ class PositionState:
     highest_close: float
     entry_atr: float
     entry_time: datetime | None
+    strategy_owner: str = "momentum"
 
 
 def position_status(algo, symbol) -> Literal["flat", "long", "pending"]:
@@ -435,6 +436,9 @@ def manage_open_positions(algo, data=None):
         if symbol not in holding_set and position_status(algo, symbol) == "flat":
             cleanup_position(algo, symbol)
     for symbol in holdings:
+        state = _position_state(algo).get(symbol)
+        if state is not None and getattr(state, "strategy_owner", "momentum") == "scalper":
+            continue
         if symbol not in _position_state(algo):
             try:
                 avg_px = float(algo.Portfolio[symbol].AveragePrice or 0.0)
@@ -453,9 +457,12 @@ def manage_open_positions(algo, data=None):
                 entry_price=avg_px,
                 highest_close=avg_px,
                 entry_atr=atr,
-                entry_time=algo.Time,
+                entry_time=algo.Time - timedelta(hours=1),
             )
-            algo.Debug(f"LAZY_STATE sym={getattr(symbol,'Value',symbol)} avg={avg_px:.6f} atr={atr:.6f}")
+            algo.Debug(
+                f"LAZY_SEED sym={getattr(symbol,'Value',symbol)} "
+                f"entry_time_set={algo.Time - timedelta(hours=1)} avg_px={avg_px:.6f} atr={atr:.6f} reason=missing_state"
+            )
         pstate = _position_state(algo).get(symbol)
         if pstate is None:
             continue

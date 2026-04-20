@@ -96,6 +96,7 @@ class StrategyConfig:
     scalper_btc_1h_floor: float = -0.015
     scalper_btc_6h_floor: float = -0.04
     scalper_btc_panic_threshold: float = -0.025
+    scalper_use_btc_ema_gate: bool = False
 
     # Position management
     scalper_position_size_pct: float = 0.15

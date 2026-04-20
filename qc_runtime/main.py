@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import inspect
 import statistics
 from collections import defaultdict, deque
 from datetime import timedelta
@@ -793,15 +794,17 @@ class SweetWaterPhase1(QCAlgorithm):
         if mode == "scalper":
             self._scalper_on_data(data)
             return
-        try:
+        momentum_params = inspect.signature(self._momentum_on_data).parameters
+        if len(momentum_params) >= 3:
             self._momentum_on_data(data, btc_ret=btc_ret, breadth=breadth)
-        except TypeError:
+        else:
             self._momentum_on_data(data)
 
     def _momentum_on_data(self, data: Slice, btc_ret: float | None = None, breadth: float | None = None):
-        try:
+        score_params = inspect.signature(self._score_candidates).parameters
+        if len(score_params) >= 3:
             state, scored = self._score_candidates(data, btc_ret=btc_ret, breadth=breadth)
-        except TypeError:
+        else:
             state, scored = self._score_candidates(data)
         if self.Time.hour == 8 and getattr(self, "_last_scored", None):
             if getattr(self, "_last_force_exit_date", None) != self.Time.date():
@@ -868,16 +871,14 @@ class SweetWaterPhase1(QCAlgorithm):
             decayed = {}
             for sym, n in self._scalper_consec_losses.items():
                 last_t = self._scalper_last_trade_time.get(sym)
-                hours_since = ((self.Time - last_t).total_seconds() / 3600.0) if last_t else 1e9
+                hours_since = ((self.Time - last_t).total_seconds() / 3600.0) if last_t else INFINITE_HELD_HOURS
                 if hours_since >= 24.0:
                     new_n = max(0, int(n) - 1)
                     if new_n > 0:
                         decayed[sym] = new_n
                 else:
                     decayed[sym] = n
-            if len(self._scalper_consec_losses) != len(decayed) or any(
-                decayed.get(s, 0) != n for s, n in self._scalper_consec_losses.items()
-            ):
+            if self._scalper_consec_losses != decayed:
                 self.Debug(f"SCALPER_DECAY consec_losses_before={dict(self._scalper_consec_losses)} after={decayed}")
             self._scalper_consec_losses = decayed
         equity = float(self.Portfolio.TotalPortfolioValue or 0.0)
@@ -987,7 +988,9 @@ class SweetWaterPhase1(QCAlgorithm):
                 rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
                 continue
             last_t = self._scalper_last_trade_time.get(symbol)
-            last_trade_hours_ago = ((self.Time - last_t).total_seconds() / 3600.0) if last_t else 1e9
+            last_trade_hours_ago = (
+                (self.Time - last_t).total_seconds() / 3600.0 if last_t else INFINITE_HELD_HOURS
+            )
             ok, reason = evaluate_entry(
                 symbol=symbol,
                 feats=feats,

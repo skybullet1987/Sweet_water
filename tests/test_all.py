@@ -457,6 +457,7 @@ class TestPhaseRequirements:
     def test_ondata_risk_reduce_rebalances_half_scale(self):
         algo = self._build_algo()
         algo.Initialize()
+        algo.config = StrategyConfig(strategy_mode="momentum")
         symbol = algo.symbol_by_ticker["SOLUSD"]
         called = {}
         algo._score_candidates = lambda _data: ("risk_reduce", [(symbol, 0.9, {})])
@@ -468,6 +469,7 @@ class TestPhaseRequirements:
     def test_no_trade_heartbeat_logs_when_risk_on_without_fills(self):
         algo = self._build_algo()
         algo.Initialize()
+        algo.config = StrategyConfig(strategy_mode="momentum")
         symbol = algo.symbol_by_ticker["SOLUSD"]
         algo._debug_logs = []
         algo._bar_count = 168
@@ -506,10 +508,9 @@ def test_heartbeat_logs_every_24_bars():
 def test_rebalance_logs_are_concise():
     t = TestPhaseRequirements()
     algo = t._build_algo()
-    algo.Initialize()
-    algo.config = StrategyConfig(rebalance_cadence_hours=1)
+    t._warm_and_configure_single_symbol(algo, t._Symbol("SOLUSD"))
     symbol = algo.symbol_by_ticker["SOLUSD"]
-    t._warm_and_configure_single_symbol(algo, symbol)
+    algo.config = StrategyConfig(rebalance_cadence_hours=1, strategy_mode="momentum")
     algo.scorer.score = lambda *_args, **_kwargs: {
         "cvd": 0.0,
         "ofi": 0.0,
@@ -524,6 +525,9 @@ def test_rebalance_logs_are_concise():
     algo.log_budget = 1000
     algo._debug_logs = []
     algo._score_candidates = lambda _data: ("risk_on", [(symbol, 0.0, {})])
+    algo.regime_engine.btc_above_ema30d = lambda: True
+    algo._dispersion_regime = lambda: "full"
+    algo._rebalance_due = lambda: True
     for i in range(6):
         algo.Time = datetime(2025, 1, 7, 16 + i, tzinfo=timezone.utc)
         algo.OnData(t._make_slice(algo, symbol, 100.0, 101.0, 99.0, 100.0))

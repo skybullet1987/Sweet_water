@@ -10,6 +10,7 @@ if str(QC_RUNTIME) not in sys.path:
     sys.path.insert(0, str(QC_RUNTIME))
 
 import main as main_module
+from config import StrategyConfig
 from main import SweetWaterPhase1
 
 
@@ -58,6 +59,7 @@ def test_force_exit_losers_runs_once_daily_at_hour_8(monkeypatch):
         },
     )()
     algo._drawdown_breaker = type("Breaker", (), {"update": lambda *_args, **_kwargs: None, "is_triggered": lambda *_args, **_kwargs: False})()
+    algo.config = StrategyConfig(strategy_mode="momentum")
     algo.Debug = lambda *_args, **_kwargs: None
 
     calls = []

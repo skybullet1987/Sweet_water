@@ -154,6 +154,8 @@ class FeatureEngine:
                 "last_daily_bucket": None,
                 "vol_24h_history": deque(maxlen=8),
                 "current_24h_volume": 0.0,
+                "close_history_24h": deque(maxlen=25),
+                "close_history_7h": deque(maxlen=8),
             }
             self._state[symbol] = state
         return state
@@ -250,6 +252,8 @@ class FeatureEngine:
         state["ema20"] = self._ema(state["ema20"], close, 20)
         state["ema50"] = self._ema(state["ema50"], close, 50)
         state["ema200"] = self._ema(state["ema200"], close, 200)
+        state["close_history_24h"].append(close)
+        state["close_history_7h"].append(close)
 
         daily_bucket = None
         if ts is not None:
@@ -272,7 +276,30 @@ class FeatureEngine:
             state["vol_24h_history"].append(float(state.get("current_24h_volume", 0.0)))
             state["current_24h_volume"] = 0.0
 
+        try:
+            from scalper_signals import ret_pct, rsi_14, z_score_20h
+        except ModuleNotFoundError:  # pragma: no cover
+            from .scalper_signals import ret_pct, rsi_14, z_score_20h  # type: ignore
+
+        closes24 = list(state["close_history_24h"])
+        sma_20h = sum(closes24[-20:]) / max(len(closes24[-20:]), 1) if len(closes24) >= 20 else 0.0
+        std_20h = (
+            (sum((c - sma_20h) ** 2 for c in closes24[-20:]) / max(len(closes24[-20:]) - 1, 1)) ** 0.5
+            if len(closes24) >= 20
+            else 0.0
+        )
+        closes7 = list(state["close_history_7h"])
+        base_features = {
+            "sma_20h": self._to_float(sma_20h, 0.0),
+            "std_20h": self._to_float(std_20h, 0.0),
+            "z_20h": self._to_float(z_score_20h(closes24, close), 0.0),
+            "rsi_14": self._to_float(rsi_14(closes24), 50.0),
+            "ret_1h": self._to_float(ret_pct(closes24[-2], closes24[-1]) if len(closes24) >= 2 else 0.0, 0.0),
+            "ret_6h": self._to_float(ret_pct(closes7[-7], closes7[-1]) if len(closes7) >= 7 else 0.0, 0.0),
+        }
+
         if state["count"] < 60:
+            self._features[symbol] = base_features
             return
 
         close_hist = state["close"]
@@ -351,6 +378,7 @@ class FeatureEngine:
             "bb_pos": 0.5,
             "mfi": 50.0,
         }
+        features.update(base_features)
 
         if self.signal_mode == "legacy":
             open_s = pd.Series(state["open"], dtype=float)

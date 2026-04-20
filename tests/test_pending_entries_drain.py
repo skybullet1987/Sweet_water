@@ -10,6 +10,7 @@ if str(QC_RUNTIME) not in sys.path:
     sys.path.insert(0, str(QC_RUNTIME))
 
 import main as main_module
+from config import StrategyConfig
 from main import SweetWaterPhase1
 
 
@@ -48,6 +49,7 @@ def test_pending_entries_are_processed_each_bar(monkeypatch):
         },
     )()
     algo._drawdown_breaker = type("Breaker", (), {"update": lambda *_args, **_kwargs: None, "is_triggered": lambda *_args, **_kwargs: False})()
+    algo.config = StrategyConfig(strategy_mode="momentum")
     algo.Debug = lambda *_args, **_kwargs: None
     monkeypatch.setattr(main_module, "manage_open_positions", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(main_module, "escalate_stale_orders", lambda *_args, **_kwargs: [])

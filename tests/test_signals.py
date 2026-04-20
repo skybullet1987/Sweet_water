@@ -147,9 +147,11 @@ def test_module_count_and_size():
         "risk.py",
         "reporting.py",
         "universe.py",
+        "scalper.py",
+        "scalper_signals.py",
     }
     assert set(files) == expected
-    assert len(files) == 10
+    assert len(files) == 12
     assert not any(p.is_dir() and p.name != "__pycache__" for p in QC_RUNTIME.iterdir())
     total_loc = 0
     for f in files:

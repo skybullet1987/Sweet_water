@@ -17,6 +17,7 @@ class StrategyConfig:
     universe_size: int = 40
     top_k: int = 10
     signal_mode: str = "cross_sectional_momentum"
+    strategy_mode: str = "scalper"  # "scalper" | "momentum"
 
     # Sizing
     target_annual_vol: float = 0.30
@@ -82,6 +83,29 @@ class StrategyConfig:
     score_mom21_weight: float = 0.6
     score_mom63_weight: float = 0.4
     score_dd_penalty: float = 0.3
+
+    # Scalper signal thresholds
+    scalper_z_entry: float = -2.0
+    scalper_meanrev_z: float = 0.0
+    scalper_overshoot_z: float = 1.0
+    scalper_rsi_min: float = 20.0
+    scalper_rsi_max: float = 40.0
+    scalper_rv_max: float = 1.5
+
+    # BTC guardrails
+    scalper_btc_1h_floor: float = -0.015
+    scalper_btc_6h_floor: float = -0.04
+    scalper_btc_panic_threshold: float = -0.025
+
+    # Position management
+    scalper_position_size_pct: float = 0.15
+    scalper_max_concurrent: int = 4
+    scalper_hard_sl_pct: float = -0.015
+    scalper_time_stop_hours: float = 6.0
+    scalper_anti_churn_hours: float = 3.0
+    scalper_consecutive_loss_brake: int = 3
+    scalper_daily_loss_brake: float = -0.03
+    scalper_universe_size: int = 20
 
     min_qty_fallback: dict[str, float] = field(default_factory=lambda: {
         'AXSUSD': 5.0, 'SANDUSD': 10.0, 'MANAUSD': 10.0, 'ADAUSD': 10.0,

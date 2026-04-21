@@ -4,7 +4,7 @@ import math
 import inspect
 import statistics
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 try:  # pragma: no cover
     from AlgorithmImports import AccountType, BrokerageName, Market, QCAlgorithm, Resolution, Slice
@@ -118,7 +118,7 @@ class SweetWaterPhase1(QCAlgorithm):
             self._subscribe_symbol(ticker)
         self.reference_symbols = [self.symbol_by_ticker[t] for t in REFERENCE_SYMBOLS if t in self.symbol_by_ticker]
 
-        initial_universe = select_universe(self._history_provider, datetime.utcnow())
+        initial_universe = select_universe(self._history_provider, datetime.now(timezone.utc))
         self.symbols = [self.symbol_by_ticker[t] for t in initial_universe if t in self.symbol_by_ticker]
         self.signal_features.set_tracked_symbols(
             [s.Value for s in [*self.reference_symbols, *self.symbols] if hasattr(s, "Value")]
@@ -977,8 +977,8 @@ class SweetWaterPhase1(QCAlgorithm):
         self.Debug(
             f"SCALPER_HB t={self.Time} held={len(held)}/{int(self.config.scalper_max_concurrent)} "
             f"cash={cash:.2f} daily_pnl={self._scalper_daily_pnl*100:.2f}% "
-            f"brake_active={brake_active} breaker={breaker_state} "
-            f"consec_losses_syms={len(self._scalper_consec_losses)} "
+            f"brake={brake_active} breaker={breaker_state} "
+            f"consec_losses={len(self._scalper_consec_losses)} "
             f"failed_esc_active={failed_esc_active} "
             f"cash_pct={cash_pct:.1f} size_pct_eff={size_pct_eff*100.0:.1f} "
             f"alloc_mr={alloc['meanrev']:.2f} alloc_mom={alloc['momentum']:.2f}"

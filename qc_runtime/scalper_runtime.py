@@ -100,6 +100,7 @@ def _ensure_scalper_brackets(self, symbol, *, qty_now: float, side: int, state):
             )
             state.bracket_skip_logged = True
         return False, False
+    state.bracket_skip_logged = False
     qty_abs = abs(qty_now)
     if qty_abs <= 0:
         return True, True
@@ -635,11 +636,15 @@ def _scalper_on_data(
     by_sleeve_slots = {
         "meanrev": max(0, int(round(slots_remaining * alloc["meanrev"]))),
         "momentum": max(0, int(round(slots_remaining * alloc["momentum"]))),
+        "momentum_short": 0,
     }
-    if by_sleeve_slots["meanrev"] + by_sleeve_slots["momentum"] < slots_remaining:
-        by_sleeve_slots["meanrev"] += slots_remaining - (
-            by_sleeve_slots["meanrev"] + by_sleeve_slots["momentum"]
-        )
+    if shorts_enabled:
+        by_sleeve_slots["momentum_short"] = max(0, by_sleeve_slots["momentum"] // 2)
+    total_allocated_slots = by_sleeve_slots["meanrev"] + by_sleeve_slots["momentum"] + by_sleeve_slots["momentum_short"]
+    if total_allocated_slots < slots_remaining:
+        by_sleeve_slots["meanrev"] += slots_remaining - total_allocated_slots
+    elif total_allocated_slots > slots_remaining:
+        by_sleeve_slots["momentum"] = max(0, by_sleeve_slots["momentum"] - (total_allocated_slots - slots_remaining))
     ordered = {
         "meanrev": sorted(candidates["meanrev"], key=lambda x: x[1]),
         "momentum": sorted(candidates["momentum"], key=lambda x: x[1], reverse=True),

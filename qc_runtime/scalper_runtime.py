@@ -225,7 +225,19 @@ def _scalper_on_data(
                 strategy_owner="scalper",
                 initial_risk_distance=max(float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5) * atr, 1e-9),
                 stop_price=max(0.0, avg_px - max(float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5) * atr, 1e-9)),
-                target_price=avg_px + atr * float(getattr(self.config, "scalper_tp1_atr", 1.5) or 1.5),
+                # scalper_tp1_atr is a legacy fallback when scalper_tp_atr_mult is absent.
+                take_profit_price=avg_px
+                + atr
+                * float(
+                    getattr(
+                        self.config,
+                        "scalper_tp_atr_mult",
+                        getattr(self.config, "scalper_tp1_atr", 2.0),
+                    )
+                    or 2.0
+                ),
+                partial_tp_price=avg_px + atr * float(getattr(self.config, "scalper_partial_tp_atr_mult", 1.0) or 1.0),
+                trail_anchor_price=avg_px,
             )
             self.position_state[sym] = state
             if not hasattr(self, "_lazy_seed_warned"):
@@ -237,7 +249,13 @@ def _scalper_on_data(
                 self._lazy_seed_warned.add(sym)
         sec = self.Securities.get(sym)
         px = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
-        state.highest_close = max(float(getattr(state, "highest_close", state.entry_price) or state.entry_price), px)
+        prev_high = float(getattr(state, "highest_close", state.entry_price) or state.entry_price)
+        prev_anchor = getattr(state, "trail_anchor_price", None)
+        if prev_anchor is None:
+            prev_anchor = prev_high
+        trail_anchor = max(float(prev_anchor), px)
+        state.trail_anchor_price = trail_anchor
+        state.highest_close = max(prev_high, trail_anchor)
         qty_now = float(getattr(self.Portfolio[sym], "Quantity", 0.0) or 0.0)
         side = -1 if qty_now < 0 else 1
         sleeve = "momentum" if "momentum" in str(getattr(state, "strategy_owner", "meanrev")) else "meanrev"
@@ -254,6 +272,10 @@ def _scalper_on_data(
             highest_close=state.highest_close,
             entry_atr=state.entry_atr,
             initial_risk_distance=getattr(state, "initial_risk_distance", 0.0),
+            stop_price=getattr(state, "stop_price", None),
+            take_profit_price=getattr(state, "take_profit_price", None),
+            partial_tp_price=getattr(state, "partial_tp_price", None),
+            trail_anchor_price=getattr(state, "trail_anchor_price", None),
             partial_tp_done=bool(getattr(state, "partial_tp_done", False)),
             tight_trail_armed=bool(getattr(state, "tight_trail_armed", False)),
             sleeve=sleeve,

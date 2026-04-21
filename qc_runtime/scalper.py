@@ -131,6 +131,10 @@ def evaluate_exit(
     highest_close: float | None = None,
     entry_atr: float | None = None,
     initial_risk_distance: float | None = None,
+    stop_price: float | None = None,
+    take_profit_price: float | None = None,
+    partial_tp_price: float | None = None,
+    trail_anchor_price: float | None = None,
     partial_tp_done: bool = False,
     tight_trail_armed: bool = False,
     sleeve: str = "meanrev",
@@ -153,7 +157,7 @@ def evaluate_exit(
         atr = entry_price * 0.01
     stop_atr_mult = float(getattr(config, "scalper_stop_atr_mult", 1.5) or 1.5)
     base_risk = max(float(initial_risk_distance or 0.0), stop_atr_mult * atr)
-    high_ref = float(highest_close if highest_close is not None else current_price)
+    high_ref = float(trail_anchor_price if trail_anchor_price is not None else (highest_close if highest_close is not None else current_price))
     trail_mult = float(
         getattr(
             config,
@@ -162,7 +166,7 @@ def evaluate_exit(
         )
         or (0.5 if tight_trail_armed else 2.0)
     )
-    base_stop = (entry_price - base_risk) if side > 0 else (entry_price + base_risk)
+    base_stop = stop_price if stop_price is not None else ((entry_price - base_risk) if side > 0 else (entry_price + base_risk))
     if partial_tp_done:
         base_stop = max(base_stop, entry_price) if side > 0 else min(base_stop, entry_price)
     trailing_stop = max(base_stop, high_ref - trail_mult * atr) if side > 0 else min(base_stop, high_ref + trail_mult * atr)
@@ -179,9 +183,16 @@ def evaluate_exit(
         trailing_stop = max(base_stop, high_ref - atr) if side > 0 else min(base_stop, high_ref + atr)
     if (side > 0 and current_price <= trailing_stop) or (side < 0 and current_price >= trailing_stop):
         return True, "SL" if pnl_pct <= 0 else "ATRStop"
-    if r_multiple >= float(getattr(config, "scalper_tp2_r", 2.5) or 2.5):
+    if take_profit_price is not None and ((side > 0 and current_price >= take_profit_price) or (side < 0 and current_price <= take_profit_price)):
         return True, "TP"
-    if (not partial_tp_done) and atr_progress >= float(getattr(config, "scalper_tp1_atr", 1.5) or 1.5):
+    if take_profit_price is None and r_multiple >= float(getattr(config, "scalper_tp2_r", 2.5) or 2.5):
+        return True, "TP"
+    partial_hit = False
+    if partial_tp_price is not None:
+        partial_hit = (side > 0 and current_price >= partial_tp_price) or (side < 0 and current_price <= partial_tp_price)
+    else:
+        partial_hit = atr_progress >= float(getattr(config, "scalper_tp1_atr", 1.5) or 1.5)
+    if (not partial_tp_done) and partial_hit:
         return True, "TP1"
     stop_hours = float(
         getattr(config, "scalper_mom_max_hold_bars", 24) if sleeve == "momentum" else getattr(config, "scalper_mr_max_hold_bars", 12)

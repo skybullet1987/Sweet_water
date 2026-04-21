@@ -1071,7 +1071,15 @@ class SweetWaterPhase1(QCAlgorithm):
                     owner = "scalper_momentum"
                 is_short = "ScalperMomShort:entry" in tag
                 stop_mult = float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5)
-                tp1_atr = float(getattr(self.config, "scalper_tp1_atr", CONFIG.scalper_tp1_atr) or CONFIG.scalper_tp1_atr)
+                tp_atr_mult = float(
+                    getattr(
+                        self.config,
+                        "scalper_tp_atr_mult",
+                        getattr(self.config, "scalper_tp1_atr", 2.0),
+                    )
+                    or 2.0
+                )
+                partial_tp_atr_mult = float(getattr(self.config, "scalper_partial_tp_atr_mult", 1.0) or 1.0)
                 atr_eff = atr if atr > 0 else fill_px * 0.02
                 risk_dist = max(stop_mult * atr_eff, 1e-9)
                 self.position_state[symbol] = PositionState(
@@ -1082,11 +1090,17 @@ class SweetWaterPhase1(QCAlgorithm):
                     strategy_owner=owner,
                     initial_risk_distance=risk_dist,
                     stop_price=(fill_px + risk_dist) if is_short else max(0.0, fill_px - risk_dist),
-                    target_price=(
-                        fill_px - atr_eff * tp1_atr
+                    take_profit_price=(
+                        fill_px - atr_eff * tp_atr_mult
                         if is_short
-                        else fill_px + atr_eff * tp1_atr
+                        else fill_px + atr_eff * tp_atr_mult
                     ),
+                    partial_tp_price=(
+                        fill_px - atr_eff * partial_tp_atr_mult
+                        if is_short
+                        else fill_px + atr_eff * partial_tp_atr_mult
+                    ),
+                    trail_anchor_price=fill_px,
                 )
         if symbol is not None and tag.startswith("Rebalance"):
             clear_rebalance_failure(self, symbol)

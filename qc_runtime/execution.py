@@ -72,6 +72,24 @@ def _position_state(algo) -> dict:
     return algo.position_state
 
 
+def _state_get(algo, symbol):
+    pstate = _position_state(algo)
+    state = pstate.get(symbol)
+    if state is None:
+        key = getattr(symbol, "Value", None)
+        if key is not None:
+            state = pstate.get(key)
+    return state
+
+
+def _state_pop(algo, symbol):
+    pstate = _position_state(algo)
+    pstate.pop(symbol, None)
+    key = getattr(symbol, "Value", None)
+    if key is not None:
+        pstate.pop(key, None)
+
+
 def get_effective_round_trip_fee(algo) -> float:
     return max(0.0, min(float(getattr(algo, "expected_round_trip_fees", CONFIG.expected_round_trip_fees)), 0.05))
 
@@ -417,13 +435,13 @@ def place_entry(algo, symbol, quantity, tag="Entry", force_market=False, signal_
 
 
 def cleanup_position(algo, symbol, record_pnl=False, exit_price=None):
-    pstate = _position_state(algo).get(symbol)
+    pstate = _state_get(algo, symbol)
     entry_price = getattr(pstate, "entry_price", None)
     if record_pnl and entry_price and exit_price and entry_price > 0 and exit_price > 0:
         pnl = (exit_price - entry_price) / entry_price - get_effective_round_trip_fee(algo)
         algo.pnl_by_tag.setdefault(getattr(algo, "_last_exit_tag", "Unknown"), []).append(pnl)
         algo.pnl_by_regime.setdefault(getattr(algo, "market_regime", "unknown"), []).append(pnl)
-    _position_state(algo).pop(symbol, None)
+    _state_pop(algo, symbol)
 
 
 def smart_liquidate(algo, symbol, tag="Liquidate"):
@@ -443,7 +461,7 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
             algo._abandoned_dust = set()
         already_dust = symbol in algo._abandoned_dust
         algo._abandoned_dust.add(symbol)
-        _position_state(algo).pop(symbol, None)
+        _state_pop(algo, symbol)
         if not already_dust:
             debug_limited(
                 algo,
@@ -452,6 +470,14 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
                     f"sym={getattr(symbol, 'Value', symbol)} "
                     f"qty={qty:.10f} min_qty={min_qty:.10f} "
                     f"notional={qty * price:.6f} min_notional={min_notional:.4f}"
+                ),
+            )
+            debug_limited(
+                algo,
+                (
+                    "DUST_PURGE "
+                    f"sym={getattr(symbol, 'Value', symbol)} "
+                    f"residual_qty={qty:.10f}"
                 ),
             )
         return False
@@ -502,14 +528,14 @@ def manage_open_positions(algo, data=None):
             holdings.append(symbol)
 
     holding_set = set(holdings)
-    for symbol in list(_position_state(algo).keys()):
+    for symbol in [s for s in list(_position_state(algo).keys()) if hasattr(s, "Value")]:
         if symbol not in holding_set and position_status(algo, symbol) == "flat":
             cleanup_position(algo, symbol)
     for symbol in holdings:
-        state = _position_state(algo).get(symbol)
+        state = _state_get(algo, symbol)
         if state is not None and getattr(state, "strategy_owner", "momentum") == "scalper":
             continue
-        if symbol not in _position_state(algo):
+        if _state_get(algo, symbol) is None:
             try:
                 avg_px = float(algo.Portfolio[symbol].AveragePrice or 0.0)
             except Exception:
@@ -523,17 +549,19 @@ def manage_open_positions(algo, data=None):
             atr = float(feats.get("atr", 0.0) or 0.0)
             if atr <= 0:
                 atr = avg_px * DEFAULT_LAZY_ATR_PCT
-            _position_state(algo)[symbol] = PositionState(
+            state_new = PositionState(
                 entry_price=avg_px,
                 highest_close=avg_px,
                 entry_atr=atr,
                 entry_time=algo.Time - timedelta(hours=1),
             )
+            _position_state(algo)[symbol] = state_new
+            _position_state(algo)[getattr(symbol, "Value", str(symbol))] = state_new
             algo.Debug(
                 f"LAZY_SEED sym={getattr(symbol,'Value',symbol)} "
                 f"entry_time_set={algo.Time - timedelta(hours=1)} avg_px={avg_px:.6f} atr={atr:.6f} reason=missing_state"
             )
-        pstate = _position_state(algo).get(symbol)
+        pstate = _state_get(algo, symbol)
         if pstate is None:
             continue
         sec = algo.Securities.get(symbol)
@@ -542,7 +570,7 @@ def manage_open_positions(algo, data=None):
         price = float(getattr(sec, "Price", 0.0) or 0.0)
         if price <= 0:
             continue
-        state = _position_state(algo)[symbol]
+        state = pstate
         if state.entry_time is not None:
             hours_held = (algo.Time - state.entry_time).total_seconds() / 3600.0
         else:
@@ -552,7 +580,6 @@ def manage_open_positions(algo, data=None):
             if smart_liquidate(algo, symbol, tag="TimeStop"):
                 algo.Debug(f"TIME_STOP sym={getattr(symbol,'Value',symbol)} hours={hours_held:.1f}")
                 cleanup_position(algo, symbol, record_pnl=True, exit_price=price)
-                _position_state(algo).pop(symbol, None)
                 exits.append((symbol, "TimeStop"))
                 continue
         state.highest_close = max(state.highest_close, price)
@@ -568,14 +595,12 @@ def manage_open_positions(algo, data=None):
             if smart_liquidate(algo, symbol, tag=tag):
                 algo.Debug(f"{tag} sym={getattr(symbol,'Value',symbol)} px={price:.4f} stop={effective_stop:.4f}")
                 cleanup_position(algo, symbol, record_pnl=True, exit_price=price)
-                _position_state(algo).pop(symbol, None)
                 exits.append((symbol, tag))
                 continue
         elif price >= tp_price:
             if smart_liquidate(algo, symbol, tag="TP"):
                 algo.Debug(f"TP sym={getattr(symbol,'Value',symbol)} px={price:.4f} tp={tp_price:.4f}")
                 cleanup_position(algo, symbol, record_pnl=True, exit_price=price)
-                _position_state(algo).pop(symbol, None)
                 exits.append((symbol, "TP"))
                 continue
     return exits

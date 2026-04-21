@@ -282,6 +282,8 @@ class FeatureEngine:
             from .scalper_signals import ret_pct, rsi_14, z_score_20h  # type: ignore
 
         closes24 = list(state["close_history_24h"])
+        lows = list(state["low"])
+        low_50 = min(lows[-50:]) if lows else close
         sma_20h = sum(closes24[-20:]) / max(len(closes24[-20:]), 1) if len(closes24) >= 20 else 0.0
         std_20h = (
             (sum((c - sma_20h) ** 2 for c in closes24[-20:]) / max(len(closes24[-20:]) - 1, 1)) ** 0.5
@@ -299,6 +301,7 @@ class FeatureEngine:
             "ret_6h": self._to_float(ret_pct(closes7[-7], closes7[-1]) if len(closes7) >= 7 else 0.0, 0.0),
             "new_high_24h": float(close >= max(closes24[-24:])) if len(closes24) >= 24 else 0.0,
             "new_low_24h": float(close <= min(closes24[-24:])) if len(closes24) >= 24 else 0.0,
+            "low_50": self._to_float(low_50, close),
         }
 
         if state["count"] < 60:

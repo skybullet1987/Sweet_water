@@ -80,3 +80,19 @@ def test_vol_target_qty_respects_risk_and_exposure_caps():
     )
     assert qty > 0
     assert notional <= 250.0 + 1e-9
+
+
+def test_vol_target_qty_respects_effective_position_size_pct():
+    qty, notional = vol_target_qty(
+        equity=1_000.0,
+        price=100.0,
+        atr_pct=0.01,
+        available_cash=800.0,
+        current_gross_exposure_pct=0.0,
+        risk_per_trade_pct=0.02,
+        max_symbol_exposure_pct=0.50,
+        max_gross_exposure_pct=0.95,
+        position_size_pct=0.08,
+    )
+    assert qty > 0
+    assert notional <= 80.0 + 1e-9

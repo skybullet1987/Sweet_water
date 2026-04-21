@@ -263,13 +263,18 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
     quantity = float(quantity or 0.0)
     if quantity > 0:
         failed = getattr(algo, "_failed_escalations", {}) or {}
+        cutoff = algo.Time - timedelta(hours=24)
+        expired = [s for s, t in failed.items() if t is None or t < cutoff]
+        for s in expired:
+            failed.pop(s, None)
         last_fail = failed.get(symbol)
         if last_fail is not None:
             try:
                 hours_since = (algo.Time - last_fail).total_seconds() / 3600.0
             except Exception:
                 hours_since = 999.0
-            if hours_since < 24.0:
+            cooldown_hours = float(getattr(algo.config, "failed_esc_cooldown_hours", 6.0) or 6.0)
+            if hours_since < cooldown_hours:
                 _log_once_per_hour(
                     algo,
                     f"esc_cooldown:{getattr(symbol, 'Value', symbol)}",
@@ -319,17 +324,18 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
     if force_market:
         securities = getattr(algo, "Securities", {})
         sec = securities.get(symbol) if hasattr(securities, "get") else None
-        est_px = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
-        ok, required, available = can_afford(algo, symbol, quantity, est_px) if est_px > 0 else (True, 0.0, 0.0)
-        if quantity > 0 and est_px > 0 and not ok:
-            _log_once_per_hour(
-                algo,
-                f"insuff:{getattr(symbol, 'Value', symbol)}",
-                (
-                    "INSUFF_FUNDS "
-                    f"sym={getattr(symbol, 'Value', symbol)} req={required:.4f} avail={available:.4f} "
-                    f"tag={tag}"
-                ),
+        est_px = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else None
+        if est_px is None or est_px <= 0:
+            algo.Debug(f"FORCE_MARKET_SKIP sym={getattr(symbol, 'Value', symbol)} reason=no_price tag={tag}")
+            return None
+        if is_price_stale(algo, symbol, est_px):
+            algo.Debug(f"FORCE_MARKET_SKIP sym={getattr(symbol, 'Value', symbol)} reason=stale_price tag={tag}")
+            return None
+        ok, required, available = can_afford(algo, symbol, quantity, est_px)
+        if quantity > 0 and not ok:
+            algo.Debug(
+                "FORCE_MARKET_SKIP "
+                f"sym={getattr(symbol, 'Value', symbol)} reason=insufficient_bp req={required:.2f} avail={available:.2f}"
             )
             if str(tag).startswith("Rebalance") or str(tag).startswith("[StaleEsc]"):
                 mark_rebalance_failure(algo, symbol, "insuff_funds")
@@ -651,9 +657,7 @@ def escalate_stale_orders(algo):
         replacement = place_limit_or_market(algo, symbol, qty, tag="[StaleEsc]", force_market=True)
         algo._submitted_orders.pop(symbol, None)
         if replacement is None:
-            if not hasattr(algo, "_failed_escalations"):
-                algo._failed_escalations = {}
-            algo._failed_escalations[symbol] = algo.Time
+            algo.Debug(f"STALE_SKIP sym={getattr(symbol, 'Value', symbol)} reason=replacement_skipped")
             continue
         escalated.append(symbol)
     return escalated
@@ -739,4 +743,3 @@ class RealisticCryptoSlippage:
             ask=float(getattr(asset, "AskPrice", 0.0) or 0.0),
         )
         return price * pct
-

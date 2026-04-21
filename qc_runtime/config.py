@@ -136,6 +136,8 @@ class StrategyConfig:
     scalper_tp2_r: float = 2.5
     scalper_mr_max_hold_bars: int = 8
     scalper_mom_max_hold_bars: int = 16
+    scalper_max_bars_held: int = 24
+    scalper_breaker_symbol_loss_pct: float = 0.005
     scalper_beta_cap: float = 2.25
     scalper_beta_lookback_hours: int = 24 * 7
     scalper_tp1_atr: float = 1.5

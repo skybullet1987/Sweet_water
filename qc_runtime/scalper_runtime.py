@@ -22,6 +22,124 @@ from scalper import corr_hits_from_state, effective_position_size_pct, evaluate_
 
 INFINITE_HELD_HOURS = 10**9
 
+
+def _safe_open_orders(self, symbol):
+    try:
+        return list(self.Transactions.GetOpenOrders(symbol))
+    except Exception:
+        return []
+
+
+def _order_tag(order) -> str:
+    return str(getattr(order, "Tag", "") or "")
+
+
+def _order_qty_abs(order) -> float:
+    qty = float(getattr(order, "Quantity", 0.0) or 0.0)
+    if qty != 0.0:
+        return abs(qty)
+    return abs(float(getattr(order, "AbsoluteQuantity", 0.0) or 0.0))
+
+
+def _order_limit_price(order) -> float | None:
+    for attr in ("LimitPrice", "Price"):
+        value = getattr(order, attr, None)
+        if value is not None:
+            return float(value)
+    return None
+
+
+def _order_stop_price(order) -> float | None:
+    value = getattr(order, "StopPrice", None)
+    if value is None:
+        return None
+    return float(value)
+
+
+def _cancel_open_orders_for_symbol(self, symbol):
+    for order in _safe_open_orders(self, symbol):
+        oid = getattr(order, "Id", None)
+        if oid is None:
+            oid = getattr(order, "OrderId", None)
+        if oid is None:
+            continue
+        try:
+            self.Transactions.CancelOrder(int(oid))
+        except Exception:
+            continue
+
+
+def _force_flatten_symbol(self, symbol, *, tag: str, smart_liquidate_fn):
+    _cancel_open_orders_for_symbol(self, symbol)
+    if smart_liquidate_fn(self, symbol, tag=tag):
+        return True
+    try:
+        qty = float(getattr(self.Portfolio[symbol], "Quantity", 0.0) or 0.0)
+    except Exception:
+        qty = 0.0
+    if qty == 0:
+        return True
+    try:
+        self.MarketOrder(symbol, -qty, tag=tag)
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_scalper_brackets(self, symbol, *, qty_now: float, side: int, state):
+    stop_px = float(getattr(state, "stop_price", 0.0) or 0.0)
+    tp_px = float(getattr(state, "take_profit_price", 0.0) or 0.0)
+    if stop_px <= 0 or tp_px <= 0:
+        return True, True
+    qty_abs = abs(qty_now)
+    if qty_abs <= 0:
+        return True, True
+    exit_qty = -qty_abs if side > 0 else qty_abs
+    price_tol = 1e-6
+    qty_tol = 1e-9
+    has_sl = False
+    has_tp = False
+    for order in _safe_open_orders(self, symbol):
+        if _order_qty_abs(order) <= qty_tol:
+            continue
+        if abs(_order_qty_abs(order) - qty_abs) > qty_tol:
+            continue
+        tag = _order_tag(order)
+        if tag not in {"SL", "TP"}:
+            continue
+        if tag == "SL":
+            opx = _order_stop_price(order)
+            if opx is not None and abs(float(opx) - stop_px) <= price_tol:
+                has_sl = True
+        elif tag == "TP":
+            opx = _order_limit_price(order)
+            if opx is not None and abs(float(opx) - tp_px) <= price_tol:
+                has_tp = True
+    if has_sl and has_tp:
+        return True, True
+    reasons = []
+    if not has_sl:
+        reasons.append("missing_sl")
+    if not has_tp:
+        reasons.append("missing_tp")
+    self.Debug(
+        f"BRACKET_REARM sym={getattr(symbol, 'Value', symbol)} reason={'+'.join(reasons)} "
+        f"stop={stop_px:.6f} tp={tp_px:.6f}"
+    )
+    if not has_sl:
+        try:
+            self.StopMarketOrder(symbol, exit_qty, stop_px, tag="SL")
+            has_sl = True
+        except Exception:
+            pass
+    if not has_tp:
+        try:
+            self.LimitOrder(symbol, exit_qty, tp_px, tag="TP")
+            has_tp = True
+        except Exception:
+            pass
+    return has_sl, has_tp
+
 def _scalper_sleeve_allocations(self) -> dict[str, float]:
     def _sharpe(values):
         if len(values) < 5:
@@ -261,6 +379,49 @@ def _scalper_on_data(
         sleeve = "momentum" if "momentum" in str(getattr(state, "strategy_owner", "meanrev")) else "meanrev"
         if sleeve == "momentum" and side < 0:
             sleeve = "momentum_short"
+        bars_held = int(
+            max(
+                0.0,
+                ((self.Time - state.entry_time).total_seconds() / 3600.0) if state.entry_time else 0.0,
+            )
+        )
+        max_bars_held = int(
+            max(
+                1,
+                float(
+                    getattr(
+                        self.config,
+                        "scalper_max_bars_held",
+                        max(
+                            float(getattr(self.config, "scalper_mr_max_hold_bars", 12) or 12),
+                            float(getattr(self.config, "scalper_mom_max_hold_bars", 24) or 24),
+                        ),
+                    )
+                    or 24
+                ),
+            )
+        )
+        has_sl, has_tp = _ensure_scalper_brackets(self, sym, qty_now=qty_now, side=side, state=state)
+        stale_bars = int(max(1, getattr(self.config, "scalper_stuck_hold_bars", max_bars_held) or max_bars_held))
+        if bars_held >= stale_bars and (not has_sl or not has_tp):
+            self.Debug(
+                f"STALE_POSITION sym={sym.Value} bars_held={bars_held} has_sl={has_sl} has_tp={has_tp}"
+            )
+            if _force_flatten_symbol(self, sym, tag="StaleExit", smart_liquidate_fn=smart_liquidate_fn):
+                self.Debug(f"SCALPER_EXIT sym={sym.Value} tag=StaleExit pnl=0.00% bars_held={bars_held} r_multiple=0.00")
+                self.position_state.pop(sym, None)
+                self._scalper_entry_sleeve.pop(sym, None)
+                self._scalper_last_exit_by_sleeve[(sym, sleeve)] = self.Time
+                self._scalper_last_trade_time[sym] = self.Time
+                continue
+        if bars_held >= max_bars_held:
+            if _force_flatten_symbol(self, sym, tag="TimeStop", smart_liquidate_fn=smart_liquidate_fn):
+                self.Debug(f"SCALPER_EXIT sym={sym.Value} tag=TimeStop pnl=0.00% bars_held={bars_held} r_multiple=0.00")
+                self.position_state.pop(sym, None)
+                self._scalper_entry_sleeve.pop(sym, None)
+                self._scalper_last_exit_by_sleeve[(sym, sleeve)] = self.Time
+                self._scalper_last_trade_time[sym] = self.Time
+                continue
         should_exit, tag = evaluate_exit(
             symbol=sym,
             feats=feats,
@@ -296,24 +457,12 @@ def _scalper_on_data(
                 ticket = place_limit_or_market_fn(self, sym, (-qty_half if side > 0 else qty_half), tag="TP1")
                 if ticket is not None:
                     state.partial_tp_done = True
-                    bars_held = int(
-                        max(
-                            0.0,
-                            ((self.Time - state.entry_time).total_seconds() / 3600.0) if state.entry_time else 0.0,
-                        )
-                    )
                     self.Debug(f"SCALPER_EXIT sym={sym.Value} tag=TP1 pnl={pnl_frac*100:.2f}% bars_held={bars_held} r_multiple=1.00")
             continue
         if should_exit:
             risk_dist = max(float(getattr(state, "initial_risk_distance", 0.0) or 0.0), 1e-9)
             r_multiple = (side * (px - state.entry_price)) / risk_dist if state.entry_price > 0 else 0.0
-            bars_held = int(
-                max(
-                    0.0,
-                    ((self.Time - state.entry_time).total_seconds() / 3600.0) if state.entry_time else 0.0,
-                )
-            )
-            if smart_liquidate_fn(self, sym, tag=tag):
+            if _force_flatten_symbol(self, sym, tag=tag, smart_liquidate_fn=smart_liquidate_fn):
                 self.Debug(
                     f"SCALPER_EXIT sym={sym.Value} tag={tag} pnl={pnl_frac*100:.2f}% "
                     f"bars_held={bars_held} r_multiple={r_multiple:.2f}"
@@ -356,8 +505,20 @@ def _scalper_on_data(
             next_day = (self.Time + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             self._scalper_daily_breaker_until = next_day
             self.Debug(f"BREAKER_DAILY pnl={self._scalper_daily_pnl*100:.2f}% until={next_day}")
+        breaker_sym_loss_limit = float(getattr(self.config, "scalper_breaker_symbol_loss_pct", 0.005) or 0.005)
         for sym in held:
-            smart_liquidate_fn(self, sym, tag="BREAKER_DAILY")
+            sec = self.Securities.get(sym)
+            px = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
+            holding = self.Portfolio[sym]
+            avg_px = float(getattr(holding, "AveragePrice", 0.0) or 0.0)
+            qty = float(getattr(holding, "Quantity", 0.0) or 0.0)
+            side = -1.0 if qty < 0 else 1.0
+            contrib = 0.0
+            if equity > 0 and avg_px > 0 and px > 0 and qty != 0:
+                contrib = (side * (px / avg_px - 1.0)) * (abs(qty) * avg_px / equity)
+            self.Debug(f"BREAKER_DAILY_CONTRIB sym={sym.Value} unrealized={contrib*100:.2f}% qty={qty:.6f}")
+            if contrib <= -breaker_sym_loss_limit:
+                _force_flatten_symbol(self, sym, tag="BREAKER_DAILY", smart_liquidate_fn=smart_liquidate_fn)
         return
 
     if len(held) >= int(self.config.scalper_max_concurrent):

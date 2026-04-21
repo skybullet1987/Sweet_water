@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+ENABLE_SHORTS = False  # Cash-account / Canada compliance — no shorting.
+
 
 @dataclass(frozen=True)
 class StrategyConfig:
@@ -146,6 +148,7 @@ class StrategyConfig:
     scalper_catastrophic_stop_pct: float = -0.03
     scalper_mr_relaxed_z_entry: float = -1.6
     scalper_mr_relaxed_vol_cone_max_pct: float = 0.40
+    enable_shorts: bool = ENABLE_SHORTS
     scalper_momentum_short_z_entry: float = -2.0
 
     min_qty_fallback: dict[str, float] = field(default_factory=lambda: {

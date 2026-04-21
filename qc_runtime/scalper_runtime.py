@@ -93,13 +93,21 @@ def _ensure_scalper_brackets(self, symbol, *, qty_now: float, side: int, state):
     stop_px = float(getattr(state, "stop_price", 0.0) or 0.0)
     tp_px = float(getattr(state, "take_profit_price", 0.0) or 0.0)
     if stop_px <= 0 or tp_px <= 0:
-        return True, True
+        if not state.bracket_skip_logged:
+            self.Debug(
+                f"BRACKET_SKIP sym={getattr(symbol, 'Value', symbol)} "
+                f"reason=invalid_prices stop={stop_px:.6f} tp={tp_px:.6f}"
+            )
+            state.bracket_skip_logged = True
+        return False, False
+    state.bracket_skip_logged = False
     qty_abs = abs(qty_now)
     if qty_abs <= 0:
         return True, True
     exit_qty = -qty_abs if side > 0 else qty_abs
     price_tol = 1e-6
     qty_tol = 1e-9
+    attempted_qty = float(state.bracket_attempted_qty or 0.0)
     has_sl = False
     has_tp = False
     for order in _safe_open_orders(self, symbol):
@@ -119,7 +127,10 @@ def _ensure_scalper_brackets(self, symbol, *, qty_now: float, side: int, state):
             if opx is not None and abs(float(opx) - tp_px) <= price_tol:
                 has_tp = True
     if has_sl and has_tp:
+        state.bracket_attempted_qty = qty_abs
         return True, True
+    if abs(attempted_qty - qty_abs) <= qty_tol:
+        return has_sl, has_tp
     reasons = []
     if not has_sl:
         reasons.append("missing_sl")
@@ -129,6 +140,7 @@ def _ensure_scalper_brackets(self, symbol, *, qty_now: float, side: int, state):
         f"BRACKET_REARM sym={getattr(symbol, 'Value', symbol)} reason={'+'.join(reasons)} "
         f"stop={stop_px:.6f} tp={tp_px:.6f}"
     )
+    state.bracket_attempted_qty = qty_abs
     if not has_sl:
         try:
             self.StopMarketOrder(symbol, exit_qty, stop_px, tag="SL")
@@ -554,7 +566,9 @@ def _scalper_on_data(
     if bool(getattr(self.config, "scalper_use_btc_ema_gate", False)) and not btc_gate_open:
         return
 
-    candidates = {"meanrev": [], "momentum": [], "momentum_short": []}
+    shorts_enabled = bool(getattr(self.config, "enable_shorts", False))
+    sleeves = ("meanrev", "momentum", "momentum_short") if shorts_enabled else ("meanrev", "momentum")
+    candidates = {sleeve: [] for sleeve in sleeves}
     rejection_counts = {}
     for symbol in self.symbols[: int(self.config.scalper_universe_size)]:
         feats = dict(self.feature_engine.current_features(symbol.Value) or {})
@@ -578,7 +592,7 @@ def _scalper_on_data(
         last_trade_hours_ago = (
             (self.Time - last_t).total_seconds() / 3600.0 if last_t else INFINITE_HELD_HOURS
         )
-        for sleeve in ("meanrev", "momentum", "momentum_short"):
+        for sleeve in sleeves:
             last_exit = self._scalper_last_exit_by_sleeve.get((symbol, sleeve))
             if last_exit is not None:
                 since_exit = (self.Time - last_exit).total_seconds() / 3600.0
@@ -624,19 +638,28 @@ def _scalper_on_data(
         "momentum": max(0, int(round(slots_remaining * alloc["momentum"]))),
         "momentum_short": 0,
     }
-    by_sleeve_slots["momentum_short"] = max(0, by_sleeve_slots["momentum"] // 2)
-    if by_sleeve_slots["meanrev"] + by_sleeve_slots["momentum"] + by_sleeve_slots["momentum_short"] < slots_remaining:
-        by_sleeve_slots["meanrev"] += slots_remaining - (
-            by_sleeve_slots["meanrev"] + by_sleeve_slots["momentum"] + by_sleeve_slots["momentum_short"]
-        )
+    if shorts_enabled:
+        by_sleeve_slots["momentum_short"] = max(0, by_sleeve_slots["momentum"] // 2)
+    total_allocated_slots = by_sleeve_slots["meanrev"] + by_sleeve_slots["momentum"] + by_sleeve_slots["momentum_short"]
+    if total_allocated_slots < slots_remaining:
+        by_sleeve_slots["meanrev"] += slots_remaining - total_allocated_slots
+    elif total_allocated_slots > slots_remaining:
+        excess = total_allocated_slots - slots_remaining
+        for sleeve_key in ("momentum_short", "momentum", "meanrev"):
+            if excess <= 0:
+                break
+            cut = min(by_sleeve_slots[sleeve_key], excess)
+            by_sleeve_slots[sleeve_key] -= cut
+            excess -= cut
     ordered = {
         "meanrev": sorted(candidates["meanrev"], key=lambda x: x[1]),
         "momentum": sorted(candidates["momentum"], key=lambda x: x[1], reverse=True),
-        "momentum_short": sorted(candidates["momentum_short"], key=lambda x: x[1]),
     }
+    if shorts_enabled:
+        ordered["momentum_short"] = sorted(candidates["momentum_short"], key=lambda x: x[1])
     placed_symbols = set()
     gross_now = float(getattr(self.Portfolio, "TotalHoldingsValue", 0.0) or 0.0) / max(equity, 1.0)
-    for sleeve in ("meanrev", "momentum", "momentum_short"):
+    for sleeve in sleeves:
         for symbol, z, regime in ordered[sleeve]:
             if by_sleeve_slots[sleeve] <= 0 or len(placed_symbols) >= slots_remaining:
                 break

@@ -14,6 +14,7 @@ import main as main_module
 import scalper as scalper_module
 from execution import PositionState
 from main import SweetWaterPhase1
+from scalper_runtime import _ensure_scalper_brackets
 
 
 class _Symbol:
@@ -128,3 +129,27 @@ def test_scalper_time_stop_flattens_when_brackets_never_stick(monkeypatch):
     assert any("SCALPER_EXIT sym=XRPUSD tag=TimeStop" in line for line in logs)
     assert ("SL", -1.0) in submitted
     assert ("TP", -1.0) in submitted
+
+
+def test_bracket_submitter_idempotent_for_same_position_size():
+    sym = _Symbol("SOLUSD")
+    submitted: list[tuple[str, float, float]] = []
+    state = PositionState(
+        entry_price=100.0,
+        highest_close=100.0,
+        entry_atr=1.0,
+        entry_time=datetime(2025, 1, 10, tzinfo=timezone.utc),
+        stop_price=98.5,
+        take_profit_price=102.5,
+    )
+    algo = SimpleNamespace(
+        Transactions=SimpleNamespace(GetOpenOrders=lambda *_args, **_kwargs: []),
+        StopMarketOrder=lambda _symbol, qty, stop, tag="": submitted.append((tag, qty, stop)) or object(),
+        LimitOrder=lambda _symbol, qty, limit, tag="": submitted.append((tag, qty, limit)) or object(),
+        Debug=lambda *_args, **_kwargs: None,
+    )
+
+    _ensure_scalper_brackets(algo, sym, qty_now=1.0, side=1, state=state)
+    _ensure_scalper_brackets(algo, sym, qty_now=1.0, side=1, state=state)
+
+    assert submitted == [("SL", -1.0, 98.5), ("TP", -1.0, 102.5)]

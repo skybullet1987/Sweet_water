@@ -112,3 +112,30 @@ def test_scalper_entry_blocked_during_session_brake(monkeypatch):
 
     algo._scalper_on_data(data=SimpleNamespace())
     assert submit_calls == []
+
+
+def test_scalper_disables_short_sleeve_by_default(monkeypatch):
+    algo = _base_algo()
+    sym = _Symbol("ETHUSD")
+    algo.symbols = [sym]
+    algo._current_holdings = lambda: []
+    algo.feature_engine = _FeatureEngine({"BTCUSD": {"ret_1h": 0.0, "ret_6h": 0.0}, "ETHUSD": {"z_20h": -2.5, "rsi_14": 30.0, "rv_21d": 0.3}})
+    algo.Securities = {sym: SimpleNamespace(Price=100.0)}
+    placed = []
+    sleeves_seen = []
+    monkeypatch.setattr(scalper_module, "evaluate_exit", lambda **kwargs: (False, ""))
+    monkeypatch.setattr(
+        scalper_module,
+        "evaluate_entry",
+        lambda **kwargs: sleeves_seen.append(kwargs.get("sleeve")) or (True, "OK"),
+    )
+    monkeypatch.setattr(main_module, "round_quantity", lambda _algo, _symbol, qty: qty)
+    monkeypatch.setattr(main_module, "place_entry", lambda _algo, _symbol, qty, tag="", signal_score=0.0: placed.append((tag, qty)) or object())
+    monkeypatch.setattr(main_module, "place_limit_or_market", lambda _algo, _symbol, qty, tag="", signal_score=0.0: placed.append((tag, qty)) or object())
+
+    algo._scalper_on_data(data=SimpleNamespace())
+
+    assert placed
+    assert "momentum_short" not in sleeves_seen
+    assert all(qty >= 0 for _tag, qty in placed)
+    assert all("ScalperMomShort" not in tag for tag, _qty in placed)

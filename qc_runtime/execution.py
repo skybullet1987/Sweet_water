@@ -63,6 +63,8 @@ class PositionState:
     take_profit_price: float | None = None
     partial_tp_price: float | None = None
     trail_anchor_price: float | None = None
+    bracket_attempted_qty: float = 0.0
+    bracket_skip_logged: bool = False
     partial_tp_done: bool = False
     tight_trail_armed: bool = False
 

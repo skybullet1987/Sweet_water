@@ -31,6 +31,8 @@ class Reporter:
         self.daily_trade_count = 0
         self.wins: list[float] = []
         self.losses: list[float] = []
+        self.daily_wins: list[float] = []
+        self.daily_losses: list[float] = []
         self.regime_counter: Counter[str] = Counter()
         self.cancel_count = 0
         self.escalation_count = 0
@@ -43,8 +45,10 @@ class Reporter:
             pnl = float(event.get("pnl", 0.0))
             if pnl > 0:
                 self.wins.append(pnl)
+                self.daily_wins.append(pnl)
             elif pnl < 0:
                 self.losses.append(pnl)
+                self.daily_losses.append(pnl)
         elif status == "canceled":
             self.cancel_count += 1
         elif status == "escalated":
@@ -114,8 +118,10 @@ class Reporter:
             pnl = (fill_price - entry) / max(entry, 1e-9) - get_effective_round_trip_fee(algo)
             if pnl > 0:
                 self.wins.append(pnl)
+                self.daily_wins.append(pnl)
             elif pnl < 0:
                 self.losses.append(pnl)
+                self.daily_losses.append(pnl)
             tag = "Unknown"
             try:
                 oid = getattr(event, "OrderId", None)
@@ -132,8 +138,21 @@ class Reporter:
             self.regime_counter[regime_state] += 1
 
     def daily_report(self) -> dict[str, float]:
-        report = {"daily_trade_count": float(self.daily_trade_count)}
+        trades = len(self.daily_wins) + len(self.daily_losses)
+        win_rate = float(len(self.daily_wins) / trades) if trades > 0 else 0.0
+        avg_win = float(np.mean(self.daily_wins)) if self.daily_wins else 0.0
+        avg_loss = float(np.mean(self.daily_losses)) if self.daily_losses else 0.0
+        expectancy = (win_rate * avg_win) + ((1.0 - win_rate) * avg_loss)
+        report = {
+            "daily_trade_count": float(self.daily_trade_count),
+            "win_rate": win_rate,
+            "avg_win_pct": avg_win * 100.0,
+            "avg_loss_pct": avg_loss * 100.0,
+            "expectancy_pct": expectancy * 100.0,
+        }
         self.daily_trade_count = 0
+        self.daily_wins = []
+        self.daily_losses = []
         return report
 
     def final_report(self) -> dict[str, float | dict[str, float]]:

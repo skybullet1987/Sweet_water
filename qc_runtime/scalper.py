@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import pandas as pd
 
 try:
     from config import CONFIG
@@ -50,6 +51,15 @@ def evaluate_entry(
             return False, f"z_above_threshold:{z:.2f}"
         if regime not in {"uptrend_pullback", "ranging", "neutral"}:
             return False, f"REGIME_BLOCK:{regime}"
+        meanrev_rsi_cap = float(getattr(config, "scalper_meanrev_rsi_confirm_max", 35.0) or 35.0)
+        rsi = float(feats.get("rsi_14", 50.0) or 50.0)
+        if rsi >= meanrev_rsi_cap:
+            return False, f"mr_rsi_confirm_fail:{rsi:.1f}"
+        close = float(feats.get("close", feats.get("price", 0.0)) or 0.0)
+        atr = float(feats.get("atr", 0.0) or 0.0)
+        low_50 = float(feats.get("low_50", close) or close)
+        if close > 0 and atr > 0 and low_50 > 0 and close > (low_50 + 2.0 * atr):
+            return False, f"mr_low_confirm_fail:{close:.4f}"
     rsi = float(feats.get("rsi_14", 50.0) or 50.0)
     if sleeve != "momentum" and not (config.scalper_rsi_min <= rsi <= config.scalper_rsi_max):
         return False, f"rsi_out_of_band:{rsi:.1f}"
@@ -133,6 +143,8 @@ def evaluate_exit(
     if current_price >= tp_price:
         return True, "TP"
     stop_hours = float(config.scalper_time_stop_hours) * (2.0 if sleeve == "momentum" else 1.0)
+    max_hold_hours = float(getattr(config, "scalper_max_hold_hours", 36.0) or 36.0)
+    stop_hours = min(stop_hours, max_hold_hours) if max_hold_hours > 0 else stop_hours
     if hours_held >= stop_hours:
         return True, "TimeStop"
     if sleeve != "momentum":
@@ -193,3 +205,36 @@ def vol_target_qty(
     notional = max(0.0, min(raw_notional, max_symbol_notional, max_gross_notional, float(available_cash) * 0.97, size_cap_notional))
     qty = notional / float(price)
     return qty, notional
+
+
+def corr_hits_from_state(*, feature_state: dict, symbol, held: list, threshold: float) -> int:
+    def _sym_key(sym):
+        return getattr(sym, "Value", str(sym))
+
+    def _recent_returns(raw: dict) -> list[float]:
+        closes = list(raw.get("close_history_24h", []))
+        if len(closes) >= 12:
+            out = []
+            for i in range(1, len(closes)):
+                prev = float(closes[i - 1] or 0.0)
+                cur = float(closes[i] or 0.0)
+                if prev > 0 and cur > 0:
+                    out.append(float(math.log(cur / prev)))
+            return out[-24:]
+        return list(raw.get("daily_logret", []))[-30:]
+
+    cand = feature_state.get(_sym_key(symbol), {})
+    cand_ret = _recent_returns(cand)
+    if len(cand_ret) < 10:
+        return 0
+    hits = 0
+    for held_sym in held:
+        other = feature_state.get(_sym_key(held_sym), {})
+        other_ret = _recent_returns(other)
+        n = min(len(cand_ret), len(other_ret))
+        if n < 10:
+            continue
+        corr = float(pd.Series(cand_ret[-n:], dtype=float).corr(pd.Series(other_ret[-n:], dtype=float))) if n > 1 else 0.0
+        if math.isfinite(corr) and corr >= threshold:
+            hits += 1
+    return hits

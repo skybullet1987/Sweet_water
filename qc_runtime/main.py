@@ -4,9 +4,7 @@ import math
 import inspect
 import statistics
 from collections import defaultdict, deque
-from datetime import timedelta
-
-import pandas as pd
+from datetime import datetime, timedelta
 
 try:  # pragma: no cover
     from AlgorithmImports import AccountType, BrokerageName, Market, QCAlgorithm, Resolution, Slice
@@ -69,7 +67,7 @@ from risk import DrawdownCircuitBreaker, RiskManager
 from scoring import Scorer
 from sizing import Sizer
 from universe import KRAKEN_SAFE_LIST, REFERENCE_SYMBOLS, select_universe
-from scalper import effective_position_size_pct, regime_for, vol_target_qty
+from scalper import corr_hits_from_state, effective_position_size_pct, regime_for, vol_target_qty
 
 INFINITE_HELD_HOURS = 10**9
 DEFAULT_MISSING_SCORE = -1e9
@@ -120,7 +118,7 @@ class SweetWaterPhase1(QCAlgorithm):
             self._subscribe_symbol(ticker)
         self.reference_symbols = [self.symbol_by_ticker[t] for t in REFERENCE_SYMBOLS if t in self.symbol_by_ticker]
 
-        initial_universe = select_universe(self._history_provider, pd.Timestamp.now(tz="UTC"))
+        initial_universe = select_universe(self._history_provider, datetime.utcnow())
         self.symbols = [self.symbol_by_ticker[t] for t in initial_universe if t in self.symbol_by_ticker]
         self.signal_features.set_tracked_symbols(
             [s.Value for s in [*self.reference_symbols, *self.symbols] if hasattr(s, "Value")]
@@ -486,6 +484,7 @@ class SweetWaterPhase1(QCAlgorithm):
                     out.append(sym)
                 else:
                     self.position_state.pop(sym, None)
+                    self.position_state.pop(getattr(sym, "Value", str(sym)), None)
                     if not hasattr(self, "_abandoned_dust"):
                         self._abandoned_dust = set()
                     self._abandoned_dust.add(sym)
@@ -780,7 +779,13 @@ class SweetWaterPhase1(QCAlgorithm):
         day_key = self.Time.date() if hasattr(self, "Time") else None
         if day_key is not None and self._last_daily_summary_date is not None and day_key != self._last_daily_summary_date:
             daily = self.reporter.daily_report()
-            self.Debug(f"DAY_SUMMARY prev_date={self._last_daily_summary_date} trades={int(daily.get('daily_trade_count', 0.0))}")
+            self.Debug(
+                f"DAY_SUMMARY prev_date={self._last_daily_summary_date} trades={int(daily.get('daily_trade_count', 0.0))} "
+                f"WIN_RATE={float(daily.get('win_rate', 0.0)) * 100.0:.2f}% "
+                f"AVG_WIN_PCT={float(daily.get('avg_win_pct', 0.0)):.2f}% "
+                f"AVG_LOSS_PCT={float(daily.get('avg_loss_pct', 0.0)):.2f}% "
+                f"EXPECTANCY={float(daily.get('expectancy_pct', 0.0)):.2f}%"
+            )
         if day_key is not None:
             self._last_daily_summary_date = day_key
         if self._bar_count % 24 == 0:
@@ -913,23 +918,7 @@ class SweetWaterPhase1(QCAlgorithm):
     def _scalper_corr_hits(self, symbol, held: list) -> int:
         threshold = float(getattr(self.config, "scalper_corr_threshold", 0.70) or 0.70)
         state = getattr(self.feature_engine, "_state", {})
-        cand = state.get(getattr(symbol, "Value", str(symbol)), {})
-        cand_ret = list(cand.get("daily_logret", []))[-30:]
-        if len(cand_ret) < 10:
-            return 0
-        hits = 0
-        for held_sym in held:
-            other = state.get(getattr(held_sym, "Value", str(held_sym)), {})
-            other_ret = list(other.get("daily_logret", []))[-30:]
-            n = min(len(cand_ret), len(other_ret))
-            if n < 10:
-                continue
-            s1 = pd.Series(cand_ret[-n:], dtype=float)
-            s2 = pd.Series(other_ret[-n:], dtype=float)
-            corr = float(s1.corr(s2)) if n > 1 else 0.0
-            if math.isfinite(corr) and corr >= threshold:
-                hits += 1
-        return hits
+        return corr_hits_from_state(feature_state=state, symbol=symbol, held=held, threshold=threshold)
 
     def _scalper_on_data(self, data: Slice):
         try:
@@ -959,7 +948,9 @@ class SweetWaterPhase1(QCAlgorithm):
                 else:
                     decayed[sym] = n
             if self._scalper_consec_losses != decayed:
-                self.Debug(f"SCALPER_DECAY consec_losses_before={dict(self._scalper_consec_losses)} after={decayed}")
+                readable_before = {getattr(s, "Value", str(s)): v for s, v in dict(self._scalper_consec_losses).items()}
+                readable_after = {getattr(s, "Value", str(s)): v for s, v in decayed.items()}
+                self.Debug(f"SCALPER_DECAY consec_losses_before={readable_before} after={readable_after}")
             self._scalper_consec_losses = decayed
             self._scalper_symbol_cooldown_until = {
                 s: t for s, t in self._scalper_symbol_cooldown_until.items() if t is not None and self.Time < t

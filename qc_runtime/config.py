@@ -121,8 +121,11 @@ class StrategyConfig:
     scalper_risk_per_trade_pct: float = 0.005
     scalper_max_symbol_exposure_pct: float = 0.25
     scalper_max_gross_exposure_pct: float = 0.90
-    scalper_corr_threshold: float = 0.70
-    scalper_corr_block_count: int = 2
+    scalper_corr_threshold: float = 0.85
+    scalper_corr_block_count: int = 1
+    scalper_max_hold_hours: float = 36.0
+    scalper_stuck_hold_bars: int = 24
+    scalper_meanrev_rsi_confirm_max: float = 35.0
     scalper_trail_atr_mult_mr: float = 2.0
     scalper_trail_atr_mult_mom: float = 3.0
     scalper_tp_atr_mult_mr: float = 2.0

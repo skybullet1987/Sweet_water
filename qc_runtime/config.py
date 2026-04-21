@@ -79,8 +79,10 @@ class StrategyConfig:
     regime_vol_window: int = 24
     stale_order_bars: int = 3
     stale_price_minutes: int = 90
+    failed_esc_cooldown_hours: float = 6.0
     cash_safety_factor: float = 0.97
     rebalance_invalid_retry_cap: int = 3
+    min_notional_usd: float = 5.0
     score_clip_value: float = 3.0
     min_rv_floor: float = 1e-4
     score_mom21_weight: float = 0.6

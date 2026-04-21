@@ -66,4 +66,8 @@ def test_scalper_heartbeat_log_present(monkeypatch):
     monkeypatch.setattr(scalper_module, "evaluate_entry", lambda **kwargs: (False, "skip"))
 
     algo._scalper_on_data(SimpleNamespace())
-    assert any(line.startswith("SCALPER_HB") for line in logs)
+    hb_lines = [line for line in logs if line.startswith("SCALPER_HB")]
+    assert hb_lines
+    assert "failed_esc_active=" in hb_lines[0]
+    assert "cash_pct=" in hb_lines[0]
+    assert "size_pct_eff=" in hb_lines[0]

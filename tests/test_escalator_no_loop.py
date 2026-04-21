@@ -33,6 +33,7 @@ class _Algo:
         }
         self._failed_escalations = {}
         self.Transactions = type("T", (), {"CancelOrder": lambda *_args, **_kwargs: None})()
+        self.Debug = lambda *_args, **_kwargs: None
 
 
 def test_escalator_pops_on_failed_replacement(monkeypatch):
@@ -49,7 +50,7 @@ def test_escalator_pops_on_failed_replacement(monkeypatch):
     out = escalate_stale_orders(algo)
     assert out == []
     assert sym not in algo._submitted_orders
-    assert algo._failed_escalations[sym] == algo.Time
+    assert sym not in algo._failed_escalations
     assert len(calls) == 1
 
     out2 = escalate_stale_orders(algo)

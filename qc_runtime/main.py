@@ -69,7 +69,7 @@ from risk import DrawdownCircuitBreaker, RiskManager
 from scoring import Scorer
 from sizing import Sizer
 from universe import KRAKEN_SAFE_LIST, REFERENCE_SYMBOLS, select_universe
-from scalper import regime_for, vol_target_qty
+from scalper import effective_position_size_pct, regime_for, vol_target_qty
 
 INFINITE_HELD_HOURS = 10**9
 DEFAULT_MISSING_SCORE = -1e9
@@ -973,12 +973,23 @@ class SweetWaterPhase1(QCAlgorithm):
         brake_until = getattr(self, "_scalper_session_brake_until", None)
         brake_active = brake_until is not None and self.Time < brake_until
         breaker_state = getattr(self, "_breaker_liquidated", False)
+        failed = getattr(self, "_failed_escalations", {}) or {}
+        cooldown_hours = float(getattr(self.config, "failed_esc_cooldown_hours", 6.0) or 6.0)
+        failed_esc_active = 0
+        for last_fail in failed.values():
+            try:
+                failed_esc_active += int((self.Time - last_fail).total_seconds() < cooldown_hours * 3600.0)
+            except Exception:
+                pass
+        cash_pct = (cash / equity * 100.0) if equity > 0 else 0.0
+        size_pct_eff = effective_position_size_pct((cash / equity) if equity > 0 else 0.0, config=self.config)
         self.Debug(
             f"SCALPER_HB t={self.Time} held={len(held)}/{int(self.config.scalper_max_concurrent)} "
             f"cash={cash:.2f} daily_pnl={self._scalper_daily_pnl*100:.2f}% "
             f"brake_active={brake_active} breaker={breaker_state} "
             f"consec_losses_syms={len(self._scalper_consec_losses)} "
-            f"failed_esc={len(getattr(self, '_failed_escalations', {}))} "
+            f"failed_esc_active={failed_esc_active} "
+            f"cash_pct={cash_pct:.1f} size_pct_eff={size_pct_eff*100.0:.1f} "
             f"alloc_mr={alloc['meanrev']:.2f} alloc_mom={alloc['momentum']:.2f}"
         )
 
@@ -1008,10 +1019,7 @@ class SweetWaterPhase1(QCAlgorithm):
                     strategy_owner="scalper",
                 )
                 self.position_state[sym] = state
-                self.Debug(
-                    f"LAZY_SEED sym={getattr(sym,'Value',sym)} "
-                    f"entry_time_set={self.Time - timedelta(hours=1)} avg_px={avg_px:.6f} atr={atr:.6f} reason=missing_state"
-                )
+                self.Debug(f"LAZY_SEED sym={getattr(sym,'Value',sym)} avg_px={avg_px:.6f} atr={atr:.6f}")
             sec = self.Securities.get(sym)
             px = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
             state.highest_close = max(float(getattr(state, "highest_close", state.entry_price) or state.entry_price), px)
@@ -1102,6 +1110,7 @@ class SweetWaterPhase1(QCAlgorithm):
                     available_cash_pct=available_cash_pct,
                     daily_pnl_pct=self._scalper_daily_pnl,
                     consecutive_losses_for_symbol=self._scalper_consec_losses.get(symbol, 0),
+                    equity=equity,
                     sleeve=sleeve,
                     config=self.config,
                 )
@@ -1146,6 +1155,7 @@ class SweetWaterPhase1(QCAlgorithm):
                     continue
                 feats = self.feature_engine.current_features(symbol.Value) or {}
                 atr_pct = float(feats.get("atr_pct", 0.0) or 0.0)
+                size_pct_eff = effective_position_size_pct((available_cash / equity) if equity > 0 else 0.0, config=self.config)
                 qty_raw, notional = vol_target_qty(
                     equity=equity,
                     price=price,
@@ -1155,9 +1165,10 @@ class SweetWaterPhase1(QCAlgorithm):
                     risk_per_trade_pct=float(getattr(self.config, "scalper_risk_per_trade_pct", 0.005) or 0.005),
                     max_symbol_exposure_pct=float(getattr(self.config, "scalper_max_symbol_exposure_pct", 0.25) or 0.25),
                     max_gross_exposure_pct=float(getattr(self.config, "scalper_max_gross_exposure_pct", 0.90) or 0.90),
+                    position_size_pct=size_pct_eff,
                 )
                 qty = round_quantity(self, symbol, qty_raw)
-                if qty <= 0 or notional < float(self.config.min_position_floor_usd):
+                if qty <= 0 or notional < float(getattr(self.config, "min_notional_usd", 5.0)):
                     continue
                 ok, required, afford = can_afford(self, symbol, qty, price)
                 if not ok:
@@ -1170,29 +1181,35 @@ class SweetWaterPhase1(QCAlgorithm):
                     gross_now += (qty * price) / max(equity, 1.0)
                     placed_symbols.add(symbol)
                     by_sleeve_slots[sleeve] -= 1
-                    self._scalper_last_trade_time[symbol] = self.Time
                     self._scalper_entry_sleeve[symbol] = sleeve
-                    self.Debug(
-                        f"VOL_TARGET sym={symbol.Value} qty={qty:.6f} atr_pct={max(atr_pct,0.0):.4f} notional={qty*price:.2f}"
-                    )
                     self.Debug(f"SCALPER_ENTRY sym={symbol.Value} sleeve={sleeve} regime={regime} z={z:.2f} qty={qty:.6f} px={price:.4f}")
 
     def OnOrderEvent(self, event):  # pragma: no cover
         self.reporter.on_order_event(self, event)
-        status = getattr(event, "Status", None)
+        order_event = event
+        status = getattr(order_event, "Status", None)
         status_str = str(status).lower() if status is not None else ""
         symbol = getattr(event, "Symbol", None)
-        tag = str(getattr(event, "Tag", "") or "")
+        tag = ""
+        try:
+            ticket = self.Transactions.GetOrderTicket(getattr(order_event, "OrderId", None))
+        except Exception:
+            ticket = None
+        if ticket is not None:
+            tag = str(getattr(ticket, "Tag", "") or "")
+        if not tag:
+            tag = str(getattr(order_event, "Tag", "") or "")
         is_invalid = "invalid" in status_str
         if is_invalid:
             if symbol is not None:
                 getattr(self, "_submitted_orders", {}).pop(symbol, None)
                 if not hasattr(self, "_failed_escalations"):
                     self._failed_escalations = {}
-                self._failed_escalations[symbol] = self.Time
+                if tag.startswith("[StaleEsc]"):
+                    self._failed_escalations[symbol] = self.Time
                 if tag.startswith("Rebalance") or tag.startswith("[StaleEsc]"):
                     mark_rebalance_failure(self, symbol, "invalid")
-                self.Debug(f"INVALID sym={symbol.Value} cooldown=24h")
+                self.Debug(f"INVALID_ORDER sym={getattr(symbol, 'Value', symbol)} tag={tag} reason={getattr(order_event, 'Message', '')}")
             return
         is_canceled = "canceled" in status_str or "cancelled" in status_str
         if is_canceled:

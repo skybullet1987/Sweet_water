@@ -23,7 +23,7 @@ class _Symbol:
         return isinstance(other, _Symbol) and self.Value == other.Value
 
 
-def test_invalid_order_event_clears_submitted_and_sets_cooldown():
+def test_invalid_order_event_only_sets_cooldown_for_stale_escalation():
     sym = _Symbol("SOLUSD")
     algo = SweetWaterPhase1.__new__(SweetWaterPhase1)
     algo.Time = datetime(2025, 1, 1, 12, tzinfo=timezone.utc)
@@ -32,8 +32,28 @@ def test_invalid_order_event_clears_submitted_and_sets_cooldown():
     algo._failed_escalations = {}
     algo.Debug = lambda *_args, **_kwargs: None
 
-    event = type("OrderEvent", (), {"Status": "Invalid", "Symbol": sym})()
+    ticket = type("Ticket", (), {"Tag": "[StaleEsc] retry"})()
+    algo.Transactions = type("Transactions", (), {"GetOrderTicket": lambda *_args, **_kwargs: ticket})()
+    event = type("OrderEvent", (), {"Status": "Invalid", "Symbol": sym, "OrderId": 1, "Message": "bad"})()
     algo.OnOrderEvent(event)
 
     assert sym not in algo._submitted_orders
     assert algo._failed_escalations[sym] == algo.Time
+
+
+def test_invalid_order_event_non_stale_does_not_set_cooldown():
+    sym = _Symbol("SOLUSD")
+    algo = SweetWaterPhase1.__new__(SweetWaterPhase1)
+    algo.Time = datetime(2025, 1, 1, 12, tzinfo=timezone.utc)
+    algo.reporter = type("Reporter", (), {"on_order_event": lambda *_args, **_kwargs: None})()
+    algo._submitted_orders = {sym: {"order_id": 1}}
+    algo._failed_escalations = {}
+    algo.Debug = lambda *_args, **_kwargs: None
+    ticket = type("Ticket", (), {"Tag": "Rebalance:entry"})()
+    algo.Transactions = type("Transactions", (), {"GetOrderTicket": lambda *_args, **_kwargs: ticket})()
+
+    event = type("OrderEvent", (), {"Status": "Invalid", "Symbol": sym, "OrderId": 1, "Message": "bp"})()
+    algo.OnOrderEvent(event)
+
+    assert sym not in algo._submitted_orders
+    assert sym not in algo._failed_escalations

@@ -29,6 +29,7 @@ def evaluate_entry(
     available_cash_pct: float,
     daily_pnl_pct: float,
     consecutive_losses_for_symbol: int,
+    equity: float = 0.0,
     sleeve: str = "meanrev",
     config=CONFIG,
 ) -> tuple[bool, str]:
@@ -61,13 +62,26 @@ def evaluate_entry(
         return False, f"btc_6h_cascade:{btc_ret_6h:.3f}"
     if last_trade_hours_ago < config.scalper_anti_churn_hours:
         return False, f"anti_churn:{last_trade_hours_ago:.1f}h"
-    if available_cash_pct < config.scalper_position_size_pct:
+    effective_size_pct = effective_position_size_pct(available_cash_pct, config=config)
+    if effective_size_pct <= 0:
         return False, f"insufficient_cash:{available_cash_pct:.2f}"
+    if available_cash_pct < float(getattr(config, "scalper_position_size_pct", 0.15) or 0.15):
+        min_notional = float(getattr(config, "min_notional_usd", 5.0) or 5.0)
+        if effective_size_pct * max(float(equity or 0.0), 0.0) < min_notional:
+            return False, f"insufficient_cash:{available_cash_pct:.2f}"
     if daily_pnl_pct < config.scalper_daily_loss_brake:
         return False, f"daily_loss_brake:{daily_pnl_pct:.3f}"
     if consecutive_losses_for_symbol >= config.scalper_consecutive_loss_brake:
         return False, f"loss_streak:{consecutive_losses_for_symbol}"
     return True, "OK"
+
+
+def effective_position_size_pct(available_cash_pct: float, config=CONFIG) -> float:
+    size_pct = float(getattr(config, "scalper_position_size_pct", 0.15) or 0.15)
+    avail = max(float(available_cash_pct or 0.0), 0.0)
+    if avail < size_pct:
+        return max(avail * 0.95, 0.0)
+    return size_pct
 
 
 def evaluate_exit(
@@ -166,6 +180,7 @@ def vol_target_qty(
     risk_per_trade_pct: float,
     max_symbol_exposure_pct: float,
     max_gross_exposure_pct: float,
+    position_size_pct: float = 1.0,
 ) -> tuple[float, float]:
     if equity <= 0 or price <= 0:
         return 0.0, 0.0
@@ -174,6 +189,7 @@ def vol_target_qty(
     raw_notional = risk_budget / atr_pct
     max_symbol_notional = float(equity) * float(max_symbol_exposure_pct)
     max_gross_notional = max(0.0, float(equity) * float(max_gross_exposure_pct) - float(equity) * float(current_gross_exposure_pct))
-    notional = max(0.0, min(raw_notional, max_symbol_notional, max_gross_notional, float(available_cash) * 0.97))
+    size_cap_notional = max(0.0, float(equity) * max(float(position_size_pct or 0.0), 0.0))
+    notional = max(0.0, min(raw_notional, max_symbol_notional, max_gross_notional, float(available_cash) * 0.97, size_cap_notional))
     qty = notional / float(price)
     return qty, notional

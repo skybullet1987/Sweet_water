@@ -34,6 +34,7 @@ def test_momentum_entry_needs_breakout_and_volume_confirmation():
         "adx": 35.0,
         "new_high_24h": 1.0,
         "volume_rel_20h": 1.8,
+        "ret_6h": 0.02,
     }
     ok, reason = evaluate_entry(
         symbol="ETHUSD",
@@ -65,6 +66,23 @@ def test_momentum_entry_needs_breakout_and_volume_confirmation():
         config=cfg,
     )
     assert ok is False and reason.startswith("vol_confirm_fail")
+
+    feats["volume_rel_20h"] = 1.8
+    feats["ret_6h"] = -0.01
+    ok, reason = evaluate_entry(
+        symbol="ETHUSD",
+        feats=feats,
+        btc_ret_1h=0.0,
+        btc_ret_6h=0.0,
+        has_position=False,
+        last_trade_hours_ago=10.0,
+        available_cash_pct=0.5,
+        daily_pnl_pct=0.0,
+        consecutive_losses_for_symbol=0,
+        sleeve="momentum",
+        config=cfg,
+    )
+    assert ok is False and reason.startswith("ret6h_confirm_fail")
 
 
 def test_vol_target_qty_respects_risk_and_exposure_caps():

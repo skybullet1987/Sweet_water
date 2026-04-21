@@ -54,6 +54,9 @@ class PositionState:
     entry_atr: float
     entry_time: datetime | None
     strategy_owner: str = "momentum"
+    initial_risk_distance: float = 0.0
+    partial_tp_done: bool = False
+    tight_trail_armed: bool = False
 
 
 def position_status(algo, symbol) -> Literal["flat", "long", "pending"]:

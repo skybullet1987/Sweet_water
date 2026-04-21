@@ -5,6 +5,7 @@ import inspect
 import statistics
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
+import pandas as pd
 
 try:  # pragma: no cover
     from AlgorithmImports import AccountType, BrokerageName, Market, QCAlgorithm, Resolution, Slice
@@ -213,6 +214,9 @@ class SweetWaterPhase1(QCAlgorithm):
         self._scalper_sleeve_pnls = {"meanrev": deque(maxlen=180), "momentum": deque(maxlen=180)}
         self._scalper_symbol_cooldown_until = {}
         self._scalper_entry_sleeve = {}
+        self._scalper_last_exit_by_sleeve = {}
+        self._scalper_daily_breaker_until = None
+        self._scalper_day_stats = {"trades": 0, "wins": 0, "losses": 0, "sum_r": 0.0, "gross_pnl": 0.0}
 
         self.position_state: dict[object, PositionState] = {}
         self.entry_volumes = {}
@@ -313,7 +317,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self._last_rebalance_month = current_month
 
     def _update_symbol_series(self, symbol, bar):
-        state = self.crypto_data.setdefault(symbol, {"prices": deque(maxlen=96), "volume": deque(maxlen=96)})
+        state = self.crypto_data.setdefault(symbol, {"prices": deque(maxlen=24 * 8), "volume": deque(maxlen=24 * 8)})
         state["prices"].append(float(bar.Close))
         state["volume"].append(float(bar.Volume))
 
@@ -920,6 +924,56 @@ class SweetWaterPhase1(QCAlgorithm):
         state = getattr(self.feature_engine, "_state", {})
         return corr_hits_from_state(feature_state=state, symbol=symbol, held=held, threshold=threshold)
 
+    def _hourly_log_returns(self, symbol) -> list[float]:
+        state = self.crypto_data.get(symbol, {})
+        closes = list(state.get("prices", []))
+        out = []
+        for i in range(1, len(closes)):
+            prev = float(closes[i - 1] or 0.0)
+            cur = float(closes[i] or 0.0)
+            if prev > 0 and cur > 0:
+                out.append(float(math.log(cur / prev)))
+        lookback = int(getattr(self.config, "scalper_beta_lookback_hours", 24 * 7) or (24 * 7))
+        return out[-lookback:]
+
+    def _beta_to_btc(self, symbol, btc_symbol) -> float:
+        if btc_symbol is None:
+            return 0.0
+        sym_ret = self._hourly_log_returns(symbol)
+        btc_ret = self._hourly_log_returns(btc_symbol)
+        n = min(len(sym_ret), len(btc_ret))
+        if n < 24:
+            return 0.0
+        s = pd.Series(sym_ret[-n:], dtype=float)
+        b = pd.Series(btc_ret[-n:], dtype=float)
+        var_b = float(b.var())
+        if not math.isfinite(var_b) or var_b <= 1e-12:
+            return 0.0
+        beta = float(s.cov(b) / var_b)
+        return beta if math.isfinite(beta) else 0.0
+
+    def _portfolio_beta_sum_with_candidate(self, candidate, held: list, btc_symbol) -> float:
+        beta_sum = 0.0
+        for sym in held:
+            beta_sum += abs(self._beta_to_btc(sym, btc_symbol))
+        beta_sum += abs(self._beta_to_btc(candidate, btc_symbol))
+        return beta_sum
+
+    def _log_scalper_day(self):
+        stats = getattr(self, "_scalper_day_stats", None)
+        if not stats:
+            return
+        trades = int(stats.get("trades", 0) or 0)
+        wins = int(stats.get("wins", 0) or 0)
+        losses = int(stats.get("losses", 0) or 0)
+        win_rate = (wins / trades) if trades > 0 else 0.0
+        avg_r = (float(stats.get("sum_r", 0.0) or 0.0) / trades) if trades > 0 else 0.0
+        gross_pnl = float(stats.get("gross_pnl", 0.0) or 0.0)
+        self.Debug(
+            f"SCALPER_DAY trades={trades} wins={wins} losses={losses} "
+            f"win_rate={win_rate:.2%} avg_R={avg_r:.2f} gross_pnl={gross_pnl:.2f}%"
+        )
+
     def _scalper_on_data(self, data: Slice):
         try:
             from scalper import evaluate_entry, evaluate_exit
@@ -934,6 +988,9 @@ class SweetWaterPhase1(QCAlgorithm):
 
         today = self.Time.date()
         if self._scalper_daily_anchor_date != today:
+            if self._scalper_daily_anchor_date is not None:
+                self._log_scalper_day()
+            self._scalper_day_stats = {"trades": 0, "wins": 0, "losses": 0, "sum_r": 0.0, "gross_pnl": 0.0}
             self._scalper_daily_anchor_date = today
             self._scalper_daily_anchor_equity = float(self.Portfolio.TotalPortfolioValue or 0.0)
             self._scalper_daily_pnl = 0.0
@@ -1008,6 +1065,7 @@ class SweetWaterPhase1(QCAlgorithm):
                     entry_atr=atr,
                     entry_time=self.Time - timedelta(hours=1),
                     strategy_owner="scalper",
+                    initial_risk_distance=max(float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5) * atr, 1e-9),
                 )
                 self.position_state[sym] = state
                 self.Debug(f"LAZY_SEED sym={getattr(sym,'Value',sym)} avg_px={avg_px:.6f} atr={atr:.6f}")
@@ -1025,27 +1083,65 @@ class SweetWaterPhase1(QCAlgorithm):
                 btc_ret_1h=btc_ret_1h,
                 highest_close=state.highest_close,
                 entry_atr=state.entry_atr,
+                initial_risk_distance=getattr(state, "initial_risk_distance", 0.0),
+                partial_tp_done=bool(getattr(state, "partial_tp_done", False)),
+                tight_trail_armed=bool(getattr(state, "tight_trail_armed", False)),
                 sleeve=sleeve,
                 config=self.config,
             )
+            if tag == "TightTrailArmed":
+                state.tight_trail_armed = True
+                continue
+            pnl_frac = (px / state.entry_price - 1.0) if state.entry_price > 0 else 0.0
+            if should_exit and tag == "TP1":
+                qty_now = float(getattr(self.Portfolio[sym], "Quantity", 0.0) or 0.0)
+                qty_half = round_quantity(self, sym, max(qty_now * 0.5, 0.0))
+                if qty_half > 0:
+                    ticket = place_limit_or_market(self, sym, -qty_half, tag="TP1")
+                    if ticket is not None:
+                        state.partial_tp_done = True
+                        bars_held = int(
+                            max(
+                                0.0,
+                                ((self.Time - state.entry_time).total_seconds() / 3600.0) if state.entry_time else 0.0,
+                            )
+                        )
+                        self.Debug(f"SCALPER_EXIT sym={sym.Value} tag=TP1 pnl={pnl_frac*100:.2f}% bars_held={bars_held} r_multiple=1.00")
+                continue
             if should_exit:
-                pnl_frac = (px / state.entry_price - 1.0) if state.entry_price > 0 else 0.0
+                risk_dist = max(float(getattr(state, "initial_risk_distance", 0.0) or 0.0), 1e-9)
+                r_multiple = (px - state.entry_price) / risk_dist if state.entry_price > 0 else 0.0
+                bars_held = int(
+                    max(
+                        0.0,
+                        ((self.Time - state.entry_time).total_seconds() / 3600.0) if state.entry_time else 0.0,
+                    )
+                )
                 if smart_liquidate(self, sym, tag=tag):
-                    self.Debug(f"SCALPER_EXIT sym={sym.Value} tag={tag} pnl={pnl_frac*100:.2f}%")
+                    self.Debug(
+                        f"SCALPER_EXIT sym={sym.Value} tag={tag} pnl={pnl_frac*100:.2f}% "
+                        f"bars_held={bars_held} r_multiple={r_multiple:.2f}"
+                    )
                     self.position_state.pop(sym, None)
                     self._scalper_entry_sleeve.pop(sym, None)
                     self._scalper_sleeve_pnls.setdefault(sleeve, deque(maxlen=180)).append(pnl_frac)
                     self._scalper_recent_pnls.append(pnl_frac)
+                    self._scalper_last_exit_by_sleeve[(sym, sleeve)] = self.Time
+                    stats = self._scalper_day_stats
+                    stats["trades"] = int(stats.get("trades", 0) or 0) + 1
+                    stats["wins"] = int(stats.get("wins", 0) or 0) + (1 if pnl_frac > 0 else 0)
+                    stats["losses"] = int(stats.get("losses", 0) or 0) + (1 if pnl_frac <= 0 else 0)
+                    stats["sum_r"] = float(stats.get("sum_r", 0.0) or 0.0) + float(r_multiple)
+                    stats["gross_pnl"] = float(stats.get("gross_pnl", 0.0) or 0.0) + float(pnl_frac * 100.0)
                     if len(self._scalper_recent_pnls) >= 3 and all(p < 0 for p in list(self._scalper_recent_pnls)[-3:]):
                         self._scalper_session_brake_until = self.Time + timedelta(hours=6)
                         self.Debug(f"SCALPER_BRAKE session=3consec_losses until={self._scalper_session_brake_until}")
                     if pnl_frac < 0:
                         streak = self._scalper_consec_losses.get(sym, 0) + 1
                         self._scalper_consec_losses[sym] = streak
-                        if streak >= int(getattr(self.config, "scalper_loss_cooldown_after", 2) or 2):
-                            until = self.Time + timedelta(hours=float(getattr(self.config, "scalper_loss_cooldown_hours", 24.0) or 24.0))
-                            self._scalper_symbol_cooldown_until[sym] = until
-                            self.Debug(f"COOLDOWN_BLOCK sym={sym.Value} until={until} streak={streak}")
+                        until = self.Time + timedelta(hours=float(getattr(self.config, "scalper_loss_cooldown_hours", 6.0) or 6.0))
+                        self._scalper_symbol_cooldown_until[sym] = until
+                        self.Debug(f"COOLDOWN_BLOCK sym={sym.Value} until={until} streak={streak}")
                     else:
                         self._scalper_consec_losses[sym] = 0
                     self._scalper_last_trade_time[sym] = self.Time
@@ -1055,7 +1151,17 @@ class SweetWaterPhase1(QCAlgorithm):
         elif self._scalper_session_brake_until is not None:
             self._scalper_session_brake_until = None
 
-        if self._scalper_daily_pnl < self.config.scalper_daily_loss_brake:
+        held = self._current_holdings()
+        breaker_until = getattr(self, "_scalper_daily_breaker_until", None)
+        if breaker_until is not None and self.Time < breaker_until:
+            return
+        if self._scalper_daily_pnl <= float(getattr(self.config, "scalper_daily_loss_brake", -0.01) or -0.01):
+            if breaker_until is None or self.Time >= breaker_until:
+                next_day = (self.Time + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                self._scalper_daily_breaker_until = next_day
+                self.Debug(f"BREAKER_DAILY pnl={self._scalper_daily_pnl*100:.2f}% until={next_day}")
+            for sym in held:
+                smart_liquidate(self, sym, tag="BREAKER_DAILY")
             return
 
         if len(held) >= int(self.config.scalper_max_concurrent):
@@ -1081,16 +1187,23 @@ class SweetWaterPhase1(QCAlgorithm):
             if cool_until is not None and self.Time < cool_until:
                 rejection_counts["COOLDOWN_BLOCK"] = rejection_counts.get("COOLDOWN_BLOCK", 0) + 1
                 continue
-            corr_hits = self._scalper_corr_hits(symbol, held)
-            if corr_hits >= int(getattr(self.config, "scalper_corr_block_count", 2) or 2):
-                self.Debug(f"CORR_BLOCK sym={symbol.Value} hits={corr_hits}")
-                rejection_counts["CORR_BLOCK"] = rejection_counts.get("CORR_BLOCK", 0) + 1
+            beta_cap = float(getattr(self.config, "scalper_beta_cap", 1.5) or 1.5)
+            beta_sum = self._portfolio_beta_sum_with_candidate(symbol, held, btc_sym)
+            if beta_sum > beta_cap:
+                self.Debug(f"BETA_BLOCK sym={symbol.Value} beta_sum={beta_sum:.2f} cap={beta_cap:.2f}")
+                rejection_counts["BETA_BLOCK"] = rejection_counts.get("BETA_BLOCK", 0) + 1
                 continue
             last_t = self._scalper_last_trade_time.get(symbol)
             last_trade_hours_ago = (
                 (self.Time - last_t).total_seconds() / 3600.0 if last_t else INFINITE_HELD_HOURS
             )
             for sleeve in ("meanrev", "momentum"):
+                last_exit = self._scalper_last_exit_by_sleeve.get((symbol, sleeve))
+                if last_exit is not None:
+                    since_exit = (self.Time - last_exit).total_seconds() / 3600.0
+                    if since_exit < float(getattr(self.config, "scalper_anti_churn_hours", 2.0) or 2.0):
+                        rejection_counts["ANTI_CHURN"] = rejection_counts.get("ANTI_CHURN", 0) + 1
+                        continue
                 ok, reason = evaluate_entry(
                     symbol=symbol,
                     feats=feats,
@@ -1168,12 +1281,24 @@ class SweetWaterPhase1(QCAlgorithm):
                 tag = "ScalperMom:entry" if sleeve == "momentum" else "Scalper:entry"
                 ticket = place_entry(self, symbol, qty, tag=tag, signal_score=float(abs(z)))
                 if ticket is not None:
+                    atr_abs = float(feats.get("atr", 0.0) or 0.0)
+                    if atr_abs <= 0:
+                        atr_abs = max(atr_pct * price, price * 0.01)
+                    risk_dist = max(float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5) * atr_abs, 1e-9)
+                    stop_px = max(0.0, price - risk_dist)
+                    tp1_px = price + risk_dist * float(getattr(self.config, "scalper_tp1_r", 1.0) or 1.0)
+                    tp2_px = price + risk_dist * float(getattr(self.config, "scalper_tp2_r", 2.5) or 2.5)
+                    risk_dollars = qty * risk_dist
                     available_cash -= qty * price
                     gross_now += (qty * price) / max(equity, 1.0)
                     placed_symbols.add(symbol)
                     by_sleeve_slots[sleeve] -= 1
                     self._scalper_entry_sleeve[symbol] = sleeve
-                    self.Debug(f"SCALPER_ENTRY sym={symbol.Value} sleeve={sleeve} regime={regime} z={z:.2f} qty={qty:.6f} px={price:.4f}")
+                    self.Debug(
+                        f"SCALPER_ENTRY sym={symbol.Value} sleeve={sleeve} regime={regime} "
+                        f"z={z:.2f} qty={qty:.6f} px={price:.4f} stop={stop_px:.4f} "
+                        f"tp1={tp1_px:.4f} tp2={tp2_px:.4f} risk_${risk_dollars:.2f}"
+                    )
 
     def OnOrderEvent(self, event):  # pragma: no cover
         self.reporter.on_order_event(self, event)
@@ -1243,9 +1368,14 @@ class SweetWaterPhase1(QCAlgorithm):
                     entry_atr=atr if atr > 0 else fill_px * 0.02,
                     entry_time=self.Time,
                     strategy_owner=owner,
+                    initial_risk_distance=max(
+                        float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5) * (atr if atr > 0 else fill_px * 0.02),
+                        1e-9,
+                    ),
                 )
         if symbol is not None and tag.startswith("Rebalance"):
             clear_rebalance_failure(self, symbol)
 
     def OnEndOfAlgorithm(self):  # pragma: no cover
+        self._log_scalper_day()
         self.reporter.final_report()

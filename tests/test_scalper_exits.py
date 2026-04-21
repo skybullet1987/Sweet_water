@@ -37,7 +37,11 @@ def test_exit_hard_stop():
 
 
 def test_exit_time_stop():
-    assert _eval(current_price=100.0, hours_held=7.0) == (True, "TimeStop")
+    assert _eval(current_price=99.9, hours_held=13.0) == (True, "TimeStop")
+
+
+def test_exit_time_stop_arms_tight_trail_when_profitable():
+    assert _eval(current_price=100.2, hours_held=13.0) == (False, "TightTrailArmed")
 
 
 def test_exit_meanrev():
@@ -46,6 +50,14 @@ def test_exit_meanrev():
 
 def test_exit_overshoot():
     assert _eval(current_price=101.0, z=1.5) == (True, "Overshoot")
+
+
+def test_exit_partial_tp_at_1r():
+    assert _eval(current_price=101.6, z=-1.0) == (True, "TP1")
+
+
+def test_exit_hard_tp_at_2_5r():
+    assert _eval(current_price=103.8, z=-1.0) == (True, "TP")
 
 
 def test_exit_btc_panic():

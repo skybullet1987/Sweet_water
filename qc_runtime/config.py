@@ -90,7 +90,7 @@ class StrategyConfig:
     score_dd_penalty: float = 0.3
 
     # Scalper signal thresholds
-    scalper_z_entry: float = -2.0
+    scalper_z_entry: float = -2.3
     scalper_meanrev_z: float = 0.0
     scalper_overshoot_z: float = 1.0
     scalper_rsi_min: float = 20.0
@@ -104,20 +104,20 @@ class StrategyConfig:
     scalper_use_btc_ema_gate: bool = False
     scalper_adx_range_max: float = 20.0
     scalper_adx_trend_min: float = 30.0
-    scalper_breakout_z_entry: float = 2.0
-    scalper_breakout_volume_mult: float = 1.5
+    scalper_breakout_z_entry: float = 2.3
+    scalper_breakout_volume_mult: float = 1.2
 
     # Position management
     scalper_position_size_pct: float = 0.15
     scalper_max_concurrent: int = 4
     scalper_hard_sl_pct: float = -0.015
     scalper_time_stop_hours: float = 6.0
-    scalper_anti_churn_hours: float = 3.0
+    scalper_anti_churn_hours: float = 2.0
     scalper_consecutive_loss_brake: int = 3
-    scalper_daily_loss_brake: float = -0.02
+    scalper_daily_loss_brake: float = -0.01
     scalper_universe_size: int = 20
-    scalper_loss_cooldown_after: int = 2
-    scalper_loss_cooldown_hours: float = 24.0
+    scalper_loss_cooldown_after: int = 1
+    scalper_loss_cooldown_hours: float = 6.0
     scalper_risk_per_trade_pct: float = 0.005
     scalper_max_symbol_exposure_pct: float = 0.25
     scalper_max_gross_exposure_pct: float = 0.90
@@ -126,10 +126,17 @@ class StrategyConfig:
     scalper_max_hold_hours: float = 36.0
     scalper_stuck_hold_bars: int = 24
     scalper_meanrev_rsi_confirm_max: float = 35.0
-    scalper_trail_atr_mult_mr: float = 2.0
-    scalper_trail_atr_mult_mom: float = 3.0
-    scalper_tp_atr_mult_mr: float = 2.0
-    scalper_tp_atr_mult_mom: float = 5.0
+    scalper_meanrev_rsi_long_max: float = 30.0
+    scalper_meanrev_rsi_short_min: float = 70.0
+    scalper_stop_atr_mult: float = 1.5
+    scalper_chandelier_atr_mult: float = 2.0
+    scalper_tight_trail_atr_mult: float = 0.5
+    scalper_tp1_r: float = 1.0
+    scalper_tp2_r: float = 2.5
+    scalper_mr_max_hold_bars: int = 12
+    scalper_mom_max_hold_bars: int = 24
+    scalper_beta_cap: float = 1.5
+    scalper_beta_lookback_hours: int = 24 * 7
 
     min_qty_fallback: dict[str, float] = field(default_factory=lambda: {
         'AXSUSD': 5.0, 'SANDUSD': 10.0, 'MANAUSD': 10.0, 'ADAUSD': 10.0,

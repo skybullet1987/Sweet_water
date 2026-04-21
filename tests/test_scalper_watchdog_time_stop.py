@@ -149,7 +149,9 @@ def test_bracket_submitter_idempotent_for_same_position_size():
         Debug=lambda *_args, **_kwargs: None,
     )
 
+    delattr(state, "bracket_attempted_qty")
     _ensure_scalper_brackets(algo, sym, qty_now=1.0, side=1, state=state)
     _ensure_scalper_brackets(algo, sym, qty_now=1.0, side=1, state=state)
 
     assert submitted == [("SL", -1.0, 98.5), ("TP", -1.0, 102.5)]
+    assert state.bracket_attempted_qty == 1.0

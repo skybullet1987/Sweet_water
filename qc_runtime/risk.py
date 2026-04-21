@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Mapping
@@ -53,7 +54,7 @@ class UnifiedRiskConfig:
 
 
 @dataclass(frozen=True)
-class PositionState:
+class RiskPositionState:
     weight: float
     annualized_volatility: float
 
@@ -64,7 +65,7 @@ class PortfolioState:
     current_drawdown: float
     gross_exposure: float
     net_exposure: float
-    positions: Mapping[str, PositionState] = field(default_factory=dict)
+    positions: Mapping[str, RiskPositionState] = field(default_factory=dict)
 
 
 class UnifiedRiskEngine:
@@ -271,6 +272,44 @@ class RiskManager:
         return RiskDecision(abs(u.adjusted_target_weight) > 0, u.adjusted_target_weight, final_reason)
 
 
+class RealisticCryptoSlippage:
+    def __init__(self, algo=None, stress_mult=1.0):
+        self.algo = algo
+        self.base_slippage_pct = 0.0040 * max(0.1, float(stress_mult))
+        self.volume_impact_factor = 0.25
+        self.max_slippage_pct = 0.0500
+
+    def _estimate_slippage_pct(self, price, notional, volume=0.0, bid=0.0, ask=0.0):
+        if price <= 0:
+            return 0.0
+        slip = self.base_slippage_pct
+        if bid > 0 and ask > 0 and ask >= bid:
+            mid = 0.5 * (bid + ask)
+            spread = (ask - bid) / max(mid, 1e-9)
+            participation = abs(notional) / max(volume * price, 1e-9) if volume > 0 else 0.0
+            slip += 0.5 * spread * max(0.25, participation)
+        if volume > 0:
+            participation = abs(notional) / max(volume * price, 1e-9)
+            slip += self.volume_impact_factor * math.sqrt(max(participation, 0.0))
+        return min(slip, self.max_slippage_pct)
+
+    def estimate_slippage_bps(self, symbol, notional, price, volume=0.0, bid=0.0, ask=0.0):
+        _ = symbol
+        return self._estimate_slippage_pct(price, notional, volume=volume, bid=bid, ask=ask) * 10_000.0
+
+    def GetSlippageApproximation(self, asset, order):  # pragma: no cover
+        price = float(getattr(asset, "Price", 0.0) or 0.0)
+        notional = abs(float(getattr(order, "Quantity", 0.0) or 0.0)) * price
+        pct = self._estimate_slippage_pct(
+            price=price,
+            notional=notional,
+            volume=float(getattr(asset, "Volume", 0.0) or 0.0),
+            bid=float(getattr(asset, "BidPrice", 0.0) or 0.0),
+            ask=float(getattr(asset, "AskPrice", 0.0) or 0.0),
+        )
+        return price * pct
+
+
 __all__ = [
     "RiskDecision",
     "RiskManager",
@@ -278,8 +317,9 @@ __all__ = [
     "UnifiedRiskConfig",
     "PortfolioTarget",
     "PortfolioState",
-    "PositionState",
+    "RiskPositionState",
     "UnifiedRiskDecision",
+    "RealisticCryptoSlippage",
     "DrawdownCircuitBreaker",
     "RollingMaxDrawdown",
 ]

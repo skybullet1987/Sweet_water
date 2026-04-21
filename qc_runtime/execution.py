@@ -42,6 +42,10 @@ from sizing import (
     mark_rebalance_failure,
     rebalance_symbol_blocked,
 )
+try:
+    from risk import RealisticCryptoSlippage
+except ModuleNotFoundError:  # pragma: no cover
+    from .risk import RealisticCryptoSlippage  # type: ignore
 
 POSITION_TOLERANCE = 1e-9
 DEFAULT_LAZY_ATR_PCT = 0.05
@@ -55,8 +59,10 @@ class PositionState:
     entry_time: datetime | None
     strategy_owner: str = "momentum"
     initial_risk_distance: float = 0.0
-    stop_price: float = 0.0
-    target_price: float = 0.0
+    stop_price: float | None = None
+    take_profit_price: float | None = None
+    partial_tp_price: float | None = None
+    trail_anchor_price: float | None = None
     partial_tp_done: bool = False
     tight_trail_armed: bool = False
 
@@ -579,20 +585,30 @@ def manage_open_positions(algo, data=None):
                 cleanup_position(algo, symbol, record_pnl=True, exit_price=price)
                 exits.append((symbol, "TimeStop"))
                 continue
-        state.highest_close = max(state.highest_close, price)
+        prev_high = float(getattr(state, "highest_close", state.entry_price) or state.entry_price)
+        trail_anchor = max(float(getattr(state, "trail_anchor_price", prev_high) or prev_high), price)
+        state.trail_anchor_price = trail_anchor
+        state.highest_close = max(prev_high, trail_anchor)
         sl_mult = float(getattr(getattr(algo, "config", CONFIG), "sl_atr_multiplier", 1.5))
         tp_mult = float(getattr(getattr(algo, "config", CONFIG), "tp_atr_multiplier", 3.0))
-        sl_price = state.entry_price - sl_mult * state.entry_atr
+        sl_price = getattr(state, "stop_price", None) or (state.entry_price - sl_mult * state.entry_atr)
         chandelier_active = (state.highest_close - state.entry_price) >= state.entry_atr
         chandelier_stop = state.highest_close - 2.0 * state.entry_atr if chandelier_active else None
         effective_stop = max(sl_price, chandelier_stop) if chandelier_stop is not None else sl_price
-        tp_price = state.entry_price + tp_mult * state.entry_atr
+        tp_price = getattr(state, "take_profit_price", None) or (state.entry_price + tp_mult * state.entry_atr)
+        partial_tp_price = getattr(state, "partial_tp_price", None)
         if price <= effective_stop:
             tag = "Chandelier" if chandelier_active and chandelier_stop is not None and effective_stop == chandelier_stop else "SL"
             if smart_liquidate(algo, symbol, tag=tag):
                 algo.Debug(f"{tag} sym={getattr(symbol,'Value',symbol)} px={price:.4f} stop={effective_stop:.4f}")
                 cleanup_position(algo, symbol, record_pnl=True, exit_price=price)
                 exits.append((symbol, tag))
+                continue
+        elif partial_tp_price is not None and not bool(getattr(state, "partial_tp_done", False)) and price >= partial_tp_price:
+            if smart_liquidate(algo, symbol, tag="TP1"):
+                algo.Debug(f"TP1 sym={getattr(symbol,'Value',symbol)} px={price:.4f}")
+                cleanup_position(algo, symbol, record_pnl=True, exit_price=price)
+                exits.append((symbol, "TP1"))
                 continue
         elif price >= tp_price:
             if smart_liquidate(algo, symbol, tag="TP"):
@@ -727,41 +743,3 @@ class KrakenTieredFeeModel(FeeModel):
         maker, taker = self._current_rates()
         pct = ((1 - self.LIMIT_TAKER_RATIO) * maker + self.LIMIT_TAKER_RATIO * taker) if order.Type == OrderType.Limit else taker
         return OrderFee(CashAmount(notional * pct, "USD"))
-
-
-class RealisticCryptoSlippage:
-    def __init__(self, algo=None, stress_mult=1.0):
-        self.algo = algo
-        self.base_slippage_pct = 0.0040 * max(0.1, float(stress_mult))
-        self.volume_impact_factor = 0.25
-        self.max_slippage_pct = 0.0500
-
-    def _estimate_slippage_pct(self, price, notional, volume=0.0, bid=0.0, ask=0.0):
-        if price <= 0:
-            return 0.0
-        slip = self.base_slippage_pct
-        if bid > 0 and ask > 0 and ask >= bid:
-            mid = 0.5 * (bid + ask)
-            spread = (ask - bid) / max(mid, 1e-9)
-            participation = abs(notional) / max(volume * price, 1e-9) if volume > 0 else 0.0
-            slip += 0.5 * spread * max(0.25, participation)
-        if volume > 0:
-            participation = abs(notional) / max(volume * price, 1e-9)
-            slip += self.volume_impact_factor * math.sqrt(max(participation, 0.0))
-        return min(slip, self.max_slippage_pct)
-
-    def estimate_slippage_bps(self, symbol, notional, price, volume=0.0, bid=0.0, ask=0.0):
-        _ = symbol
-        return self._estimate_slippage_pct(price, notional, volume=volume, bid=bid, ask=ask) * 10_000.0
-
-    def GetSlippageApproximation(self, asset, order):  # pragma: no cover
-        price = float(getattr(asset, "Price", 0.0) or 0.0)
-        notional = abs(float(getattr(order, "Quantity", 0.0) or 0.0)) * price
-        pct = self._estimate_slippage_pct(
-            price=price,
-            notional=notional,
-            volume=float(getattr(asset, "Volume", 0.0) or 0.0),
-            bid=float(getattr(asset, "BidPrice", 0.0) or 0.0),
-            ask=float(getattr(asset, "AskPrice", 0.0) or 0.0),
-        )
-        return price * pct

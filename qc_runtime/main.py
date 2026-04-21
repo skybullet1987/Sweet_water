@@ -1036,6 +1036,7 @@ class SweetWaterPhase1(QCAlgorithm):
             if state is not None:
                 setattr(state, "bracket_attempted_qty", 0.0)
             self.position_state.pop(symbol, None)
+            # Legacy/persisted runtime snapshots may still key `position_state` by ticker string.
             self.position_state.pop(getattr(symbol, "Value", str(symbol)), None)
             try:
                 from execution import is_invested_not_dust

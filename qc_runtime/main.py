@@ -195,6 +195,7 @@ class SweetWaterPhase1(QCAlgorithm):
         self._last_regime_state = None
         self._breaker_liquidated = False
         self._abandoned_dust = set()
+        self._dust_flatten_logged = set()
         self._dispersion_history = deque(maxlen=60)
         self._last_dispersion_date = None
         self._last_dispersion_log_date = None
@@ -301,6 +302,18 @@ class SweetWaterPhase1(QCAlgorithm):
                 z_ready += 1
         self.Debug(f"PRIME scalper z_ready={z_ready}/{n_total}")
         disp_ready = len(getattr(self, "_dispersion_history", []))
+        if disp_ready < 20:
+            m21_vals = []
+            for sym in symbols:
+                feats = self.feature_engine.current_features(sym.Value) or {}
+                m21 = float(feats.get("mom_21d", 0.0) or 0.0)
+                if math.isfinite(m21):
+                    m21_vals.append(m21)
+            if len(m21_vals) >= 4:
+                seeded = float(statistics.pstdev(m21_vals))
+                while len(self._dispersion_history) < 20:
+                    self._dispersion_history.append(seeded)
+                disp_ready = len(self._dispersion_history)
         if disp_ready < 20:
             self.Debug(f"CRITICAL prime_features dispersion_ready={disp_ready} (<20) by Jan 1")
 
@@ -480,13 +493,23 @@ class SweetWaterPhase1(QCAlgorithm):
                 qty = float(getattr(holding, "Quantity", 0.0) or 0.0)
             except Exception:
                 qty = 0.0
-            if qty > 0:
+            if abs(qty) > 0:
                 securities = getattr(self, "Securities", None)
                 if securities is None:
                     out.append(sym)
                 elif is_invested_not_dust(self, sym):
                     out.append(sym)
                 else:
+                    if not hasattr(self, "_dust_flatten_logged"):
+                        self._dust_flatten_logged = set()
+                    if sym not in self._dust_flatten_logged:
+                        sec = securities.get(sym) if hasattr(securities, "get") else None
+                        px = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
+                        self.Debug(
+                            f"DUST_FLATTEN sym={getattr(sym,'Value',sym)} "
+                            f"residual={qty:.10f} notional={abs(qty) * px:.6f}"
+                        )
+                        self._dust_flatten_logged.add(sym)
                     self.position_state.pop(sym, None)
                     self.position_state.pop(getattr(sym, "Value", str(sym)), None)
                     getattr(self, "_scalper_entry_sleeve", {}).pop(sym, None)
@@ -790,12 +813,24 @@ class SweetWaterPhase1(QCAlgorithm):
         day_key = self.Time.date() if hasattr(self, "Time") else None
         if day_key is not None and self._last_daily_summary_date is not None and day_key != self._last_daily_summary_date:
             daily = self.reporter.daily_report()
+            wins = int(daily.get("wins", 0.0) or 0)
+            losses = int(daily.get("losses", 0.0) or 0)
             self.Debug(
                 f"DAY_SUMMARY prev_date={self._last_daily_summary_date} trades={int(daily.get('daily_trade_count', 0.0))} "
                 f"WIN_RATE={float(daily.get('win_rate', 0.0)) * 100.0:.2f}% "
                 f"AVG_WIN_PCT={float(daily.get('avg_win_pct', 0.0)):.2f}% "
                 f"AVG_LOSS_PCT={float(daily.get('avg_loss_pct', 0.0)):.2f}% "
                 f"EXPECTANCY={float(daily.get('expectancy_pct', 0.0)):.2f}%"
+            )
+            self.Debug(
+                "TRADE_STATS "
+                f"wins={wins} losses={losses} "
+                f"win_rate={float(daily.get('win_rate', 0.0)) * 100.0:.2f}% "
+                f"avg_win_pct={float(daily.get('avg_win_pct', 0.0)):.2f}% "
+                f"avg_loss_pct={float(daily.get('avg_loss_pct', 0.0)):.2f}% "
+                f"profit_factor={float(daily.get('profit_factor', 0.0)):.3f} "
+                f"expectancy_pct={float(daily.get('expectancy_pct', 0.0)):.2f}% "
+                f"max_drawdown_pct={float(daily.get('max_drawdown_pct', 0.0)):.2f}%"
             )
         if day_key is not None:
             self._last_daily_summary_date = day_key
@@ -1005,7 +1040,27 @@ class SweetWaterPhase1(QCAlgorithm):
                     self._abandoned_dust.add(symbol)
             except Exception:
                 pass
-        if qty_now > 0 and symbol not in self.position_state:
+        elif symbol is not None:
+            try:
+                from execution import is_invested_not_dust
+
+                if not is_invested_not_dust(self, symbol):
+                    self.position_state.pop(symbol, None)
+                    self.position_state.pop(getattr(symbol, "Value", str(symbol)), None)
+                    self._abandoned_dust.add(symbol)
+                    if not hasattr(self, "_dust_flatten_logged"):
+                        self._dust_flatten_logged = set()
+                    if symbol not in self._dust_flatten_logged:
+                        px = float(getattr(self.Securities.get(symbol), "Price", 0.0) or 0.0)
+                        self.Debug(
+                            f"DUST_FLATTEN sym={getattr(symbol,'Value',symbol)} "
+                            f"residual={qty_now:.10f} notional={abs(qty_now) * px:.6f}"
+                        )
+                        self._dust_flatten_logged.add(symbol)
+                    return
+            except Exception:
+                pass
+        if qty_now > 0:
             feats = self.feature_engine.current_features(symbol.Value)
             atr = float(feats.get("atr", 0.0) or 0.0)
             fill_px = float(getattr(event, "FillPrice", 0.0) or 0.0)
@@ -1014,15 +1069,23 @@ class SweetWaterPhase1(QCAlgorithm):
                 owner = "scalper" if mode == "scalper" else "momentum"
                 if "ScalperMom" in tag:
                     owner = "scalper_momentum"
+                is_short = "ScalperMomShort:entry" in tag
+                stop_mult = float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5)
+                tp1_atr = float(getattr(self.config, "scalper_tp1_atr", CONFIG.scalper_tp1_atr) or CONFIG.scalper_tp1_atr)
+                atr_eff = atr if atr > 0 else fill_px * 0.02
+                risk_dist = max(stop_mult * atr_eff, 1e-9)
                 self.position_state[symbol] = PositionState(
                     entry_price=fill_px,
                     highest_close=fill_px,
-                    entry_atr=atr if atr > 0 else fill_px * 0.02,
+                    entry_atr=atr_eff,
                     entry_time=self.Time,
                     strategy_owner=owner,
-                    initial_risk_distance=max(
-                        float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5) * (atr if atr > 0 else fill_px * 0.02),
-                        1e-9,
+                    initial_risk_distance=risk_dist,
+                    stop_price=(fill_px + risk_dist) if is_short else max(0.0, fill_px - risk_dist),
+                    target_price=(
+                        fill_px - atr_eff * tp1_atr
+                        if is_short
+                        else fill_px + atr_eff * tp1_atr
                     ),
                 )
         if symbol is not None and tag.startswith("Rebalance"):

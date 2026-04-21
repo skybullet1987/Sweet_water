@@ -85,6 +85,36 @@ def test_momentum_entry_needs_breakout_and_volume_confirmation():
     assert ok is False and reason.startswith("ret6h_confirm_fail")
 
 
+def test_momentum_short_entry_path():
+    cfg = StrategyConfig()
+    feats = {
+        "z_20h": -2.3,
+        "rsi_14": 45.0,
+        "rv_21d": 0.8,
+        "close": 90.0,
+        "ema50": 100.0,
+        "ema200": 110.0,
+        "adx": 35.0,
+        "new_low_24h": 1.0,
+        "volume_rel_20h": 1.6,
+        "ret_6h": -0.02,
+    }
+    ok, reason = evaluate_entry(
+        symbol="ETHUSD",
+        feats=feats,
+        btc_ret_1h=0.0,
+        btc_ret_6h=0.0,
+        has_position=False,
+        last_trade_hours_ago=10.0,
+        available_cash_pct=0.5,
+        daily_pnl_pct=0.0,
+        consecutive_losses_for_symbol=0,
+        sleeve="momentum_short",
+        config=cfg,
+    )
+    assert (ok, reason) == (True, "OK")
+
+
 def test_vol_target_qty_respects_risk_and_exposure_caps():
     qty, notional = vol_target_qty(
         equity=1_000.0,
@@ -114,3 +144,20 @@ def test_vol_target_qty_respects_effective_position_size_pct():
     )
     assert qty > 0
     assert notional <= 80.0 + 1e-9
+
+
+def test_vol_target_qty_uses_risk_budget_with_atr_stop_mult():
+    qty, notional = vol_target_qty(
+        equity=1_000.0,
+        price=100.0,
+        atr_pct=0.02,
+        available_cash=1_000.0,
+        current_gross_exposure_pct=0.0,
+        risk_per_trade_pct=0.0075,
+        max_symbol_exposure_pct=0.50,
+        max_gross_exposure_pct=0.95,
+        atr_stop_mult=1.5,
+        max_concurrent_positions=4,
+    )
+    assert qty > 0
+    assert notional <= 237.5 + 1e-9

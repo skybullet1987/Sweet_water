@@ -206,3 +206,29 @@ def test_entry_cash_gate_shrinks_instead_of_rejecting_when_notional_above_min():
         config=cfg,
     )
     assert (ok, reason) == (True, "OK")
+
+
+def test_entry_relaxes_mr_threshold_in_ranging_low_vol_cone():
+    cfg = StrategyConfig()
+    ok, reason = evaluate_entry(
+        symbol="ETHUSD",
+        feats={
+            "z_20h": -1.7,
+            "rsi_14": 28.0,
+            "rv_21d": 0.6,
+            "close": 100.0,
+            "ema50": 100.0,
+            "ema200": 100.0,
+            "adx": 15.0,
+            "vol_cone_pct": 0.2,
+        },
+        btc_ret_1h=0.0,
+        btc_ret_6h=0.0,
+        has_position=False,
+        last_trade_hours_ago=10.0,
+        available_cash_pct=0.5,
+        daily_pnl_pct=0.0,
+        consecutive_losses_for_symbol=0,
+        config=cfg,
+    )
+    assert (ok, reason) == (True, "OK")

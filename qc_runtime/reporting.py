@@ -23,6 +23,8 @@ except Exception:  # pragma: no cover
 from config import CONFIG, StrategyConfig
 from execution import PositionState, cleanup_position, get_effective_round_trip_fee, get_min_notional_usd
 
+MIN_LOSS_THRESHOLD = 1e-12
+
 
 class Reporter:
     def __init__(self, config: StrategyConfig = CONFIG) -> None:
@@ -33,6 +35,7 @@ class Reporter:
         self.losses: list[float] = []
         self.daily_wins: list[float] = []
         self.daily_losses: list[float] = []
+        self.daily_trade_pnls: list[float] = []
         self.regime_counter: Counter[str] = Counter()
         self.cancel_count = 0
         self.escalation_count = 0
@@ -49,6 +52,7 @@ class Reporter:
             elif pnl < 0:
                 self.losses.append(pnl)
                 self.daily_losses.append(pnl)
+            self.daily_trade_pnls.append(pnl)
         elif status == "canceled":
             self.cancel_count += 1
         elif status == "escalated":
@@ -122,6 +126,7 @@ class Reporter:
             elif pnl < 0:
                 self.losses.append(pnl)
                 self.daily_losses.append(pnl)
+            self.daily_trade_pnls.append(pnl)
             tag = "Unknown"
             try:
                 oid = getattr(event, "OrderId", None)
@@ -143,16 +148,31 @@ class Reporter:
         avg_win = float(np.mean(self.daily_wins)) if self.daily_wins else 0.0
         avg_loss = float(np.mean(self.daily_losses)) if self.daily_losses else 0.0
         expectancy = (win_rate * avg_win) + ((1.0 - win_rate) * avg_loss)
+        gross_win = float(sum(max(x, 0.0) for x in self.daily_trade_pnls))
+        gross_loss = float(sum(abs(min(x, 0.0)) for x in self.daily_trade_pnls))
+        profit_factor = (gross_win / gross_loss) if gross_loss > MIN_LOSS_THRESHOLD else (gross_win if gross_win > 0 else 0.0)
+        equity = 1.0
+        peak = 1.0
+        max_dd = 0.0
+        for pnl in self.daily_trade_pnls:
+            equity *= (1.0 + float(pnl))
+            peak = max(peak, equity)
+            max_dd = min(max_dd, (equity - peak) / max(peak, 1e-9))
         report = {
             "daily_trade_count": float(self.daily_trade_count),
+            "wins": float(len(self.daily_wins)),
+            "losses": float(len(self.daily_losses)),
             "win_rate": win_rate,
             "avg_win_pct": avg_win * 100.0,
             "avg_loss_pct": avg_loss * 100.0,
+            "profit_factor": profit_factor,
             "expectancy_pct": expectancy * 100.0,
+            "max_drawdown_pct": abs(max_dd) * 100.0,
         }
         self.daily_trade_count = 0
         self.daily_wins = []
         self.daily_losses = []
+        self.daily_trade_pnls = []
         return report
 
     def final_report(self) -> dict[str, float | dict[str, float]]:

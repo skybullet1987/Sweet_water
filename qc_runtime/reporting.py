@@ -23,6 +23,8 @@ except Exception:  # pragma: no cover
 from config import CONFIG, StrategyConfig
 from execution import PositionState, cleanup_position, get_effective_round_trip_fee, get_min_notional_usd
 
+MIN_LOSS_THRESHOLD = 1e-12
+
 
 class Reporter:
     def __init__(self, config: StrategyConfig = CONFIG) -> None:
@@ -148,7 +150,7 @@ class Reporter:
         expectancy = (win_rate * avg_win) + ((1.0 - win_rate) * avg_loss)
         gross_win = float(sum(max(x, 0.0) for x in self.daily_trade_pnls))
         gross_loss = float(sum(abs(min(x, 0.0)) for x in self.daily_trade_pnls))
-        profit_factor = (gross_win / gross_loss) if gross_loss > 1e-12 else (gross_win if gross_win > 0 else 0.0)
+        profit_factor = (gross_win / gross_loss) if gross_loss > MIN_LOSS_THRESHOLD else (gross_win if gross_win > 0 else 0.0)
         equity = 1.0
         peak = 1.0
         max_dd = 0.0

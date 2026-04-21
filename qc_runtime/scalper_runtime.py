@@ -8,6 +8,7 @@ from collections import deque
 from datetime import timedelta
 
 import pandas as pd
+from config import CONFIG
 
 try:  # pragma: no cover
     from AlgorithmImports import Slice
@@ -83,8 +84,8 @@ def _portfolio_beta_sum_with_candidate(self, candidate, held: list, btc_symbol) 
         weight = abs(qty * px) / max(equity, 1.0)
         beta_sum += beta * weight
     candidate_beta = self._beta_to_btc(candidate, btc_symbol)
-    slot_weight = float(getattr(self.config, "scalper_max_gross_exposure_pct", 0.95) or 0.95) / max(
-        1.0, float(getattr(self.config, "scalper_max_concurrent", 4) or 4)
+    slot_weight = float(getattr(self.config, "scalper_max_gross_exposure_pct", CONFIG.scalper_max_gross_exposure_pct) or CONFIG.scalper_max_gross_exposure_pct) / max(
+        1.0, float(getattr(self.config, "scalper_max_concurrent", CONFIG.scalper_max_concurrent) or CONFIG.scalper_max_concurrent)
     )
     beta_sum += candidate_beta * slot_weight
     return abs(beta_sum)
@@ -264,7 +265,11 @@ def _scalper_on_data(
             continue
         pnl_frac = (side * (px / state.entry_price - 1.0)) if state.entry_price > 0 else 0.0
         if should_exit and tag == "TP1":
-            qty_half = round_quantity_fn(self, sym, abs(qty_now) * 0.5)
+            qty_half = round_quantity_fn(
+                self,
+                sym,
+                abs(qty_now) * float(getattr(self.config, "scalper_tp1_partial_pct", CONFIG.scalper_tp1_partial_pct) or CONFIG.scalper_tp1_partial_pct),
+            )
             if qty_half > 0:
                 ticket = place_limit_or_market_fn(self, sym, (-qty_half if side > 0 else qty_half), tag="TP1")
                 if ticket is not None:

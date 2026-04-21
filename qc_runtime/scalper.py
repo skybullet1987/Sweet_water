@@ -247,7 +247,7 @@ def vol_target_qty(
         return 0.0, 0.0
     atr_pct = max(float(atr_pct or 0.0), 0.0025)
     risk_budget = max(0.0, float(equity) * float(risk_per_trade_pct))
-    raw_notional = risk_budget / max(float(atr_stop_mult or 1.5) * atr_pct, 1e-9)
+    raw_notional = risk_budget / max(float(atr_stop_mult) * atr_pct, 1e-9)
     max_symbol_notional = float(equity) * float(max_symbol_exposure_pct)
     max_gross_notional = max(0.0, float(equity) * float(max_gross_exposure_pct) - float(equity) * float(current_gross_exposure_pct))
     slot_cap = float(equity) * float(max_gross_exposure_pct) / max(float(max_concurrent_positions or 1), 1.0)

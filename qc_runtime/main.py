@@ -1071,6 +1071,7 @@ class SweetWaterPhase1(QCAlgorithm):
                     owner = "scalper_momentum"
                 is_short = "ScalperMomShort:entry" in tag
                 stop_mult = float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5)
+                tp1_atr = float(getattr(self.config, "scalper_tp1_atr", CONFIG.scalper_tp1_atr) or CONFIG.scalper_tp1_atr)
                 atr_eff = atr if atr > 0 else fill_px * 0.02
                 risk_dist = max(stop_mult * atr_eff, 1e-9)
                 self.position_state[symbol] = PositionState(
@@ -1082,9 +1083,9 @@ class SweetWaterPhase1(QCAlgorithm):
                     initial_risk_distance=risk_dist,
                     stop_price=(fill_px + risk_dist) if is_short else max(0.0, fill_px - risk_dist),
                     target_price=(
-                        fill_px - risk_dist * float(getattr(self.config, "scalper_tp1_atr", 1.5) or 1.5)
+                        fill_px - atr_eff * tp1_atr
                         if is_short
-                        else fill_px + risk_dist * float(getattr(self.config, "scalper_tp1_atr", 1.5) or 1.5)
+                        else fill_px + atr_eff * tp1_atr
                     ),
                 )
         if symbol is not None and tag.startswith("Rebalance"):

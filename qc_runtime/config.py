@@ -132,6 +132,7 @@ class StrategyConfig:
     scalper_chandelier_atr_mult: float = 2.0
     scalper_tight_trail_atr_mult: float = 0.5
     scalper_tp1_r: float = 1.0
+    scalper_tp1_partial_pct: float = 0.5
     scalper_tp2_r: float = 2.5
     scalper_mr_max_hold_bars: int = 8
     scalper_mom_max_hold_bars: int = 16

@@ -644,7 +644,13 @@ def _scalper_on_data(
     if total_allocated_slots < slots_remaining:
         by_sleeve_slots["meanrev"] += slots_remaining - total_allocated_slots
     elif total_allocated_slots > slots_remaining:
-        by_sleeve_slots["momentum"] = max(0, by_sleeve_slots["momentum"] - (total_allocated_slots - slots_remaining))
+        excess = total_allocated_slots - slots_remaining
+        for sleeve_key in ("momentum_short", "momentum", "meanrev"):
+            if excess <= 0:
+                break
+            cut = min(by_sleeve_slots[sleeve_key], excess)
+            by_sleeve_slots[sleeve_key] -= cut
+            excess -= cut
     ordered = {
         "meanrev": sorted(candidates["meanrev"], key=lambda x: x[1]),
         "momentum": sorted(candidates["momentum"], key=lambda x: x[1], reverse=True),

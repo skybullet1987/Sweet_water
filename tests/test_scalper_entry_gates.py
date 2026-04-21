@@ -65,7 +65,21 @@ def test_entry_gate_reasons():
 
     ok, reason = evaluate_entry(
         symbol="ETHUSD",
-        feats=_feats(rsi=10.0),
+        feats=_feats(rsi=31.0),
+        btc_ret_1h=0.0,
+        btc_ret_6h=0.0,
+        has_position=False,
+        last_trade_hours_ago=10.0,
+        available_cash_pct=0.5,
+        daily_pnl_pct=0.0,
+        consecutive_losses_for_symbol=0,
+        config=cfg,
+    )
+    assert ok is False and reason.startswith("mr_rsi_confirm_fail")
+
+    ok, reason = evaluate_entry(
+        symbol="ETHUSD",
+        feats=_feats(rsi=50.0),
         btc_ret_1h=0.0,
         btc_ret_6h=0.0,
         has_position=False,

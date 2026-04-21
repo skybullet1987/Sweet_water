@@ -39,19 +39,22 @@ def evaluate_entry(
     regime = regime_for(feats, config=config)
     z = float(feats.get("z_20h", 0.0) or 0.0)
     if sleeve == "momentum":
-        if z < float(getattr(config, "scalper_breakout_z_entry", 2.0)):
+        if z < float(getattr(config, "scalper_breakout_z_entry", 2.3)):
             return False, f"z_below_breakout:{z:.2f}"
+        ret_6h = float(feats.get("ret_6h", 0.0) or 0.0)
+        if ret_6h <= 0:
+            return False, f"ret6h_confirm_fail:{ret_6h:.4f}"
         if regime not in {"uptrend", "uptrend_pullback", "uptrend_breakout"}:
             return False, f"REGIME_BLOCK:{regime}"
         vol_rel = float(feats.get("volume_rel_20h", 0.0) or 0.0)
-        if vol_rel < float(getattr(config, "scalper_breakout_volume_mult", 1.5)):
+        if vol_rel < float(getattr(config, "scalper_breakout_volume_mult", 1.2)):
             return False, f"vol_confirm_fail:{vol_rel:.2f}"
     else:
         if z > config.scalper_z_entry:
             return False, f"z_above_threshold:{z:.2f}"
         if regime not in {"uptrend_pullback", "ranging", "neutral"}:
             return False, f"REGIME_BLOCK:{regime}"
-        meanrev_rsi_cap = float(getattr(config, "scalper_meanrev_rsi_confirm_max", 35.0) or 35.0)
+        meanrev_rsi_cap = float(getattr(config, "scalper_meanrev_rsi_long_max", 30.0) or 30.0)
         rsi = float(feats.get("rsi_14", 50.0) or 50.0)
         if rsi >= meanrev_rsi_cap:
             return False, f"mr_rsi_confirm_fail:{rsi:.1f}"
@@ -105,6 +108,9 @@ def evaluate_exit(
     btc_ret_1h: float,
     highest_close: float | None = None,
     entry_atr: float | None = None,
+    initial_risk_distance: float | None = None,
+    partial_tp_done: bool = False,
+    tight_trail_armed: bool = False,
     sleeve: str = "meanrev",
     config=CONFIG,
 ) -> tuple[bool, str]:
@@ -118,35 +124,39 @@ def evaluate_exit(
 
     if btc_ret_1h < config.scalper_btc_panic_threshold:
         return True, "BTCPanic"
-    if pnl_pct <= config.scalper_hard_sl_pct:
-        return True, "SL"
     atr = float(entry_atr or 0.0)
     if not math.isfinite(atr) or atr <= 0:
         atr = entry_price * 0.01
+    stop_atr_mult = float(getattr(config, "scalper_stop_atr_mult", 1.5) or 1.5)
+    base_risk = max(float(initial_risk_distance or 0.0), stop_atr_mult * atr)
     high_ref = float(highest_close if highest_close is not None else current_price)
-    trail_mult = (
-        float(getattr(config, "scalper_trail_atr_mult_mom", 3.0))
-        if sleeve == "momentum"
-        else float(getattr(config, "scalper_trail_atr_mult_mr", 2.0))
+    trail_mult = float(
+        getattr(
+            config,
+            "scalper_tight_trail_atr_mult" if tight_trail_armed else "scalper_chandelier_atr_mult",
+            0.5 if tight_trail_armed else 2.0,
+        )
+        or (0.5 if tight_trail_armed else 2.0)
     )
-    tp_mult = (
-        float(getattr(config, "scalper_tp_atr_mult_mom", 5.0))
-        if sleeve == "momentum"
-        else float(getattr(config, "scalper_tp_atr_mult_mr", 2.0))
-    )
-    base_stop = entry_price * (1.0 + float(getattr(config, "scalper_hard_sl_pct", -0.015)))
+    base_stop = entry_price - base_risk
+    if partial_tp_done:
+        base_stop = max(base_stop, entry_price)
     trailing_stop = max(base_stop, high_ref - trail_mult * atr)
-    risk_r = max(entry_price - trailing_stop, atr)
-    tp_price = entry_price + max(tp_mult * atr, 1.5 * risk_r)
+    r_multiple = (current_price - entry_price) / max(base_risk, 1e-9)
     if current_price <= trailing_stop:
-        return True, "ATRStop"
-    if current_price >= tp_price:
+        return True, "SL" if current_price <= entry_price else "ATRStop"
+    if (not partial_tp_done) and r_multiple >= float(getattr(config, "scalper_tp1_r", 1.0) or 1.0):
+        return True, "TP1"
+    if r_multiple >= float(getattr(config, "scalper_tp2_r", 2.5) or 2.5):
         return True, "TP"
-    stop_hours = float(config.scalper_time_stop_hours) * (2.0 if sleeve == "momentum" else 1.0)
-    max_hold_hours = float(getattr(config, "scalper_max_hold_hours", 36.0) or 36.0)
-    stop_hours = min(stop_hours, max_hold_hours) if max_hold_hours > 0 else stop_hours
+    stop_hours = float(
+        getattr(config, "scalper_mom_max_hold_bars", 24) if sleeve == "momentum" else getattr(config, "scalper_mr_max_hold_bars", 12)
+    )
     if hours_held >= stop_hours:
-        return True, "TimeStop"
+        if pnl_pct <= 0:
+            return True, "TimeStop"
+        if not tight_trail_armed:
+            return False, "TightTrailArmed"
     if sleeve != "momentum":
         if z >= config.scalper_overshoot_z:
             return True, "Overshoot"
@@ -198,7 +208,7 @@ def vol_target_qty(
         return 0.0, 0.0
     atr_pct = max(float(atr_pct or 0.0), 0.0025)
     risk_budget = max(0.0, float(equity) * float(risk_per_trade_pct))
-    raw_notional = risk_budget / atr_pct
+    raw_notional = risk_budget / max(1.5 * atr_pct, 1e-9)
     max_symbol_notional = float(equity) * float(max_symbol_exposure_pct)
     max_gross_notional = max(0.0, float(equity) * float(max_gross_exposure_pct) - float(equity) * float(current_gross_exposure_pct))
     size_cap_notional = max(0.0, float(equity) * max(float(position_size_pct or 0.0), 0.0))

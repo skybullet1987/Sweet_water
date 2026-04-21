@@ -382,6 +382,9 @@ def _scalper_on_data(
         sleeve = "momentum" if "momentum" in str(getattr(state, "strategy_owner", "meanrev")) else "meanrev"
         if sleeve == "momentum" and side < 0:
             sleeve = "momentum_short"
+        pnl_frac = (side * (px / state.entry_price - 1.0)) if state.entry_price > 0 else 0.0
+        base_risk = max(float(getattr(state, "initial_risk_distance", 0.0) or 0.0), 1e-9)
+        base_r_multiple = (side * (px - state.entry_price)) / base_risk if state.entry_price > 0 else 0.0
         bars_held = int(
             max(
                 0.0,
@@ -406,7 +409,10 @@ def _scalper_on_data(
         )
         if bars_held >= max_bars_held:
             if _force_flatten_symbol(self, sym, tag="TimeStop", smart_liquidate_fn=smart_liquidate_fn):
-                self.Debug(f"SCALPER_EXIT sym={sym.Value} tag=TimeStop pnl=0.00% bars_held={bars_held} r_multiple=0.00")
+                self.Debug(
+                    f"SCALPER_EXIT sym={sym.Value} tag=TimeStop pnl={pnl_frac*100:.2f}% "
+                    f"bars_held={bars_held} r_multiple={base_r_multiple:.2f}"
+                )
                 self.position_state.pop(sym, None)
                 self._scalper_entry_sleeve.pop(sym, None)
                 self._scalper_last_exit_by_sleeve[(sym, sleeve)] = self.Time
@@ -429,7 +435,10 @@ def _scalper_on_data(
                 f"STALE_POSITION sym={sym.Value} bars_held={bars_held} has_sl={has_sl} has_tp={has_tp}"
             )
             if _force_flatten_symbol(self, sym, tag="StaleExit", smart_liquidate_fn=smart_liquidate_fn):
-                self.Debug(f"SCALPER_EXIT sym={sym.Value} tag=StaleExit pnl=0.00% bars_held={bars_held} r_multiple=0.00")
+                self.Debug(
+                    f"SCALPER_EXIT sym={sym.Value} tag=StaleExit pnl={pnl_frac*100:.2f}% "
+                    f"bars_held={bars_held} r_multiple={base_r_multiple:.2f}"
+                )
                 self.position_state.pop(sym, None)
                 self._scalper_entry_sleeve.pop(sym, None)
                 self._scalper_last_exit_by_sleeve[(sym, sleeve)] = self.Time
@@ -459,7 +468,6 @@ def _scalper_on_data(
         if tag == "TightTrailArmed":
             state.tight_trail_armed = True
             continue
-        pnl_frac = (side * (px / state.entry_price - 1.0)) if state.entry_price > 0 else 0.0
         if should_exit and tag == "TP1":
             qty_half = round_quantity_fn(
                 self,
@@ -473,8 +481,7 @@ def _scalper_on_data(
                     self.Debug(f"SCALPER_EXIT sym={sym.Value} tag=TP1 pnl={pnl_frac*100:.2f}% bars_held={bars_held} r_multiple=1.00")
             continue
         if should_exit:
-            risk_dist = max(float(getattr(state, "initial_risk_distance", 0.0) or 0.0), 1e-9)
-            r_multiple = (side * (px - state.entry_price)) / risk_dist if state.entry_price > 0 else 0.0
+            r_multiple = base_r_multiple
             if _force_flatten_symbol(self, sym, tag=tag, smart_liquidate_fn=smart_liquidate_fn):
                 self.Debug(
                     f"SCALPER_EXIT sym={sym.Value} tag={tag} pnl={pnl_frac*100:.2f}% "

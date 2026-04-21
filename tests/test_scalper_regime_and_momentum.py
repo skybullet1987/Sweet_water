@@ -112,6 +112,22 @@ def test_momentum_short_entry_path():
         sleeve="momentum_short",
         config=cfg,
     )
+    assert (ok, reason) == (False, "shorts_disabled")
+
+    cfg_enabled = StrategyConfig(enable_shorts=True)
+    ok, reason = evaluate_entry(
+        symbol="ETHUSD",
+        feats=feats,
+        btc_ret_1h=0.0,
+        btc_ret_6h=0.0,
+        has_position=False,
+        last_trade_hours_ago=10.0,
+        available_cash_pct=0.5,
+        daily_pnl_pct=0.0,
+        consecutive_losses_for_symbol=0,
+        sleeve="momentum_short",
+        config=cfg_enabled,
+    )
     assert (ok, reason) == (True, "OK")
 
 

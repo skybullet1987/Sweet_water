@@ -50,6 +50,8 @@ def evaluate_entry(
         if vol_rel < float(getattr(config, "scalper_breakout_volume_mult", 1.2)):
             return False, f"vol_confirm_fail:{vol_rel:.2f}"
     elif sleeve == "momentum_short":
+        if not bool(getattr(config, "enable_shorts", False)):
+            return False, "shorts_disabled"
         if z > float(getattr(config, "scalper_momentum_short_z_entry", -2.0) or -2.0):
             return False, f"z_above_breakdown:{z:.2f}"
         ret_6h = float(feats.get("ret_6h", 0.0) or 0.0)

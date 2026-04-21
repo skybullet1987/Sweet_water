@@ -20,7 +20,11 @@ def test_daily_report_includes_expectancy_metrics():
     out = reporter.daily_report()
 
     assert out["daily_trade_count"] == 3.0
+    assert out["wins"] == 2.0
+    assert out["losses"] == 1.0
     assert out["win_rate"] == 2 / 3
     assert "avg_win_pct" in out
     assert "avg_loss_pct" in out
+    assert "profit_factor" in out
     assert "expectancy_pct" in out
+    assert "max_drawdown_pct" in out

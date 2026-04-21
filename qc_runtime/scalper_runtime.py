@@ -71,11 +71,23 @@ def _beta_to_btc(self, symbol, btc_symbol) -> float:
     return beta if math.isfinite(beta) else 0.0
 
 def _portfolio_beta_sum_with_candidate(self, candidate, held: list, btc_symbol) -> float:
+    equity = float(getattr(self.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
+    if equity <= 0:
+        return 0.0
     beta_sum = 0.0
     for sym in held:
-        beta_sum += abs(self._beta_to_btc(sym, btc_symbol))
-    beta_sum += abs(self._beta_to_btc(candidate, btc_symbol))
-    return beta_sum
+        beta = self._beta_to_btc(sym, btc_symbol)
+        sec = self.Securities.get(sym)
+        px = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
+        qty = float(getattr(self.Portfolio[sym], "Quantity", 0.0) or 0.0)
+        weight = abs(qty * px) / max(equity, 1.0)
+        beta_sum += beta * weight
+    candidate_beta = self._beta_to_btc(candidate, btc_symbol)
+    slot_weight = float(getattr(self.config, "scalper_max_gross_exposure_pct", 0.95) or 0.95) / max(
+        1.0, float(getattr(self.config, "scalper_max_concurrent", 4) or 4)
+    )
+    beta_sum += candidate_beta * slot_weight
+    return abs(beta_sum)
 
 def _log_scalper_day(self):
     stats = getattr(self, "_scalper_day_stats", None)
@@ -211,13 +223,25 @@ def _scalper_on_data(
                 entry_time=self.Time - timedelta(hours=1),
                 strategy_owner="scalper",
                 initial_risk_distance=max(float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5) * atr, 1e-9),
+                stop_price=max(0.0, avg_px - max(float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5) * atr, 1e-9)),
+                target_price=avg_px + atr * float(getattr(self.config, "scalper_tp1_atr", 1.5) or 1.5),
             )
             self.position_state[sym] = state
-            self.Debug(f"LAZY_SEED sym={getattr(sym,'Value',sym)} avg_px={avg_px:.6f} atr={atr:.6f}")
+            if not hasattr(self, "_lazy_seed_warned"):
+                self._lazy_seed_warned = set()
+            if sym not in self._lazy_seed_warned:
+                self.Debug(
+                    f"WARN LAZY_SEED sym={getattr(sym,'Value',sym)} avg_px={avg_px:.6f} atr={atr:.6f} reason=missing_state"
+                )
+                self._lazy_seed_warned.add(sym)
         sec = self.Securities.get(sym)
         px = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
         state.highest_close = max(float(getattr(state, "highest_close", state.entry_price) or state.entry_price), px)
+        qty_now = float(getattr(self.Portfolio[sym], "Quantity", 0.0) or 0.0)
+        side = -1 if qty_now < 0 else 1
         sleeve = "momentum" if "momentum" in str(getattr(state, "strategy_owner", "meanrev")) else "meanrev"
+        if sleeve == "momentum" and side < 0:
+            sleeve = "momentum_short"
         should_exit, tag = evaluate_exit(
             symbol=sym,
             feats=feats,
@@ -232,17 +256,17 @@ def _scalper_on_data(
             partial_tp_done=bool(getattr(state, "partial_tp_done", False)),
             tight_trail_armed=bool(getattr(state, "tight_trail_armed", False)),
             sleeve=sleeve,
+            position_side=side,
             config=self.config,
         )
         if tag == "TightTrailArmed":
             state.tight_trail_armed = True
             continue
-        pnl_frac = (px / state.entry_price - 1.0) if state.entry_price > 0 else 0.0
+        pnl_frac = (side * (px / state.entry_price - 1.0)) if state.entry_price > 0 else 0.0
         if should_exit and tag == "TP1":
-            qty_now = float(getattr(self.Portfolio[sym], "Quantity", 0.0) or 0.0)
-            qty_half = round_quantity_fn(self, sym, max(qty_now * 0.5, 0.0))
+            qty_half = round_quantity_fn(self, sym, abs(qty_now) * 0.5)
             if qty_half > 0:
-                ticket = place_limit_or_market_fn(self, sym, -qty_half, tag="TP1")
+                ticket = place_limit_or_market_fn(self, sym, (-qty_half if side > 0 else qty_half), tag="TP1")
                 if ticket is not None:
                     state.partial_tp_done = True
                     bars_held = int(
@@ -255,7 +279,7 @@ def _scalper_on_data(
             continue
         if should_exit:
             risk_dist = max(float(getattr(state, "initial_risk_distance", 0.0) or 0.0), 1e-9)
-            r_multiple = (px - state.entry_price) / risk_dist if state.entry_price > 0 else 0.0
+            r_multiple = (side * (px - state.entry_price)) / risk_dist if state.entry_price > 0 else 0.0
             bars_held = int(
                 max(
                     0.0,
@@ -320,10 +344,12 @@ def _scalper_on_data(
     if bool(getattr(self.config, "scalper_use_btc_ema_gate", False)) and not btc_gate_open:
         return
 
-    candidates = {"meanrev": [], "momentum": []}
+    candidates = {"meanrev": [], "momentum": [], "momentum_short": []}
     rejection_counts = {}
     for symbol in self.symbols[: int(self.config.scalper_universe_size)]:
-        feats = self.feature_engine.current_features(symbol.Value) or {}
+        feats = dict(self.feature_engine.current_features(symbol.Value) or {})
+        vol_cone = getattr(getattr(self, "signal_features", None), "vol_cone", None)
+        feats["vol_cone_pct"] = float(vol_cone.percentile_rank(symbol)) if vol_cone is not None else 1.0
         if not feats:
             reason = "missing_feats"
             rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
@@ -342,7 +368,7 @@ def _scalper_on_data(
         last_trade_hours_ago = (
             (self.Time - last_t).total_seconds() / 3600.0 if last_t else INFINITE_HELD_HOURS
         )
-        for sleeve in ("meanrev", "momentum"):
+        for sleeve in ("meanrev", "momentum", "momentum_short"):
             last_exit = self._scalper_last_exit_by_sleeve.get((symbol, sleeve))
             if last_exit is not None:
                 since_exit = (self.Time - last_exit).total_seconds() / 3600.0
@@ -374,7 +400,10 @@ def _scalper_on_data(
 
     if rejection_counts:
         top = sorted(rejection_counts.items(), key=lambda x: -x[1])[:5]
-        self.Debug(f"SCALPER_REJ top={top}")
+        rej_distinct = len(rejection_counts)
+        if getattr(self, "_scalper_rej_distinct_prev", None) != rej_distinct:
+            self.Debug(f"SCALPER_REJ top={top}")
+            self._scalper_rej_distinct_prev = rej_distinct
 
     slots_remaining = int(self.config.scalper_max_concurrent) - len(held)
     if slots_remaining <= 0:
@@ -383,16 +412,21 @@ def _scalper_on_data(
     by_sleeve_slots = {
         "meanrev": max(0, int(round(slots_remaining * alloc["meanrev"]))),
         "momentum": max(0, int(round(slots_remaining * alloc["momentum"]))),
+        "momentum_short": 0,
     }
-    if by_sleeve_slots["meanrev"] + by_sleeve_slots["momentum"] < slots_remaining:
-        by_sleeve_slots["meanrev"] += slots_remaining - (by_sleeve_slots["meanrev"] + by_sleeve_slots["momentum"])
+    by_sleeve_slots["momentum_short"] = max(0, by_sleeve_slots["momentum"] // 2)
+    if by_sleeve_slots["meanrev"] + by_sleeve_slots["momentum"] + by_sleeve_slots["momentum_short"] < slots_remaining:
+        by_sleeve_slots["meanrev"] += slots_remaining - (
+            by_sleeve_slots["meanrev"] + by_sleeve_slots["momentum"] + by_sleeve_slots["momentum_short"]
+        )
     ordered = {
         "meanrev": sorted(candidates["meanrev"], key=lambda x: x[1]),
         "momentum": sorted(candidates["momentum"], key=lambda x: x[1], reverse=True),
+        "momentum_short": sorted(candidates["momentum_short"], key=lambda x: x[1]),
     }
     placed_symbols = set()
     gross_now = float(getattr(self.Portfolio, "TotalHoldingsValue", 0.0) or 0.0) / max(equity, 1.0)
-    for sleeve in ("meanrev", "momentum"):
+    for sleeve in ("meanrev", "momentum", "momentum_short"):
         for symbol, z, regime in ordered[sleeve]:
             if by_sleeve_slots[sleeve] <= 0 or len(placed_symbols) >= slots_remaining:
                 break
@@ -402,7 +436,9 @@ def _scalper_on_data(
             price = float(getattr(sec, "Price", 0.0) or 0.0) if sec is not None else 0.0
             if price <= 0:
                 continue
-            feats = self.feature_engine.current_features(symbol.Value) or {}
+            feats = dict(self.feature_engine.current_features(symbol.Value) or {})
+            vol_cone = getattr(getattr(self, "signal_features", None), "vol_cone", None)
+            feats["vol_cone_pct"] = float(vol_cone.percentile_rank(symbol)) if vol_cone is not None else 1.0
             atr_pct = float(feats.get("atr_pct", 0.0) or 0.0)
             size_pct_eff = effective_position_size_pct((available_cash / equity) if equity > 0 else 0.0, config=self.config)
             qty_raw, notional = vol_target_qty(
@@ -413,28 +449,41 @@ def _scalper_on_data(
                 current_gross_exposure_pct=gross_now,
                 risk_per_trade_pct=float(getattr(self.config, "scalper_risk_per_trade_pct", 0.005) or 0.005),
                 max_symbol_exposure_pct=float(getattr(self.config, "scalper_max_symbol_exposure_pct", 0.25) or 0.25),
-                max_gross_exposure_pct=float(getattr(self.config, "scalper_max_gross_exposure_pct", 0.90) or 0.90),
+                max_gross_exposure_pct=float(getattr(self.config, "scalper_max_gross_exposure_pct", 0.95) or 0.95),
                 position_size_pct=size_pct_eff,
+                atr_stop_mult=float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5),
+                max_concurrent_positions=int(getattr(self.config, "scalper_max_concurrent", 4) or 4),
             )
             qty = round_quantity_fn(self, symbol, qty_raw)
             if qty <= 0 or notional < float(getattr(self.config, "min_notional_usd", 5.0)):
                 continue
-            ok, required, afford = can_afford(self, symbol, qty, price)
+            order_qty = -qty if sleeve == "momentum_short" else qty
+            ok, required, afford = can_afford(self, symbol, abs(order_qty), price)
             if not ok:
                 self.Debug(f"INSUFF_FUNDS sym={symbol.Value} req={required:.2f} avail={afford:.2f} tag=Scalper:{sleeve}")
                 continue
-            tag = "ScalperMom:entry" if sleeve == "momentum" else "Scalper:entry"
-            ticket = place_entry_fn(self, symbol, qty, tag=tag, signal_score=float(abs(z)))
+            tag = "ScalperMomShort:entry" if sleeve == "momentum_short" else ("ScalperMom:entry" if sleeve == "momentum" else "Scalper:entry")
+            ticket = (
+                place_limit_or_market_fn(self, symbol, order_qty, tag=tag, signal_score=float(abs(z)))
+                if sleeve == "momentum_short"
+                else place_entry_fn(self, symbol, qty, tag=tag, signal_score=float(abs(z)))
+            )
             if ticket is not None:
                 atr_abs = float(feats.get("atr", 0.0) or 0.0)
                 if atr_abs <= 0:
                     atr_abs = max(atr_pct * price, price * 0.01)
                 risk_dist = max(float(getattr(self.config, "scalper_stop_atr_mult", 1.5) or 1.5) * atr_abs, 1e-9)
-                stop_px = max(0.0, price - risk_dist)
-                tp1_px = price + risk_dist * float(getattr(self.config, "scalper_tp1_r", 1.0) or 1.0)
-                tp2_px = price + risk_dist * float(getattr(self.config, "scalper_tp2_r", 2.5) or 2.5)
+                if sleeve == "momentum_short":
+                    stop_px = price + risk_dist
+                    tp1_px = price - atr_abs * float(getattr(self.config, "scalper_tp1_atr", 1.5) or 1.5)
+                    tp2_px = price - risk_dist * float(getattr(self.config, "scalper_tp2_r", 2.5) or 2.5)
+                else:
+                    stop_px = max(0.0, price - risk_dist)
+                    tp1_px = price + atr_abs * float(getattr(self.config, "scalper_tp1_atr", 1.5) or 1.5)
+                    tp2_px = price + risk_dist * float(getattr(self.config, "scalper_tp2_r", 2.5) or 2.5)
                 risk_dollars = qty * risk_dist
-                available_cash -= qty * price
+                if sleeve != "momentum_short":
+                    available_cash -= qty * price
                 gross_now += (qty * price) / max(equity, 1.0)
                 placed_symbols.add(symbol)
                 by_sleeve_slots[sleeve] -= 1

@@ -90,7 +90,7 @@ class StrategyConfig:
     score_dd_penalty: float = 0.3
 
     # Scalper signal thresholds
-    scalper_z_entry: float = -2.3
+    scalper_z_entry: float = -2.0
     scalper_meanrev_z: float = 0.0
     scalper_overshoot_z: float = 1.0
     scalper_rsi_min: float = 20.0
@@ -108,7 +108,7 @@ class StrategyConfig:
     scalper_breakout_volume_mult: float = 1.2
 
     # Position management
-    scalper_position_size_pct: float = 0.15
+    scalper_position_size_pct: float = 0.2375
     scalper_max_concurrent: int = 4
     scalper_hard_sl_pct: float = -0.015
     scalper_time_stop_hours: float = 6.0
@@ -118,9 +118,9 @@ class StrategyConfig:
     scalper_universe_size: int = 20
     scalper_loss_cooldown_after: int = 1
     scalper_loss_cooldown_hours: float = 6.0
-    scalper_risk_per_trade_pct: float = 0.005
+    scalper_risk_per_trade_pct: float = 0.0075
     scalper_max_symbol_exposure_pct: float = 0.25
-    scalper_max_gross_exposure_pct: float = 0.90
+    scalper_max_gross_exposure_pct: float = 0.95
     scalper_corr_threshold: float = 0.85
     scalper_corr_block_count: int = 1
     scalper_max_hold_hours: float = 36.0
@@ -133,10 +133,16 @@ class StrategyConfig:
     scalper_tight_trail_atr_mult: float = 0.5
     scalper_tp1_r: float = 1.0
     scalper_tp2_r: float = 2.5
-    scalper_mr_max_hold_bars: int = 12
-    scalper_mom_max_hold_bars: int = 24
-    scalper_beta_cap: float = 1.5
+    scalper_mr_max_hold_bars: int = 8
+    scalper_mom_max_hold_bars: int = 16
+    scalper_beta_cap: float = 2.25
     scalper_beta_lookback_hours: int = 24 * 7
+    scalper_tp1_atr: float = 1.5
+    scalper_hard_stop_r_multiple: float = -1.5
+    scalper_catastrophic_stop_pct: float = -0.03
+    scalper_mr_relaxed_z_entry: float = -1.6
+    scalper_mr_relaxed_vol_cone_max_pct: float = 0.40
+    scalper_momentum_short_z_entry: float = -2.0
 
     min_qty_fallback: dict[str, float] = field(default_factory=lambda: {
         'AXSUSD': 5.0, 'SANDUSD': 10.0, 'MANAUSD': 10.0, 'ADAUSD': 10.0,

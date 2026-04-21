@@ -55,6 +55,8 @@ class PositionState:
     entry_time: datetime | None
     strategy_owner: str = "momentum"
     initial_risk_distance: float = 0.0
+    stop_price: float = 0.0
+    target_price: float = 0.0
     partial_tp_done: bool = False
     tight_trail_armed: bool = False
 
@@ -145,12 +147,13 @@ def is_invested_not_dust(algo, symbol) -> bool:
         return False
     holding = algo.Portfolio[symbol]
     qty = float(getattr(holding, "Quantity", 0.0) or 0.0)
-    if qty <= 0:
+    qty_abs = abs(qty)
+    if qty_abs <= 0:
         return False
     securities = getattr(algo, "Securities", {})
     sec = securities.get(symbol) if hasattr(securities, "get") else None
     price = float(getattr(sec, "Price", getattr(holding, "Price", 0.0)) or 0.0)
-    return qty >= get_min_quantity(algo, symbol) * 0.5 or qty * price >= get_min_notional_usd(algo, symbol) * 0.5
+    return qty_abs >= get_min_quantity(algo, symbol) * 0.5 or qty_abs * price >= get_min_notional_usd(algo, symbol) * 0.5
 
 
 def get_actual_position_count(algo) -> int:
@@ -260,7 +263,7 @@ def _order_cap_allows_submit(algo, *, is_entry: bool) -> bool:
     return True
 
 
-def _safe_submit_order(algo, symbol, quantity: float, submit_fn):
+def _safe_submit_order(algo, symbol, quantity: float, submit_fn, *, allow_short_entry: bool = False):
     qty = float(quantity or 0.0)
     if qty == 0:
         return None
@@ -271,9 +274,9 @@ def _safe_submit_order(algo, symbol, quantity: float, submit_fn):
         current = 0.0
     if qty < 0:
         post = current + qty
-        if current <= 0 or post < -POSITION_TOLERANCE:
+        if not allow_short_entry and (current <= 0 or post < -POSITION_TOLERANCE):
             sym = getattr(symbol, "Value", str(symbol))
-            debug_limited(algo, f"ORD key=blocked_short symbol={sym} qty={qty:.8f} hold={current:.8f}")
+            debug_limited(algo, f"ORD short_block {sym} {qty:.8f} {current:.8f}")
             return None
     return submit_fn()
 
@@ -302,9 +305,10 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
                 )
                 return None
     abandoned_dust = getattr(algo, "_abandoned_dust", None)
-    if quantity < 0 and abandoned_dust is not None and symbol in abandoned_dust:
+    is_short_entry = quantity < 0 and "Short:entry" in str(tag)
+    if quantity < 0 and not is_short_entry and abandoned_dust is not None and symbol in abandoned_dust:
         return None
-    if quantity < 0:
+    if quantity < 0 and not is_short_entry:
         hold = _holding_qty(algo, symbol)
         reserved = reserved_qty(algo, symbol)
         free_qty = max(0.0, hold - reserved)
@@ -332,7 +336,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             )
             return None
         quantity = -sized
-    if not _order_cap_allows_submit(algo, is_entry=(quantity > 0)):
+    if not _order_cap_allows_submit(algo, is_entry=(quantity > 0 or is_short_entry)):
         return None
     if quantity > 0 and rebalance_symbol_blocked(algo, symbol) and str(tag).startswith("Rebalance"):
         _log_once_per_hour(
@@ -360,8 +364,8 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
             if str(tag).startswith("Rebalance") or str(tag).startswith("[StaleEsc]"):
                 mark_rebalance_failure(algo, symbol, "insuff_funds")
             return None
-        ticket = _safe_submit_order(algo, symbol, quantity, lambda: algo.MarketOrder(symbol, quantity, tag=tag))
-        if ticket is not None and quantity > 0:
+        ticket = _safe_submit_order(algo, symbol, quantity, lambda: algo.MarketOrder(symbol, quantity, tag=tag), allow_short_entry=is_short_entry)
+        if ticket is not None and (quantity > 0 or is_short_entry):
             algo._orders_today = int(getattr(algo, "_orders_today", 0) or 0) + 1
         return ticket
     sec = algo.Securities[symbol]
@@ -386,7 +390,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
         )
         return None
     ok, required, available = can_afford(algo, symbol, quantity, limit_price)
-    if quantity > 0 and not ok:
+    if (quantity > 0 or is_short_entry) and not ok:
         _log_once_per_hour(
             algo,
             f"insuff:{getattr(symbol, 'Value', symbol)}",
@@ -399,10 +403,10 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
         if str(tag).startswith("Rebalance"):
             mark_rebalance_failure(algo, symbol, "insuff_funds")
         return None
-    ticket = _safe_submit_order(algo, symbol, quantity, lambda: algo.LimitOrder(symbol, quantity, limit_price, tag=tag))
+    ticket = _safe_submit_order(algo, symbol, quantity, lambda: algo.LimitOrder(symbol, quantity, limit_price, tag=tag), allow_short_entry=is_short_entry)
     if ticket is None:
         return None
-    if quantity > 0:
+    if quantity > 0 or is_short_entry:
         algo._orders_today = int(getattr(algo, "_orders_today", 0) or 0) + 1
         if str(tag).startswith("Rebalance"):
             clear_rebalance_failure(algo, symbol)
@@ -410,7 +414,7 @@ def place_limit_or_market(algo, symbol, quantity, timeout_seconds=30, tag="Entry
         "order_id": ticket.OrderId,
         "time": getattr(algo, "Time", datetime.now(timezone.utc)),
         "quantity": float(quantity),
-        "intent": "entry" if quantity > 0 else "exit",
+        "intent": "entry" if (quantity > 0 or is_short_entry) else "exit",
     }
     debug_limited(algo, f"ORD key=maker symbol={symbol.Value} qty={quantity:.8f}")
     return ticket
@@ -468,18 +472,9 @@ def smart_liquidate(algo, symbol, tag="Liquidate"):
             debug_limited(
                 algo,
                 (
-                    "DUST key=skip "
+                    "DUST_FLATTEN "
                     f"sym={getattr(symbol, 'Value', symbol)} "
-                    f"qty={qty:.10f} min_qty={min_qty:.10f} "
-                    f"notional={qty * price:.6f} min_notional={min_notional:.4f}"
-                ),
-            )
-            debug_limited(
-                algo,
-                (
-                    "DUST_PURGE "
-                    f"sym={getattr(symbol, 'Value', symbol)} "
-                    f"residual_qty={qty:.10f}"
+                    f"residual={qty:.10f}"
                 ),
             )
         return False

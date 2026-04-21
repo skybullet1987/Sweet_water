@@ -36,6 +36,10 @@ def test_exit_hard_stop():
     assert _eval(current_price=98.4) == (True, "SL")
 
 
+def test_exit_catastrophic_hard_stop():
+    assert _eval(current_price=96.8) == (True, "HardStop")
+
+
 def test_exit_time_stop():
     assert _eval(current_price=99.9, hours_held=13.0) == (True, "TimeStop")
 
@@ -54,6 +58,25 @@ def test_exit_overshoot():
 
 def test_exit_partial_tp_at_1r():
     assert _eval(current_price=101.6, z=-1.0) == (True, "TP1")
+
+
+def test_exit_trail_after_high_water_reaches_2_atr():
+    now = datetime(2025, 1, 10, tzinfo=timezone.utc)
+    entry_time = now - timedelta(hours=2)
+    out = evaluate_exit(
+        symbol="ETHUSD",
+        feats={"z_20h": -1.0},
+        entry_price=100.0,
+        entry_time=entry_time,
+        current_time=now,
+        current_price=101.9,
+        highest_close=103.0,
+        entry_atr=1.0,
+        btc_ret_1h=0.0,
+        partial_tp_done=True,
+        config=StrategyConfig(),
+    )
+    assert out == (True, "ATRStop")
 
 
 def test_exit_hard_tp_at_2_5r():

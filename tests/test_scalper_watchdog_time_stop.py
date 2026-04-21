@@ -65,7 +65,7 @@ def test_scalper_time_stop_flattens_when_brackets_never_stick(monkeypatch):
             entry_price=100.0,
             highest_close=100.0,
             entry_atr=1.0,
-            entry_time=now - timedelta(hours=30),
+            entry_time=now - timedelta(hours=23),
             strategy_owner="scalper",
             initial_risk_distance=1.5,
             stop_price=98.5,
@@ -116,6 +116,10 @@ def test_scalper_time_stop_flattens_when_brackets_never_stick(monkeypatch):
 
     monkeypatch.setattr(main_module, "smart_liquidate", _smart_liquidate)
 
+    algo._scalper_on_data(SimpleNamespace())
+    assert portfolio._holding.Quantity == 1.0
+
+    algo.Time = now + timedelta(hours=2)
     algo._scalper_on_data(SimpleNamespace())
 
     assert portfolio._holding.Quantity == 0.0

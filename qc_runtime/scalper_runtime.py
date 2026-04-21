@@ -24,9 +24,11 @@ INFINITE_HELD_HOURS = 10**9
 
 
 def _safe_open_orders(self, symbol):
+    """Return open orders for a symbol, falling back to an empty list on runtime errors."""
     try:
         return list(self.Transactions.GetOpenOrders(symbol))
-    except Exception:
+    except Exception as exc:
+        self.Debug(f"WARN OPEN_ORDERS_FETCH sym={getattr(symbol, 'Value', symbol)} err={type(exc).__name__}")
         return []
 
 
@@ -70,6 +72,7 @@ def _cancel_open_orders_for_symbol(self, symbol):
 
 
 def _force_flatten_symbol(self, symbol, *, tag: str, smart_liquidate_fn):
+    """Best-effort forced flatten: cancel open orders, then liquidate via helper or market fallback."""
     _cancel_open_orders_for_symbol(self, symbol)
     if smart_liquidate_fn(self, symbol, tag=tag):
         return True
@@ -401,22 +404,32 @@ def _scalper_on_data(
                 ),
             )
         )
+        if bars_held >= max_bars_held:
+            if _force_flatten_symbol(self, sym, tag="TimeStop", smart_liquidate_fn=smart_liquidate_fn):
+                self.Debug(f"SCALPER_EXIT sym={sym.Value} tag=TimeStop pnl=0.00% bars_held={bars_held} r_multiple=0.00")
+                self.position_state.pop(sym, None)
+                self._scalper_entry_sleeve.pop(sym, None)
+                self._scalper_last_exit_by_sleeve[(sym, sleeve)] = self.Time
+                self._scalper_last_trade_time[sym] = self.Time
+                continue
         has_sl, has_tp = _ensure_scalper_brackets(self, sym, qty_now=qty_now, side=side, state=state)
-        stale_bars = int(max(1, getattr(self.config, "scalper_stuck_hold_bars", max_bars_held) or max_bars_held))
+        stale_bars_cfg = getattr(
+            self.config,
+            "scalper_stale_position_bars",
+            getattr(self.config, "scalper_stuck_hold_bars", max_bars_held),
+        )
+        stale_bars = int(
+            max(
+                1,
+                stale_bars_cfg or max_bars_held,
+            )
+        )
         if bars_held >= stale_bars and (not has_sl or not has_tp):
             self.Debug(
                 f"STALE_POSITION sym={sym.Value} bars_held={bars_held} has_sl={has_sl} has_tp={has_tp}"
             )
             if _force_flatten_symbol(self, sym, tag="StaleExit", smart_liquidate_fn=smart_liquidate_fn):
                 self.Debug(f"SCALPER_EXIT sym={sym.Value} tag=StaleExit pnl=0.00% bars_held={bars_held} r_multiple=0.00")
-                self.position_state.pop(sym, None)
-                self._scalper_entry_sleeve.pop(sym, None)
-                self._scalper_last_exit_by_sleeve[(sym, sleeve)] = self.Time
-                self._scalper_last_trade_time[sym] = self.Time
-                continue
-        if bars_held >= max_bars_held:
-            if _force_flatten_symbol(self, sym, tag="TimeStop", smart_liquidate_fn=smart_liquidate_fn):
-                self.Debug(f"SCALPER_EXIT sym={sym.Value} tag=TimeStop pnl=0.00% bars_held={bars_held} r_multiple=0.00")
                 self.position_state.pop(sym, None)
                 self._scalper_entry_sleeve.pop(sym, None)
                 self._scalper_last_exit_by_sleeve[(sym, sleeve)] = self.Time
@@ -512,6 +525,8 @@ def _scalper_on_data(
             holding = self.Portfolio[sym]
             avg_px = float(getattr(holding, "AveragePrice", 0.0) or 0.0)
             qty = float(getattr(holding, "Quantity", 0.0) or 0.0)
+            if qty == 0.0:
+                continue
             side = -1.0 if qty < 0 else 1.0
             contrib = 0.0
             if equity > 0 and avg_px > 0 and px > 0 and qty != 0:

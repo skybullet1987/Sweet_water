@@ -33,7 +33,18 @@ import universe as universe_module
 def test_module_size_limits():
     import os
 
-    for f in ["main.py", "execution.py", "features.py", "scoring.py", "sizing.py", "risk.py", "regime.py", "reporting.py"]:
+    for f in [
+        "main.py",
+        "execution.py",
+        "features.py",
+        "scoring.py",
+        "sizing.py",
+        "risk.py",
+        "regime.py",
+        "reporting.py",
+        "scalper_runtime.py",
+        "signals.py",
+    ]:
         assert os.path.getsize(f"qc_runtime/{f}") < 60_000, f"{f} exceeds 60KB"
 
 

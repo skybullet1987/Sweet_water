@@ -7,6 +7,20 @@ from typing import Mapping
 from config import CONFIG, StrategyConfig
 
 
+def equity_kill_switch_active(*, equity: float, equity_peak: float, max_drawdown: float = 0.15) -> bool:
+    peak = max(float(equity_peak or 0.0), 0.0)
+    if peak <= 0:
+        return False
+    eq = max(float(equity or 0.0), 0.0)
+    return (eq / peak - 1.0) <= -abs(float(max_drawdown or 0.15))
+
+
+def should_auto_reset_latches(*, current_day, last_reset_day, kill_switch_active: bool) -> bool:
+    if bool(kill_switch_active):
+        return False
+    return current_day != last_reset_day
+
+
 @dataclass(frozen=True)
 class RiskDecision:
     approved: bool

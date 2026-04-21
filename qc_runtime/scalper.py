@@ -54,9 +54,11 @@ def evaluate_entry(
             return False, f"z_above_threshold:{z:.2f}"
         if regime not in {"uptrend_pullback", "ranging", "neutral"}:
             return False, f"REGIME_BLOCK:{regime}"
-        meanrev_rsi_cap = float(getattr(config, "scalper_meanrev_rsi_long_max", 30.0) or 30.0)
         rsi = float(feats.get("rsi_14", 50.0) or 50.0)
-        if rsi >= meanrev_rsi_cap:
+        if not (config.scalper_rsi_min <= rsi <= config.scalper_rsi_max):
+            return False, f"rsi_out_of_band:{rsi:.1f}"
+        meanrev_rsi_cap = float(getattr(config, "scalper_meanrev_rsi_long_max", 30.0) or 30.0)
+        if rsi > meanrev_rsi_cap:
             return False, f"mr_rsi_confirm_fail:{rsi:.1f}"
         close = float(feats.get("close", feats.get("price", 0.0)) or 0.0)
         atr = float(feats.get("atr", 0.0) or 0.0)
@@ -145,10 +147,10 @@ def evaluate_exit(
     r_multiple = (current_price - entry_price) / max(base_risk, 1e-9)
     if current_price <= trailing_stop:
         return True, "SL" if current_price <= entry_price else "ATRStop"
-    if (not partial_tp_done) and r_multiple >= float(getattr(config, "scalper_tp1_r", 1.0) or 1.0):
-        return True, "TP1"
     if r_multiple >= float(getattr(config, "scalper_tp2_r", 2.5) or 2.5):
         return True, "TP"
+    if (not partial_tp_done) and r_multiple >= float(getattr(config, "scalper_tp1_r", 1.0) or 1.0):
+        return True, "TP1"
     stop_hours = float(
         getattr(config, "scalper_mom_max_hold_bars", 24) if sleeve == "momentum" else getattr(config, "scalper_mr_max_hold_bars", 12)
     )

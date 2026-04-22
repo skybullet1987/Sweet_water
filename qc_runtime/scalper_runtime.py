@@ -92,22 +92,24 @@ def _force_flatten_symbol(self, symbol, *, tag: str, smart_liquidate_fn):
 def _ensure_scalper_brackets(self, symbol, *, qty_now: float, side: int, state):
     stop_px = float(getattr(state, "stop_price", 0.0) or 0.0)
     tp_px = float(getattr(state, "take_profit_price", 0.0) or 0.0)
+    bracket_skip_logged = bool(getattr(state, "bracket_skip_logged", False))
     if stop_px <= 0 or tp_px <= 0:
-        if not state.bracket_skip_logged:
+        if not bracket_skip_logged:
             self.Debug(
                 f"BRACKET_SKIP sym={getattr(symbol, 'Value', symbol)} "
                 f"reason=invalid_prices stop={stop_px:.6f} tp={tp_px:.6f}"
             )
-            state.bracket_skip_logged = True
+            setattr(state, "bracket_skip_logged", True)
         return False, False
-    state.bracket_skip_logged = False
+    setattr(state, "bracket_skip_logged", False)
     qty_abs = abs(qty_now)
     if qty_abs <= 0:
+        setattr(state, "bracket_attempted_qty", 0.0)
         return True, True
     exit_qty = -qty_abs if side > 0 else qty_abs
     price_tol = 1e-6
     qty_tol = 1e-9
-    attempted_qty = float(state.bracket_attempted_qty or 0.0)
+    attempted_qty = float(getattr(state, "bracket_attempted_qty", 0.0) or 0.0)
     has_sl = False
     has_tp = False
     for order in _safe_open_orders(self, symbol):
@@ -127,7 +129,7 @@ def _ensure_scalper_brackets(self, symbol, *, qty_now: float, side: int, state):
             if opx is not None and abs(float(opx) - tp_px) <= price_tol:
                 has_tp = True
     if has_sl and has_tp:
-        state.bracket_attempted_qty = qty_abs
+        setattr(state, "bracket_attempted_qty", qty_abs)
         return True, True
     if abs(attempted_qty - qty_abs) <= qty_tol:
         return has_sl, has_tp
@@ -140,7 +142,7 @@ def _ensure_scalper_brackets(self, symbol, *, qty_now: float, side: int, state):
         f"BRACKET_REARM sym={getattr(symbol, 'Value', symbol)} reason={'+'.join(reasons)} "
         f"stop={stop_px:.6f} tp={tp_px:.6f}"
     )
-    state.bracket_attempted_qty = qty_abs
+    setattr(state, "bracket_attempted_qty", qty_abs)
     if not has_sl:
         try:
             self.StopMarketOrder(symbol, exit_qty, stop_px, tag="SL")

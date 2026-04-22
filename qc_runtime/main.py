@@ -1032,7 +1032,12 @@ class SweetWaterPhase1(QCAlgorithm):
         except Exception:
             qty_now = 0.0
         if qty_now <= 0:
+            state = self.position_state.get(symbol)
+            if state is not None:
+                setattr(state, "bracket_attempted_qty", 0.0)
             self.position_state.pop(symbol, None)
+            # Legacy/persisted runtime snapshots may still key `position_state` by ticker string.
+            self.position_state.pop(getattr(symbol, "Value", str(symbol)), None)
             try:
                 from execution import is_invested_not_dust
 
@@ -1101,6 +1106,8 @@ class SweetWaterPhase1(QCAlgorithm):
                         else fill_px + atr_eff * partial_tp_atr_mult
                     ),
                     trail_anchor_price=fill_px,
+                    bracket_attempted_qty=0.0,
+                    bracket_skip_logged=False,
                 )
         if symbol is not None and tag.startswith("Rebalance"):
             clear_rebalance_failure(self, symbol)

@@ -171,7 +171,7 @@ class RegimeEngine:
         self.vol_stress = 0.0
         self._btc_below_ema = False
         self._btc_close_history = deque(maxlen=BTC_EMA_PERIOD_HOURS)
-        self._btc_above_ema30d = True
+        self._btc_above_ema30d = False
         self.hurst = HurstRegimeModel(window=5000)
         self.vr = VarianceRatioRegimeModel(window=5000, min_samples=500)
 

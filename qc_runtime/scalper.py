@@ -9,6 +9,11 @@ try:
 except ModuleNotFoundError:
     from .config import CONFIG  # type: ignore
 
+_BAR_RESOLUTION = str(getattr(CONFIG, "bar_resolution", "Hour")).lower()
+assert (
+    _BAR_RESOLUTION == "hour"
+), f'qc_runtime/scalper requires bar_resolution="Hour" for correct hold-time stop calculations. Current value: {_BAR_RESOLUTION}'
+
 
 @dataclass
 class ScalperDecision:
@@ -199,6 +204,7 @@ def evaluate_exit(
     stop_hours = float(
         getattr(config, "scalper_mom_max_hold_bars", 24) if sleeve == "momentum" else getattr(config, "scalper_mr_max_hold_bars", 12)
     )
+    # NOTE: *_max_hold_bars is interpreted as hours because qc_runtime is hourly.
     if hours_held >= stop_hours:
         if pnl_pct <= 0:
             return True, "TimeStop"
@@ -258,7 +264,7 @@ def vol_target_qty(
 ) -> tuple[float, float]:
     if equity <= 0 or price <= 0:
         return 0.0, 0.0
-    atr_pct = max(float(atr_pct or 0.0), 0.0025)
+    atr_pct = max(float(atr_pct or 0.0), 0.0005)
     risk_budget = max(0.0, float(equity) * float(risk_per_trade_pct))
     raw_notional = risk_budget / max(float(atr_stop_mult) * atr_pct, 1e-9)
     max_symbol_notional = float(equity) * float(max_symbol_exposure_pct)

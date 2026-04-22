@@ -51,15 +51,15 @@ def test_module_size_limits():
 def test_strategy_config_defaults_updated():
     cfg = StrategyConfig()
     assert cfg.universe_size == 40
-    assert cfg.top_k == 10
+    assert cfg.top_k == 3
     assert cfg.max_positions == 10
-    assert cfg.edge_cost_multiplier == 1.0
+    assert cfg.edge_cost_multiplier == 3.0
     assert cfg.edge_scale == 0.025
     assert cfg.score_threshold == 0.0
     assert cfg.score_clip_value == 3.0
     assert cfg.min_rebalance_weight_delta == 0.01
     assert cfg.max_replacements_per_rebalance == 4
-    assert cfg.rebalance_cadence_hours == 24
+    assert cfg.rebalance_cadence_hours == 168
     assert cfg.vol_stress_threshold == 0.85
     assert cfg.warmup_bars == 24
     assert cfg.max_position_pct == 0.20
@@ -398,13 +398,14 @@ class TestPhaseRequirements:
         algo = self._build_algo()
         algo.Initialize()
         symbol = algo.symbol_by_ticker["SOLUSD"]
-        for i in range(6):
+        cap = int(getattr(algo.config, "max_orders_per_day", 0) or 0)
+        for i in range(cap):
             algo.Time = datetime(2025, 1, 6, i, tzinfo=timezone.utc)
             assert place_limit_or_market(algo, symbol, 0.01, force_market=True, tag=f"manual{i}") is not None
             assert int(getattr(algo, "_orders_today", 0) or 0) == i + 1
         before = len(algo._order_calls)
-        algo.Time = datetime(2025, 1, 6, 7, tzinfo=timezone.utc)
-        assert place_limit_or_market(algo, symbol, 0.01, force_market=True, tag="manual7") is None
+        algo.Time = datetime(2025, 1, 6, cap + 1, tzinfo=timezone.utc)
+        assert place_limit_or_market(algo, symbol, 0.01, force_market=True, tag=f"manual{cap}") is None
         assert len(algo._order_calls) == before
 
     def test_risk_reduce_when_btc_momentum_negative(self):
@@ -469,6 +470,7 @@ class TestPhaseRequirements:
         algo = self._build_algo()
         algo.Initialize()
         algo.config = StrategyConfig(strategy_mode="momentum")
+        algo.regime_engine._btc_above_ema30d = True
         symbol = algo.symbol_by_ticker["SOLUSD"]
         called = {}
         algo._score_candidates = lambda _data: ("risk_reduce", [(symbol, 0.9, {})])

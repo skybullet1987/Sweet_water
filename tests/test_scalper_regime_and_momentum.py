@@ -25,7 +25,7 @@ def test_regime_for_identifies_pullback_and_breakout():
 def test_momentum_entry_needs_breakout_and_volume_confirmation():
     cfg = StrategyConfig()
     feats = {
-        "z_20h": 2.5,
+        "z_20h": 3.1,
         "rsi_14": 55.0,
         "rv_21d": 0.6,
         "close": 130.0,
@@ -42,7 +42,7 @@ def test_momentum_entry_needs_breakout_and_volume_confirmation():
         btc_ret_1h=0.0,
         btc_ret_6h=0.0,
         has_position=False,
-        last_trade_hours_ago=10.0,
+        last_trade_hours_ago=13.0,
         available_cash_pct=0.5,
         daily_pnl_pct=0.0,
         consecutive_losses_for_symbol=0,
@@ -58,7 +58,7 @@ def test_momentum_entry_needs_breakout_and_volume_confirmation():
         btc_ret_1h=0.0,
         btc_ret_6h=0.0,
         has_position=False,
-        last_trade_hours_ago=10.0,
+        last_trade_hours_ago=13.0,
         available_cash_pct=0.5,
         daily_pnl_pct=0.0,
         consecutive_losses_for_symbol=0,
@@ -75,7 +75,7 @@ def test_momentum_entry_needs_breakout_and_volume_confirmation():
         btc_ret_1h=0.0,
         btc_ret_6h=0.0,
         has_position=False,
-        last_trade_hours_ago=10.0,
+        last_trade_hours_ago=13.0,
         available_cash_pct=0.5,
         daily_pnl_pct=0.0,
         consecutive_losses_for_symbol=0,
@@ -105,7 +105,7 @@ def test_momentum_short_entry_path():
         btc_ret_1h=0.0,
         btc_ret_6h=0.0,
         has_position=False,
-        last_trade_hours_ago=10.0,
+        last_trade_hours_ago=13.0,
         available_cash_pct=0.5,
         daily_pnl_pct=0.0,
         consecutive_losses_for_symbol=0,
@@ -121,7 +121,7 @@ def test_momentum_short_entry_path():
         btc_ret_1h=0.0,
         btc_ret_6h=0.0,
         has_position=False,
-        last_trade_hours_ago=10.0,
+        last_trade_hours_ago=13.0,
         available_cash_pct=0.5,
         daily_pnl_pct=0.0,
         consecutive_losses_for_symbol=0,
@@ -177,3 +177,24 @@ def test_vol_target_qty_uses_risk_budget_with_atr_stop_mult():
     )
     assert qty > 0
     assert notional <= 237.5 + 1e-9
+
+
+def test_vol_target_qty_uses_lower_atr_floor():
+    qty, notional = vol_target_qty(
+        equity=1_000.0,
+        price=100.0,
+        atr_pct=0.0001,
+        available_cash=1_000_000.0,
+        current_gross_exposure_pct=0.0,
+        risk_per_trade_pct=0.01,
+        max_symbol_exposure_pct=1_000.0,
+        max_gross_exposure_pct=1_000.0,
+        position_size_pct=1_000.0,
+        atr_stop_mult=1.5,
+        max_concurrent_positions=1,
+    )
+    expected_notional_new_floor = 10.0 / (1.5 * 0.0005)
+    old_floor_notional = 10.0 / (1.5 * 0.0025)
+    assert abs(notional - expected_notional_new_floor) < 1e-9
+    assert abs(qty - (expected_notional_new_floor / 100.0)) < 1e-9
+    assert notional > old_floor_notional

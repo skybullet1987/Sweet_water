@@ -58,6 +58,152 @@ def _order_stop_price(order) -> float | None:
     return float(value)
 
 
+def _order_id(order):
+    oid = getattr(order, "Id", None)
+    if oid is None:
+        oid = getattr(order, "OrderId", None)
+    return oid
+
+
+def _update_order_ticket(self, order, *, quantity=None, stop_price=None, limit_price=None, tag=None) -> bool:
+    oid = _order_id(order)
+    if oid is None:
+        return False
+    try:
+        ticket = self.Transactions.GetOrderTicket(int(oid))
+    except Exception:
+        ticket = None
+    if ticket is None or not hasattr(ticket, "Update"):
+        return False
+    try:
+        try:
+            from AlgorithmImports import UpdateOrderFields  # type: ignore
+
+            fields = UpdateOrderFields()
+        except Exception:
+            fields = type("UpdateOrderFields", (), {})()
+        if quantity is not None:
+            fields.Quantity = float(quantity)
+        if stop_price is not None:
+            fields.StopPrice = float(stop_price)
+        if limit_price is not None:
+            fields.LimitPrice = float(limit_price)
+        if tag is not None:
+            fields.Tag = str(tag)
+        ticket.Update(fields)
+        return True
+    except Exception:
+        return False
+
+
+def _sync_scalper_brackets(self, symbol, *, qty_now: float, side: int, state, allow_submit: bool):
+    stop_px = float(getattr(state, "stop_price", 0.0) or 0.0)
+    tp_px = float(getattr(state, "take_profit_price", 0.0) or 0.0)
+    bracket_skip_logged = bool(getattr(state, "bracket_skip_logged", False))
+    qty_abs = abs(float(qty_now or 0.0))
+    if qty_abs <= 0:
+        setattr(state, "bracket_attempted_qty", 0.0)
+        return {"has_sl": True, "has_tp": True, "sl_qty": 0.0, "sl_px": 0.0, "tp_qty": 0.0, "tp_px": 0.0, "active_orders": 0}
+    if stop_px <= 0 or tp_px <= 0:
+        if not bracket_skip_logged:
+            self.Debug(
+                f"BRACKET_SKIP sym={getattr(symbol, 'Value', symbol)} "
+                f"reason=invalid_prices stop={stop_px:.6f} tp={tp_px:.6f}"
+            )
+            setattr(state, "bracket_skip_logged", True)
+        return {"has_sl": False, "has_tp": False, "sl_qty": 0.0, "sl_px": stop_px, "tp_qty": 0.0, "tp_px": tp_px, "active_orders": 0}
+    setattr(state, "bracket_skip_logged", False)
+
+    exit_qty = -qty_abs if side > 0 else qty_abs
+    price_tol = 1e-6
+    qty_tol = 1e-9
+    sl_order = None
+    tp_order = None
+    active_orders = 0
+    for order in _safe_open_orders(self, symbol):
+        tag = _order_tag(order)
+        if tag not in {"SL", "TP"}:
+            continue
+        active_orders += 1
+        if tag == "SL" and sl_order is None:
+            sl_order = order
+        elif tag == "TP" and tp_order is None:
+            tp_order = order
+
+    has_sl = False
+    has_tp = False
+    sl_qty = 0.0
+    sl_order_px = 0.0
+    tp_qty = 0.0
+    tp_order_px = 0.0
+
+    if sl_order is not None:
+        sl_qty = float(_order_qty_abs(sl_order) or 0.0)
+        opx = _order_stop_price(sl_order)
+        sl_order_px = float(opx) if opx is not None else 0.0
+        has_sl = (sl_qty > qty_tol) and abs(sl_qty - qty_abs) <= qty_tol and opx is not None and abs(sl_order_px - stop_px) <= price_tol
+
+    if tp_order is not None:
+        tp_qty = float(_order_qty_abs(tp_order) or 0.0)
+        opx = _order_limit_price(tp_order)
+        tp_order_px = float(opx) if opx is not None else 0.0
+        has_tp = (tp_qty > qty_tol) and abs(tp_qty - qty_abs) <= qty_tol and opx is not None and abs(tp_order_px - tp_px) <= price_tol
+
+    if sl_order is not None and not has_sl:
+        if _update_order_ticket(self, sl_order, quantity=exit_qty, stop_price=stop_px, tag="SL"):
+            has_sl = True
+            sl_qty = qty_abs
+            sl_order_px = stop_px
+    if tp_order is not None and not has_tp:
+        if _update_order_ticket(self, tp_order, quantity=exit_qty, limit_price=tp_px, tag="TP"):
+            has_tp = True
+            tp_qty = qty_abs
+            tp_order_px = tp_px
+
+    if allow_submit:
+        if not (has_sl and has_tp) and abs(float(getattr(state, "bracket_attempted_qty", 0.0) or 0.0) - qty_abs) > qty_tol:
+            reasons = []
+            if not has_sl:
+                reasons.append("missing_sl")
+            if not has_tp:
+                reasons.append("missing_tp")
+            self.Debug(
+                f"BRACKET_REARM sym={getattr(symbol, 'Value', symbol)} reason={'+'.join(reasons)} "
+                f"stop={stop_px:.6f} tp={tp_px:.6f}"
+            )
+            setattr(state, "bracket_attempted_qty", qty_abs)
+            if not has_sl and sl_order is None:
+                try:
+                    self.StopMarketOrder(symbol, exit_qty, stop_px, tag="SL")
+                    has_sl = True
+                    sl_qty = qty_abs
+                    sl_order_px = stop_px
+                    active_orders += 1
+                except Exception:
+                    pass
+            if not has_tp and tp_order is None:
+                try:
+                    self.LimitOrder(symbol, exit_qty, tp_px, tag="TP")
+                    has_tp = True
+                    tp_qty = qty_abs
+                    tp_order_px = tp_px
+                    active_orders += 1
+                except Exception:
+                    pass
+    if has_sl and has_tp:
+        setattr(state, "bracket_attempted_qty", qty_abs)
+
+    return {
+        "has_sl": has_sl,
+        "has_tp": has_tp,
+        "sl_qty": sl_qty,
+        "sl_px": sl_order_px,
+        "tp_qty": tp_qty,
+        "tp_px": tp_order_px,
+        "active_orders": active_orders,
+    }
+
+
 def _cancel_open_orders_for_symbol(self, symbol):
     for order in _safe_open_orders(self, symbol):
         oid = getattr(order, "Id", None)
@@ -90,72 +236,8 @@ def _force_flatten_symbol(self, symbol, *, tag: str, smart_liquidate_fn):
 
 
 def _ensure_scalper_brackets(self, symbol, *, qty_now: float, side: int, state):
-    stop_px = float(getattr(state, "stop_price", 0.0) or 0.0)
-    tp_px = float(getattr(state, "take_profit_price", 0.0) or 0.0)
-    bracket_skip_logged = bool(getattr(state, "bracket_skip_logged", False))
-    if stop_px <= 0 or tp_px <= 0:
-        if not bracket_skip_logged:
-            self.Debug(
-                f"BRACKET_SKIP sym={getattr(symbol, 'Value', symbol)} "
-                f"reason=invalid_prices stop={stop_px:.6f} tp={tp_px:.6f}"
-            )
-            setattr(state, "bracket_skip_logged", True)
-        return False, False
-    setattr(state, "bracket_skip_logged", False)
-    qty_abs = abs(qty_now)
-    if qty_abs <= 0:
-        setattr(state, "bracket_attempted_qty", 0.0)
-        return True, True
-    exit_qty = -qty_abs if side > 0 else qty_abs
-    price_tol = 1e-6
-    qty_tol = 1e-9
-    attempted_qty = float(getattr(state, "bracket_attempted_qty", 0.0) or 0.0)
-    has_sl = False
-    has_tp = False
-    for order in _safe_open_orders(self, symbol):
-        if _order_qty_abs(order) <= qty_tol:
-            continue
-        if abs(_order_qty_abs(order) - qty_abs) > qty_tol:
-            continue
-        tag = _order_tag(order)
-        if tag not in {"SL", "TP"}:
-            continue
-        if tag == "SL":
-            opx = _order_stop_price(order)
-            if opx is not None and abs(float(opx) - stop_px) <= price_tol:
-                has_sl = True
-        elif tag == "TP":
-            opx = _order_limit_price(order)
-            if opx is not None and abs(float(opx) - tp_px) <= price_tol:
-                has_tp = True
-    if has_sl and has_tp:
-        setattr(state, "bracket_attempted_qty", qty_abs)
-        return True, True
-    if abs(attempted_qty - qty_abs) <= qty_tol:
-        return has_sl, has_tp
-    reasons = []
-    if not has_sl:
-        reasons.append("missing_sl")
-    if not has_tp:
-        reasons.append("missing_tp")
-    self.Debug(
-        f"BRACKET_REARM sym={getattr(symbol, 'Value', symbol)} reason={'+'.join(reasons)} "
-        f"stop={stop_px:.6f} tp={tp_px:.6f}"
-    )
-    setattr(state, "bracket_attempted_qty", qty_abs)
-    if not has_sl:
-        try:
-            self.StopMarketOrder(symbol, exit_qty, stop_px, tag="SL")
-            has_sl = True
-        except Exception:
-            pass
-    if not has_tp:
-        try:
-            self.LimitOrder(symbol, exit_qty, tp_px, tag="TP")
-            has_tp = True
-        except Exception:
-            pass
-    return has_sl, has_tp
+    details = _sync_scalper_brackets(self, symbol, qty_now=qty_now, side=side, state=state, allow_submit=False)
+    return bool(details.get("has_sl")), bool(details.get("has_tp"))
 
 def _scalper_sleeve_allocations(self) -> dict[str, float]:
     def _sharpe(values):
@@ -432,7 +514,18 @@ def _scalper_on_data(
                 self._scalper_last_exit_by_sleeve[(sym, sleeve)] = self.Time
                 self._scalper_last_trade_time[sym] = self.Time
                 continue
-        has_sl, has_tp = _ensure_scalper_brackets(self, sym, qty_now=qty_now, side=side, state=state)
+        bracket_details = _sync_scalper_brackets(self, sym, qty_now=qty_now, side=side, state=state, allow_submit=False)
+        has_sl = bool(bracket_details.get("has_sl"))
+        has_tp = bool(bracket_details.get("has_tp"))
+        self.Debug(
+            "BRACKET_AUDIT "
+            f"sym={sym.Value} "
+            f"sl_qty={float(bracket_details.get('sl_qty', 0.0) or 0.0):.8f} "
+            f"sl_px={float(bracket_details.get('sl_px', 0.0) or 0.0):.6f} "
+            f"tp_qty={float(bracket_details.get('tp_qty', 0.0) or 0.0):.8f} "
+            f"tp_px={float(bracket_details.get('tp_px', 0.0) or 0.0):.6f} "
+            f"active_orders={int(bracket_details.get('active_orders', 0) or 0)}"
+        )
         stale_bars_cfg = getattr(
             self.config,
             "scalper_stale_position_bars",

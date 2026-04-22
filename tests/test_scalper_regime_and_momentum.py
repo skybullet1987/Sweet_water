@@ -184,16 +184,17 @@ def test_vol_target_qty_uses_lower_atr_floor():
         equity=1_000.0,
         price=100.0,
         atr_pct=0.0001,
-        available_cash=10_000.0,
+        available_cash=1_000_000.0,
         current_gross_exposure_pct=0.0,
         risk_per_trade_pct=0.01,
-        max_symbol_exposure_pct=5.0,
-        max_gross_exposure_pct=5.0,
-        position_size_pct=3.0,
+        max_symbol_exposure_pct=1_000.0,
+        max_gross_exposure_pct=1_000.0,
+        position_size_pct=1_000.0,
         atr_stop_mult=1.5,
         max_concurrent_positions=1,
     )
+    expected_notional_new_floor = 10.0 / (1.5 * 0.0005)
     old_floor_notional = 10.0 / (1.5 * 0.0025)
-    old_floor_qty = old_floor_notional / 100.0
-    assert abs(notional - 3000.0) < 1e-9
-    assert qty > old_floor_qty
+    assert abs(notional - expected_notional_new_floor) < 1e-9
+    assert abs(qty - (expected_notional_new_floor / 100.0)) < 1e-9
+    assert notional > old_floor_notional

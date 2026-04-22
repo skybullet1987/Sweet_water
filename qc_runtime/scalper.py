@@ -10,7 +10,9 @@ except ModuleNotFoundError:
     from .config import CONFIG  # type: ignore
 
 _BAR_RESOLUTION = str(getattr(CONFIG, "bar_resolution", "Hour")).lower()
-assert _BAR_RESOLUTION == "hour", "qc_runtime/scalper assumes hourly bars for hold-time stop comparisons."
+assert (
+    _BAR_RESOLUTION == "hour"
+), f'qc_runtime/scalper requires bar_resolution="Hour" for correct hold-time stop calculations. Current value: {_BAR_RESOLUTION}'
 
 
 @dataclass

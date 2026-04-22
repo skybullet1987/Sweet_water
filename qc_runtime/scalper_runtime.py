@@ -140,14 +140,14 @@ def _sync_scalper_brackets(self, symbol, *, qty_now: float, side: int, state, al
     if sl_order is not None:
         sl_qty = float(_order_qty_abs(sl_order) or 0.0)
         opx = _order_stop_price(sl_order)
-        sl_order_px = float(opx or 0.0)
-        has_sl = (sl_qty > qty_tol) and abs(sl_qty - qty_abs) <= qty_tol and opx is not None and abs(float(opx) - stop_px) <= price_tol
+        sl_order_px = float(opx) if opx is not None else 0.0
+        has_sl = (sl_qty > qty_tol) and abs(sl_qty - qty_abs) <= qty_tol and opx is not None and abs(sl_order_px - stop_px) <= price_tol
 
     if tp_order is not None:
         tp_qty = float(_order_qty_abs(tp_order) or 0.0)
         opx = _order_limit_price(tp_order)
-        tp_order_px = float(opx or 0.0)
-        has_tp = (tp_qty > qty_tol) and abs(tp_qty - qty_abs) <= qty_tol and opx is not None and abs(float(opx) - tp_px) <= price_tol
+        tp_order_px = float(opx) if opx is not None else 0.0
+        has_tp = (tp_qty > qty_tol) and abs(tp_qty - qty_abs) <= qty_tol and opx is not None and abs(tp_order_px - tp_px) <= price_tol
 
     if sl_order is not None and not has_sl:
         if _update_order_ticket(self, sl_order, quantity=exit_qty, stop_price=stop_px, tag="SL"):
@@ -161,8 +161,7 @@ def _sync_scalper_brackets(self, symbol, *, qty_now: float, side: int, state, al
             tp_order_px = tp_px
 
     if allow_submit:
-        attempted_qty = float(getattr(state, "bracket_attempted_qty", 0.0) or 0.0)
-        if not (has_sl and has_tp) and abs(attempted_qty - qty_abs) > qty_tol:
+        if not (has_sl and has_tp) and abs(float(getattr(state, "bracket_attempted_qty", 0.0) or 0.0) - qty_abs) > qty_tol:
             reasons = []
             if not has_sl:
                 reasons.append("missing_sl")

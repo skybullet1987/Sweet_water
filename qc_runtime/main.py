@@ -1107,8 +1107,6 @@ class SweetWaterPhase1(QCAlgorithm):
                         else fill_px + atr_eff * partial_tp_atr_mult
                     ),
                     trail_anchor_price=fill_px,
-                    bracket_attempted_qty=0.0,
-                    bracket_skip_logged=False,
                 )
         if qty_now > 0 and symbol is not None:
             state = self.position_state.get(symbol)

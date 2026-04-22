@@ -398,13 +398,14 @@ class TestPhaseRequirements:
         algo = self._build_algo()
         algo.Initialize()
         symbol = algo.symbol_by_ticker["SOLUSD"]
-        for i in range(6):
+        cap = int(getattr(algo.config, "max_orders_per_day", 0) or 0)
+        for i in range(cap):
             algo.Time = datetime(2025, 1, 6, i, tzinfo=timezone.utc)
             assert place_limit_or_market(algo, symbol, 0.01, force_market=True, tag=f"manual{i}") is not None
             assert int(getattr(algo, "_orders_today", 0) or 0) == i + 1
         before = len(algo._order_calls)
-        algo.Time = datetime(2025, 1, 6, 7, tzinfo=timezone.utc)
-        assert place_limit_or_market(algo, symbol, 0.01, force_market=True, tag="manual7") is None
+        algo.Time = datetime(2025, 1, 6, cap + 1, tzinfo=timezone.utc)
+        assert place_limit_or_market(algo, symbol, 0.01, force_market=True, tag=f"manual{cap}") is None
         assert len(algo._order_calls) == before
 
     def test_risk_reduce_when_btc_momentum_negative(self):
@@ -469,6 +470,7 @@ class TestPhaseRequirements:
         algo = self._build_algo()
         algo.Initialize()
         algo.config = StrategyConfig(strategy_mode="momentum")
+        algo.regime_engine._btc_above_ema30d = True
         symbol = algo.symbol_by_ticker["SOLUSD"]
         called = {}
         algo._score_candidates = lambda _data: ("risk_reduce", [(symbol, 0.9, {})])

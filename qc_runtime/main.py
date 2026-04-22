@@ -1065,7 +1065,8 @@ class SweetWaterPhase1(QCAlgorithm):
                     return
             except Exception:
                 pass
-        if qty_now > 0:
+        is_entry_fill = ":entry" in tag.lower()
+        if qty_now > 0 and is_entry_fill:
             feats = self.feature_engine.current_features(symbol.Value)
             atr = float(feats.get("atr", 0.0) or 0.0)
             fill_px = float(getattr(event, "FillPrice", 0.0) or 0.0)
@@ -1109,6 +1110,22 @@ class SweetWaterPhase1(QCAlgorithm):
                     bracket_attempted_qty=0.0,
                     bracket_skip_logged=False,
                 )
+        if qty_now > 0 and symbol is not None:
+            state = self.position_state.get(symbol)
+            if state is not None and getattr(state, "strategy_owner", "") in {"scalper", "scalper_momentum"}:
+                try:
+                    from scalper_runtime import _sync_scalper_brackets
+
+                    _sync_scalper_brackets(
+                        self,
+                        symbol,
+                        qty_now=qty_now,
+                        side=(-1 if qty_now < 0 else 1),
+                        state=state,
+                        allow_submit=is_entry_fill,
+                    )
+                except Exception:
+                    pass
         if symbol is not None and tag.startswith("Rebalance"):
             clear_rebalance_failure(self, symbol)
 

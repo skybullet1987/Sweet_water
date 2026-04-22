@@ -125,13 +125,12 @@ def test_scalper_time_stop_flattens_when_brackets_never_stick(monkeypatch):
 
     assert portfolio._holding.Quantity == 0.0
     assert sym not in algo.position_state
-    assert any("BRACKET_REARM sym=XRPUSD" in line for line in logs)
+    assert any("BRACKET_AUDIT sym=XRPUSD" in line for line in logs)
     assert any("SCALPER_EXIT sym=XRPUSD tag=TimeStop" in line for line in logs)
-    assert ("SL", -1.0) in submitted
-    assert ("TP", -1.0) in submitted
+    assert submitted == []
 
 
-def test_bracket_submitter_idempotent_for_same_position_size():
+def test_bracket_checker_does_not_submit_when_called_from_on_data():
     sym = _Symbol("SOLUSD")
     submitted: list[tuple[str, float, float]] = []
     state = PositionState(
@@ -151,9 +150,10 @@ def test_bracket_submitter_idempotent_for_same_position_size():
 
     assert hasattr(state, "bracket_attempted_qty")
     delattr(state, "bracket_attempted_qty")
-    _ensure_scalper_brackets(algo, sym, qty_now=1.0, side=1, state=state)
-    assert state.bracket_attempted_qty == 1.0
+    has_sl, has_tp = _ensure_scalper_brackets(algo, sym, qty_now=1.0, side=1, state=state)
     _ensure_scalper_brackets(algo, sym, qty_now=1.0, side=1, state=state)
 
-    assert submitted == [("SL", -1.0, 98.5), ("TP", -1.0, 102.5)]
-    assert state.bracket_attempted_qty == 1.0
+    assert not has_sl
+    assert not has_tp
+    assert submitted == []
+    assert state.bracket_attempted_qty == 0.0

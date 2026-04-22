@@ -21,18 +21,18 @@ class Sizer:
 
     def _kelly_estimate(self) -> float:
         if len(self.trade_outcomes) < 20:
-            return 0.10
+            return 0.05
         wins = [x for x in self.trade_outcomes if x > 0]
         losses = [-x for x in self.trade_outcomes if x < 0]
         p = len(wins) / max(len(self.trade_outcomes), 1)
         avg_win = sum(wins) / len(wins) if wins else 0.0
         avg_loss = sum(losses) / len(losses) if losses else 0.0
         if avg_loss <= 1e-12:
-            return 0.10
+            return min(float(self.config.kelly_cap), 0.10)
         b = avg_win / avg_loss
         if b <= 1e-12:
             return 0.0
-        return max(0.0, p - (1.0 - p) / b)
+        return min(float(self.config.kelly_cap), max(0.0, p - (1.0 - p) / b))
 
     def _vol_weight(self, realized_vol_annual: float) -> float:
         vol = max(float(realized_vol_annual), 1e-9)

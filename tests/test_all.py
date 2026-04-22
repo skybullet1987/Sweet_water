@@ -51,15 +51,15 @@ def test_module_size_limits():
 def test_strategy_config_defaults_updated():
     cfg = StrategyConfig()
     assert cfg.universe_size == 40
-    assert cfg.top_k == 10
+    assert cfg.top_k == 3
     assert cfg.max_positions == 10
-    assert cfg.edge_cost_multiplier == 1.0
+    assert cfg.edge_cost_multiplier == 3.0
     assert cfg.edge_scale == 0.025
     assert cfg.score_threshold == 0.0
     assert cfg.score_clip_value == 3.0
     assert cfg.min_rebalance_weight_delta == 0.01
     assert cfg.max_replacements_per_rebalance == 4
-    assert cfg.rebalance_cadence_hours == 24
+    assert cfg.rebalance_cadence_hours == 168
     assert cfg.vol_stress_threshold == 0.85
     assert cfg.warmup_bars == 24
     assert cfg.max_position_pct == 0.20

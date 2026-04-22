@@ -17,9 +17,9 @@ class StrategyConfig:
     bar_resolution: str = "Hour"
     warmup_bars: int = 24
     universe_size: int = 40
-    top_k: int = 10
+    top_k: int = 3
     signal_mode: str = "cross_sectional_momentum"
-    strategy_mode: str = "scalper"  # "scalper" | "momentum"
+    strategy_mode: str = "momentum"  # "scalper" | "momentum"
 
     # Sizing
     target_annual_vol: float = 0.30
@@ -34,7 +34,7 @@ class StrategyConfig:
     expected_round_trip_fees: float = 0.0065
     cost_gate_multiplier: float = 2.5
     # cost_gate_multiplier is retained for legacy paths; edge_cost_multiplier is used by the new cross-sectional momentum gate.
-    edge_cost_multiplier: float = 1.0
+    edge_cost_multiplier: float = 3.0
     edge_scale: float = 0.025
     assumed_spread_bps: float = 12.0
     assumed_slippage_bps: float = 8.0
@@ -63,9 +63,9 @@ class StrategyConfig:
     cross_section_weight: float = 0.40
     micro_entry_threshold: float = 0.45
     micro_flatten_threshold: float = 0.06
-    max_orders_per_day: int = 6
-    min_hold_hours: int = 6
-    rebalance_cadence_hours: int = 24
+    max_orders_per_day: int = 2
+    min_hold_hours: int = 168
+    rebalance_cadence_hours: int = 168
     max_replacements_per_rebalance: int = 4
     sig_hold_log_every_bars: int = 24
     # Legacy knobs still consumed in risk/tests
@@ -92,7 +92,7 @@ class StrategyConfig:
     score_dd_penalty: float = 0.3
 
     # Scalper signal thresholds
-    scalper_z_entry: float = -2.0
+    scalper_z_entry: float = -2.8
     scalper_meanrev_z: float = 0.0
     scalper_overshoot_z: float = 1.0
     scalper_rsi_min: float = 20.0
@@ -106,7 +106,7 @@ class StrategyConfig:
     scalper_use_btc_ema_gate: bool = False
     scalper_adx_range_max: float = 20.0
     scalper_adx_trend_min: float = 30.0
-    scalper_breakout_z_entry: float = 2.3
+    scalper_breakout_z_entry: float = 3.0
     scalper_breakout_volume_mult: float = 1.2
 
     # Position management
@@ -114,7 +114,7 @@ class StrategyConfig:
     scalper_max_concurrent: int = 4
     scalper_hard_sl_pct: float = -0.015
     scalper_time_stop_hours: float = 6.0
-    scalper_anti_churn_hours: float = 2.0
+    scalper_anti_churn_hours: float = 12.0
     scalper_consecutive_loss_brake: int = 3
     scalper_daily_loss_brake: float = -0.01
     scalper_universe_size: int = 20

@@ -1,0 +1,16 @@
+{
+  "bias": -0.15,
+  "weights": {
+    "mom_7d": 0.85,
+    "mom_21d": 0.55,
+    "mom_accel": 0.70,
+    "breakout_strength": 0.95,
+    "volume_surge": 0.45,
+    "rsi_pullback": 0.35,
+    "trend_quality": 0.60,
+    "rv_21d_inv": 0.25,
+    "breadth": 0.40,
+    "btc_beta": -0.20
+  },
+  "note": "Offline-tunable logistic prior; research/train_weights.py can refit from walk-forward bars."
+}

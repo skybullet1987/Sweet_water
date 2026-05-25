@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+from config import KrakenMaxConfig, CONFIG
+from ml_scorer import MLScorer
+
+
+class AlphaEnsemble:
+    def __init__(self, config: KrakenMaxConfig = CONFIG, ml: MLScorer | None = None) -> None:
+        self.config = config
+        self.ml = ml or MLScorer()
+
+    def score_symbol(
+        self,
+        features: dict[str, float],
+        *,
+        rank_mom_21: float = 0.5,
+        rank_breakout: float = 0.5,
+        breadth: float = 0.5,
+        btc_beta: float = 0.0,
+    ) -> dict[str, float]:
+        if not features:
+            return {"final": -1e9, "momentum": 0.0, "breakout": 0.0, "dip": 0.0, "ml": 0.0}
+
+        rv = max(float(features.get("rv_21d", 0.05)), 1e-6)
+        momentum = (
+            0.45 * float(features.get("mom_21d", 0.0)) / rv
+            + 0.35 * float(features.get("mom_accel", 0.0)) / rv
+            + 0.20 * (rank_mom_21 - 0.5)
+        )
+        breakout = (
+            0.60 * float(features.get("breakout_strength", 0.0)) * 8.0
+            + 0.25 * max(0.0, float(features.get("volume_surge", 0.0)))
+            + 0.15 * (rank_breakout - 0.5)
+        )
+        dip = float(features.get("rsi_pullback", 0.0)) * max(0.0, float(features.get("trend_quality", 0.0)) * 5.0)
+
+        ml_ctx = {
+            "breadth": breadth,
+            "btc_beta": btc_beta,
+        }
+        ml_score = self.ml.score(features, ml_ctx)
+
+        w_m = float(self.config.w_momentum)
+        w_b = float(self.config.w_breakout)
+        w_d = float(self.config.w_dip)
+        w_ml = float(self.config.w_ml)
+        final = w_m * momentum + w_b * breakout + w_d * dip + w_ml * ml_score
+        clip = float(self.config.score_clip)
+        final = max(-clip, min(clip, final))
+        return {
+            "final": final,
+            "momentum": momentum,
+            "breakout": breakout,
+            "dip": dip,
+            "ml": ml_score,
+        }

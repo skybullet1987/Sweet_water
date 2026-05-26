@@ -94,6 +94,13 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             if bool(self.config.use_sub_hour_bars)
             else int(self.config.warmup_bars)
         )
+        if bool(self.config.fast_qc_backtest) and not getattr(self, "LiveMode", False):
+            sy, sm, sd = self.config.fast_qc_start
+            ey, em, ed = self.config.fast_qc_end
+            self.SetStartDate(int(sy), int(sm), int(sd))
+            self.SetEndDate(int(ey), int(em), int(ed))
+            warmup = int(self.config.warmup_bars_fast)
+            self.Debug(f"KRAKEN_MAX fast_qc_backtest {sy}-{sm}-{sd} → {ey}-{em}-{ed} warmup={warmup}")
         self.SetWarmup(warmup, res)
 
         init_execution_state(self)
@@ -152,6 +159,11 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             boot = set(self.config.seed_subscribe_symbols) | set(REFERENCE_SYMBOLS)
         for ticker in sorted(boot):
             self._subscribe(ticker)
+        if not self.symbol_by_ticker:
+            raise RuntimeError(
+                "KRAKEN_MAX: no Kraken symbols subscribed — enable Crypto Price data (Kraken) "
+                "and check tickers in config.seed_subscribe_symbols."
+            )
         self.Debug(
             f"KRAKEN_MAX subscribed {len(self.symbol_by_ticker)} symbols "
             f"(all_universe={self.config.subscribe_all_universe_on_init}) warmup={warmup} res={res}"
@@ -237,8 +249,16 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self._logged_warmup_done = True
             self.Debug(
                 f"KRAKEN_MAX warmup done — trading from {self.Time} "
-                f"symbols={len(self.symbol_by_ticker)}"
+                f"symbols={len(self.symbol_by_ticker)} equity={self.Portfolio.TotalPortfolioValue:.2f}"
             )
+
+        if not self.IsWarmingUp:
+            self._progress_bars = int(getattr(self, "_progress_bars", 0)) + 1
+            if self._progress_bars in (1, 24, 168):
+                self.Debug(
+                    f"KRAKEN_MAX progress bars={self._progress_bars} time={self.Time} "
+                    f"equity={self.Portfolio.TotalPortfolioValue:.2f}"
+                )
 
         if not bool(self.config.use_sub_hour_bars):
             self._bar_count += 1

@@ -19,6 +19,10 @@ class KrakenMaxConfig:
     end_year: int = 2026
     end_month: int = 5
     end_day: int = 1
+    fast_qc_backtest: bool = True  # 3-month window + short warmup so QC % moves off 0%
+    fast_qc_start: tuple[int, int, int] = (2024, 1, 1)
+    fast_qc_end: tuple[int, int, int] = (2024, 4, 1)
+    warmup_bars_fast: int = 48  # ~2 days hourly
     starting_cash: float = 1000.0
     account_currency: str = "USD"
     bar_resolution: str = "Hour"
@@ -100,7 +104,7 @@ class KrakenMaxConfig:
     stale_order_bars: int = 3
 
     use_external_sentiment: bool = True
-    use_qc_fear_greed_index: bool = True
+    use_qc_fear_greed_index: bool = False  # True needs F&G dataset; can stall backtests at 0%
     ensemble_weights_path: str = "ensemble_weights.json"
 
     enable_brackets: bool = True

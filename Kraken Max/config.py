@@ -21,10 +21,11 @@ class KrakenMaxConfig:
     end_day: int = 1
     starting_cash: float = 1000.0
     account_currency: str = "USD"
-    bar_resolution: str = "Minute"
+    bar_resolution: str = "Hour"
     resolution_minutes: int = 15
-    use_sub_hour_bars: bool = True
-    warmup_bars: int = 24 * 14 * 4  # ~14 days of 15m bars
+    use_sub_hour_bars: bool = False  # False=hourly (first QC backtest). True needs Kraken Minute data.
+    warmup_bars: int = 24 * 14  # ~14 days at hourly resolution
+    warmup_bars_sub_hour: int = 24 * 14 * 4  # ~14 days of 15m bars when use_sub_hour_bars=True
 
     universe_size: int = 24
     top_k: int = 4

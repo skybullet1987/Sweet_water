@@ -174,13 +174,25 @@ Set in algorithm **Parameters**:
 
 ## QuantConnect deployment
 
-1. Create a new QC project and upload all files in this folder (keep `main.py` as the algorithm entry).
-2. Set brokerage: **Kraken**, **Cash**, verification tier matching your account.
-3. Dataset: **Kraken Crypto Price** (`Market.Kraken`, hourly resolution).
-4. Recommended path: backtest **2022–2025**, paper trade **60+ days**, then live with capital you can lose entirely.
+1. Create a QC project and upload **all `.py` files from this folder** plus the **`qc_runtime/`** folder (as `qc_runtime/` inside the project, not one level up).
+2. **Entry point:** `main.py` in the project root must expose `KrakenMaxAlgorithm`. If files live in a subfolder, copy `deploy/main.py` from the repo to the project root as `main.py`.
+3. In the Algorithm Lab, open **Build** and confirm compile succeeds. Select class **`KrakenMaxAlgorithm`** if prompted.
+4. Set brokerage: **Kraken**, **Cash**.
+5. Dataset: **Kraken Crypto** — default config uses **hourly** bars (`use_sub_hour_bars = False`). Only set `use_sub_hour_bars = True` in `config.py` if you subscribe to **minute** data.
+6. Backtest **2022–2025**, then paper, then live with risk capital only.
+
+### Backtest does not start (checklist)
+
+| Symptom | Fix |
+|--------|-----|
+| Compile error / red build | Open **Logs**; fix missing file or import. Ensure `kraken_ml.py` / `kraken_ops.py` are uploaded (names must be &gt; 3 characters). |
+| Build OK but nothing runs | Confirm `KrakenMaxAlgorithm` is the active class in `main.py`. |
+| Stuck on “Loading…” | Often **minute data** without a Minute subscription — keep `use_sub_hour_bars = False`. |
+| No trades | Check **Debug** for `KRAKEN_MAX skip subscribe` — add Kraken crypto universe or fix tickers. |
+| `qc_runtime` not found | Upload `qc_runtime/` **inside** the QC project directory (same level as `main.py`). |
 
 ```python
-# Entry class
+# Entry class (must be reachable from project main.py)
 from main import KrakenMaxAlgorithm
 ```
 

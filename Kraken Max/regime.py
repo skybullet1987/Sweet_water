@@ -242,7 +242,16 @@ class AdvancedRegimeEngine(RegimeEngine):
 
 from config import CONFIG, KrakenMaxConfig
 
-_QC_RUNTIME = Path(__file__).resolve().parents[1] / "qc_runtime"
+def _resolve_qc_runtime_dir() -> Path:
+    km = Path(__file__).resolve().parent
+    repo = km.parent
+    for candidate in (km / "qc_runtime", repo / "qc_runtime"):
+        if (candidate / "regime.py").is_file():
+            return candidate
+    return km / "qc_runtime"
+
+
+_QC_RUNTIME = _resolve_qc_runtime_dir()
 _qc_regime = None
 
 

@@ -232,14 +232,24 @@ def manage_exits(algo, symbol, state: PositionRisk, close: float, now: datetime,
 
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 _KRAKEN_MAX = Path(__file__).resolve().parent
 _REPO = _KRAKEN_MAX.parent
-_QC_RUNTIME = _REPO / "qc_runtime"
+
+
+def _resolve_qc_runtime_dir() -> Path:
+    """QC cloud: files are usually flat in the project; qc_runtime/ is a subfolder."""
+    for candidate in (_KRAKEN_MAX / "qc_runtime", _REPO / "qc_runtime"):
+        if (candidate / "execution.py").is_file():
+            return candidate
+    return _KRAKEN_MAX / "qc_runtime"
+
+
+_QC_RUNTIME = _resolve_qc_runtime_dir()
 
 _qc_execution = None
-_local_execution = None
 _USE_PRO = False
 
 
@@ -265,10 +275,13 @@ except Exception:
     _qc_execution = None
     _USE_PRO = False
 
-try:
-    _local_execution = _load_module("km_execution", _KRAKEN_MAX / "execution.py", _KRAKEN_MAX)
-except Exception:
-    _local_execution = None
+_local_execution = types.SimpleNamespace(
+    place_buy_notional=place_buy_notional,
+    liquidate_symbol=liquidate_symbol,
+    escalate_stale_limits=escalate_stale_limits,
+    manage_exits=manage_exits,
+    position_qty=position_qty,
+)
 
 
 def init_execution_state(algo) -> None:

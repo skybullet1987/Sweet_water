@@ -89,7 +89,12 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.SetStartDate(self.config.start_year, self.config.start_month, self.config.start_day)
         self.SetEndDate(self.config.end_year, self.config.end_month, self.config.end_day)
         res = Resolution.Minute if bool(self.config.use_sub_hour_bars) else Resolution.Hour
-        self.SetWarmup(self.config.warmup_bars, res)
+        warmup = (
+            int(self.config.warmup_bars_sub_hour)
+            if bool(self.config.use_sub_hour_bars)
+            else int(self.config.warmup_bars)
+        )
+        self.SetWarmup(warmup, res)
 
         init_execution_state(self)
         self.feature_cache = FeatureCache()

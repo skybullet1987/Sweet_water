@@ -21,13 +21,6 @@ def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
 
-def load_ml_weights(path: Path | None = None) -> dict[str, Any]:
-    root = Path(__file__).resolve().parent
-    target = path or (root / "ml_weights.json")
-    with open(target, encoding="utf-8") as fh:
-        return json.load(fh)
-
-
 class MLScorer:
     """Lightweight logistic ensemble — no sklearn required on QC cloud."""
 
@@ -73,6 +66,26 @@ FEATURE_COLS = (
     "breadth",
     "btc_beta",
 )
+
+
+def default_ml_weights() -> dict[str, Any]:
+    return {"bias": 0.0, "weights": {name: 0.0 for name in FEATURE_COLS}}
+
+
+def load_ml_weights(path: Path | None = None) -> dict[str, Any]:
+    """Load ML weights from disk; return neutral defaults if file missing (QC cloud)."""
+    root = Path(__file__).resolve().parent
+    target = path or (root / "ml_weights.json")
+    if not target.is_file():
+        return default_ml_weights()
+    try:
+        with open(target, encoding="utf-8") as fh:
+            blob = json.load(fh)
+        if not isinstance(blob, dict):
+            return default_ml_weights()
+        return blob
+    except (OSError, json.JSONDecodeError):
+        return default_ml_weights()
 
 
 def _sigmoid_batch(z: np.ndarray) -> np.ndarray:

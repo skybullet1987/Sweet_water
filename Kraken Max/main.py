@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
 import pandas as pd
 
@@ -112,7 +113,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self.regime_engine = UnifiedRegimeEngine(self.config)
         else:
             self.regime_engine = RegimeEngine(self.config)
-        self.ensemble = AlphaEnsemble(self.config, MLScorer(load_ml_weights()), algo=self)
+        ml_blob = load_ml_weights()
+        if not (Path(__file__).resolve().parent / "ml_weights.json").is_file():
+            self.Debug("KRAKEN_MAX ml_weights.json missing — using neutral ML defaults")
+        self.ensemble = AlphaEnsemble(self.config, MLScorer(ml_blob), algo=self)
         self.revalidator = AutoRevalidator(self.config) if bool(self.config.enable_auto_revalidation) else None
         self.sizer = AggressiveSizer(self.config)
         self.alerts = AlertManager(self) if bool(self.config.enable_live_alerts) else None

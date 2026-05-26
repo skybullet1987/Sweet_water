@@ -1,0 +1,27 @@
+{
+  "ensemble": {
+    "w_momentum": 0.3,
+    "w_breakout": 0.2,
+    "w_dip": 0.1,
+    "w_ml": 0.2
+  },
+  "metrics": {
+    "oos_sharpe": 0.0,
+    "oos_max_drawdown": 0.0,
+    "oos_total_return": 0.0,
+    "oos_trades": 0,
+    "oos_win_rate": 0.0
+  },
+  "folds": [
+    {
+      "fold": 0.0,
+      "sharpe": 0.0,
+      "trades": 0.0
+    },
+    {
+      "fold": 1.0,
+      "sharpe": 0.0,
+      "trades": 0.0
+    }
+  ]
+}

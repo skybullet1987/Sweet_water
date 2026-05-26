@@ -1,0 +1,28 @@
+{
+  "regimes": {
+    "bull": {
+      "w_momentum": 0.4,
+      "w_breakout": 0.3,
+      "w_dip": 0.1,
+      "w_ml": 0.2
+    },
+    "neutral": {
+      "w_momentum": 0.35,
+      "w_breakout": 0.25,
+      "w_dip": 0.15,
+      "w_ml": 0.25
+    },
+    "bear": {
+      "w_momentum": 0.25,
+      "w_breakout": 0.15,
+      "w_dip": 0.2,
+      "w_ml": 0.4
+    },
+    "chaos": {
+      "w_momentum": 0.2,
+      "w_breakout": 0.2,
+      "w_dip": 0.1,
+      "w_ml": 0.5
+    }
+  }
+}

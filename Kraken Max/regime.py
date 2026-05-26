@@ -366,12 +366,7 @@ class UnifiedRegimeEngine(AdvancedRegimeEngine):
 from config import CONFIG, KrakenMaxConfig
 
 _WEIGHT_KEYS = ("w_momentum", "w_breakout", "w_dip", "w_ml")
-_DEFAULT_REGIME_MAP = {
-    "bull": {"w_momentum": 0.40, "w_breakout": 0.30, "w_dip": 0.10, "w_ml": 0.20},
-    "neutral": {"w_momentum": 0.35, "w_breakout": 0.25, "w_dip": 0.15, "w_ml": 0.25},
-    "bear": {"w_momentum": 0.25, "w_breakout": 0.15, "w_dip": 0.20, "w_ml": 0.40},
-    "chaos": {"w_momentum": 0.20, "w_breakout": 0.20, "w_dip": 0.10, "w_ml": 0.50},
-}
+from kraken_defaults import REGIME_WEIGHTS as _DEFAULT_REGIME_MAP
 
 
 def load_regime_weights_from_object_store(algo, key: str | None = None) -> dict[str, dict[str, float]] | None:

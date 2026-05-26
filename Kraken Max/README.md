@@ -8,6 +8,8 @@ Aggressive **long-only**, **cash account** (no margin) crypto strategy for **Qua
 
 Upload the entire **`Kraken Max/`** folder plus **`qc_runtime/`**. Core code lives in:
 
+**QC tip:** The strategy is **Python** (`.py` only required). JSON files (`ml_weights.json`, `ensemble_weights.json`, `regime_weights.json`) are **optional** — defaults live in **`kraken_defaults.py`**. CSV files under `data/` are optional (sentiment falls back to proxies).
+
 | File | Role |
 |------|------|
 | `main.py` | `KrakenMaxAlgorithm` entry point |
@@ -18,6 +20,7 @@ Upload the entire **`Kraken Max/`** folder plus **`qc_runtime/`**. Core code liv
 | `execution.py` | Limits, bridge to `qc_runtime`, brackets |
 | `data.py` | Sentiment, funding/OI feeds, cross-venue lead |
 | `kraken_ml.py` | Logistic scorer + trainer |
+| `kraken_defaults.py` | Built-in weights (no JSON upload needed on QC) |
 | `kraken_ops.py` | Fill tracker, drift, scorecard, telemetry, alerts |
 | `workflow.py` | Walk-forward, validation, auto-revalidation |
 

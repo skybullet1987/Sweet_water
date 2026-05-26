@@ -113,10 +113,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self.regime_engine = UnifiedRegimeEngine(self.config)
         else:
             self.regime_engine = RegimeEngine(self.config)
-        ml_blob = load_ml_weights()
-        if not (Path(__file__).resolve().parent / "ml_weights.json").is_file():
-            self.Debug("KRAKEN_MAX ml_weights.json missing — using neutral ML defaults")
-        self.ensemble = AlphaEnsemble(self.config, MLScorer(ml_blob), algo=self)
+        self.ensemble = AlphaEnsemble(self.config, MLScorer(load_ml_weights()), algo=self)
         self.revalidator = AutoRevalidator(self.config) if bool(self.config.enable_auto_revalidation) else None
         self.sizer = AggressiveSizer(self.config)
         self.alerts = AlertManager(self) if bool(self.config.enable_live_alerts) else None
@@ -147,13 +144,13 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self.drift_monitor.load_baseline_from_object_store(self)
             try:
                 import json
-                from pathlib import Path
 
                 ew = Path(__file__).resolve().parent / "ensemble_weights.json"
-                if ew.exists():
+                if ew.is_file():
                     blob = json.loads(ew.read_text(encoding="utf-8"))
-                    sharpe = float((blob.get("metrics") or {}).get("oos_sharpe", self.config.baseline_sharpe))
-                    self.drift_monitor.baseline_sharpe = sharpe
+                    sharpe = float((blob.get("metrics") or {}).get("oos_sharpe", 0.0))
+                    if sharpe > 0:
+                        self.drift_monitor.baseline_sharpe = sharpe
             except Exception:
                 pass
 

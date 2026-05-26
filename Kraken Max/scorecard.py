@@ -52,7 +52,7 @@ class PaperTradingScorecard:
         self._equity.append((when, eq))
 
     def record_trade(self, ticker: str, pnl_pct: float, *, strategy: str = "momentum", when: datetime | None = None) -> None:
-        ts = when or datetime.utcnow()
+        ts = when or datetime.now(timezone.utc)
         self._trades.append(
             TradeRecord(
                 ticker=str(ticker),

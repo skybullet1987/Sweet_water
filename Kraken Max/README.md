@@ -2,9 +2,9 @@
 
 Aggressive **long-only**, **cash account** (no margin) crypto strategy for **QuantConnect** live/paper on **Kraken**, tuned for Canadian clients.
 
-**Current version: v7** — validation gates, calibrated costs, regime-specific ensembles, cluster risk caps, paper scorecard.
+**Current version: v8** — data-driven regime weights, monthly auto revalidation, native 15m QC export, Telegram/HTML dashboard.
 
-Previous: v6 (telemetry, cross-venue), v5 (15m/ERC/drift), v4 (funding/OI), v3 (walk-forward), v2 (scalper), v1 (core).
+Previous: v7 (validation/scorecard), v6 (telemetry), v5 (15m/ERC), v4–v1 (core stack).
 
 ## Objective
 
@@ -16,6 +16,34 @@ Designed for **high convexity** — concentrated momentum + breakout + dip-buy +
 - Universe prioritizes **BTC, ETH, LTC, BCH** (no CAD net-purchase limits on Kraken Canada)
 - Alts are liquidity-filtered; meme/low-liquidity names are blacklisted
 - If you are subject to **$30k CAD alt limits**, prefer unlimited pairs or upgrade investor tier per [Kraken Canada limits](https://support.kraken.com/articles/15568473780628-cad-net-purchase-limits-for-certain-cryptocurrencies-in-canada)
+
+## Strategy stack (v8)
+
+| Layer | Module | Description |
+|-------|--------|-------------|
+| **Regime walk-forward** | `regime_walk_forward.py` | Grid-search `w_*` per bull/neutral/bear/chaos from BTC labels |
+| **Auto revalidation** | `auto_revalidation.py` | Monthly: walk-forward + validation + baseline + regime weights → ObjectStore |
+| **Native 15m export** | `research/export_qc_minute_bars.py` | QC `Resolution.Minute` → consolidate (not hourly upsample) |
+| **Dashboard digest** | `dashboard_digest.py` | Text + HTML snapshot; daily Telegram/Discord via alerts |
+
+### Regime weight optimization (local)
+
+```bash
+python3 "Kraken Max/research/optimize_regime_weights.py" --csv kraken_hourly.csv
+```
+
+### Native 15m in QC Research
+
+```python
+from export_qc_minute_bars import export_minute_history_qc
+bars = export_minute_history_qc(qb, ["BTCUSD","ETHUSD"], start, end, bar_minutes=15)
+```
+
+### ObjectStore (v8)
+
+- `kraken_max_regime_weights.json` — optimized per-regime weights
+- `kraken_max_revalidation.json` — last monthly revalidation summary
+- `kraken_max_dashboard.txt` / `.html` — daily digest
 
 ## Strategy stack (v7)
 

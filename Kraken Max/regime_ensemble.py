@@ -15,6 +15,22 @@ _DEFAULT_REGIME_MAP = {
 }
 
 
+def load_regime_weights_from_object_store(algo, key: str | None = None) -> dict[str, dict[str, float]] | None:
+    store_key = key or str(CONFIG.regime_weights_object_store_key)
+    try:
+        if hasattr(algo, "ObjectStore") and algo.ObjectStore.ContainsKey(store_key):
+            blob = json.loads(algo.ObjectStore.Read(store_key))
+            regimes = blob.get("regimes") or {}
+            out: dict[str, dict[str, float]] = {}
+            for name, weights in regimes.items():
+                rk = normalize_regime_key(name)
+                out[rk] = {k: float(weights[k]) for k in _WEIGHT_KEYS if k in weights}
+            return out if out else None
+    except Exception:
+        return None
+    return None
+
+
 def load_regime_weights(path: Path | None = None) -> dict[str, dict[str, float]]:
     target = path or (Path(__file__).resolve().parent / "regime_weights.json")
     if not target.exists():

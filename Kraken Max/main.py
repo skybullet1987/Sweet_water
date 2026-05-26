@@ -35,6 +35,10 @@ from cost_model import CalibratedCostModel
 from cross_venue import CrossVenueLead
 from drift_monitor import DriftMonitor
 from fill_tracker import FillTracker
+from auto_revalidation import AutoRevalidator
+from bars_util import consolidate_minute_ohlcv
+from regime_ensemble import load_regime_weights_from_object_store
+from dashboard_digest import build_html_digest, build_text_digest, load_bundle, persist_digest
 from scorecard import PaperTradingScorecard
 from telemetry import TelemetryDashboard
 from correlation import filter_uncorrelated_picks
@@ -63,7 +67,7 @@ from universe import KRAKEN_MAX_UNIVERSE, REFERENCE_SYMBOLS, select_universe
 
 
 class KrakenMaxAlgorithm(QCAlgorithm):
-    """Kraken Max v7 — validation, calibrated costs, regime ensembles, cluster risk, scorecard."""
+    """Kraken Max v8 — regime WF, auto revalidation, dashboard digest, native 15m export path."""
 
     def Initialize(self):  # pragma: no cover
         self.config = CONFIG
@@ -84,7 +88,8 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self.regime_engine = UnifiedRegimeEngine(self.config)
         else:
             self.regime_engine = RegimeEngine(self.config)
-        self.ensemble = AlphaEnsemble(self.config, MLScorer(load_ml_weights()))
+        self.ensemble = AlphaEnsemble(self.config, MLScorer(load_ml_weights()), algo=self)
+        self.revalidator = AutoRevalidator(self.config) if bool(self.config.enable_auto_revalidation) else None
         self.sizer = AggressiveSizer(self.config)
         self.alerts = AlertManager(self) if bool(self.config.enable_live_alerts) else None
         self.fill_tracker = FillTracker(self.config) if bool(self.config.enable_fill_tracking) else None
@@ -137,6 +142,18 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self.TimeRules.At(0, 15),
             self._scheduled_ml_retrain,
         )
+        if self.revalidator is not None:
+            self.Schedule.On(
+                self.DateRules.MonthStart(),
+                self.TimeRules.At(1, 0),
+                self._scheduled_revalidation,
+            )
+        if bool(self.config.enable_dashboard_digest):
+            self.Schedule.On(
+                self.DateRules.EveryDay(),
+                self.TimeRules.At(int(self.config.dashboard_digest_hour), 0),
+                self._scheduled_dashboard_digest,
+            )
         if self.telemetry is not None:
             self.Schedule.On(
                 self.DateRules.EveryDay(),
@@ -144,9 +161,9 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 self._persist_telemetry,
             )
         self.Debug(
-            f"KRAKEN_MAX v7 init res={self.config.resolution_minutes}m "
-            f"regime_ens={self.config.use_regime_ensembles} cluster={self.config.enable_cluster_risk} "
-            f"scorecard={self.config.enable_scorecard}"
+            f"KRAKEN_MAX v8 init res={self.config.resolution_minutes}m "
+            f"reval={self.config.enable_auto_revalidation} dashboard={self.config.enable_dashboard_digest} "
+            f"regime_wf={self.config.use_regime_wf_weights}"
         )
 
     def _subscribe(self, ticker: str) -> None:
@@ -311,6 +328,84 @@ class KrakenMaxAlgorithm(QCAlgorithm):
 
     def _scheduled_ml_retrain(self) -> None:  # pragma: no cover
         self._run_ml_retrain()
+
+    def _scheduled_revalidation(self) -> None:  # pragma: no cover
+        if self.revalidator is None or self.IsWarmingUp:
+            return
+        if not self.revalidator.should_run(self.Time):
+            return
+        bars = self._export_history_bars()
+        if bars is None or bars.empty:
+            self.Debug("KRAKEN_MAX revalidation skipped: no history")
+            return
+        try:
+            result = self.revalidator.run(bars, self, n_folds=int(self.config.auto_revalidate_folds))
+            stored = load_regime_weights_from_object_store(self)
+            if stored:
+                self.ensemble._regime_weights = stored
+            status = "PASS" if result.get("validation_passed") else "FAIL"
+            self.Debug(f"KRAKEN_MAX revalidation {status} sharpe={result.get('oos_sharpe', 0):.3f}")
+            if self.alerts:
+                self.alerts.notify(
+                    "REVALIDATION",
+                    f"{status} sharpe={result.get('oos_sharpe', 0):.3f}",
+                    dedupe_key=f"reval-{self.Time.date()}",
+                )
+        except Exception as exc:
+            self.Debug(f"KRAKEN_MAX revalidation error: {exc}")
+
+    def _scheduled_dashboard_digest(self) -> None:  # pragma: no cover
+        if self.IsWarmingUp:
+            return
+        bundle = load_bundle(self, self.config)
+        text = build_text_digest(bundle)
+        html = build_html_digest(bundle)
+        persist_digest(self, text, html, self.config)
+        if self.alerts and bool(self.config.alert_on_dashboard):
+            self.alerts.notify("DASHBOARD", text[:1800], dedupe_key=f"dash-{self.Time.date()}")
+
+    def _export_history_bars(self) -> pd.DataFrame:  # pragma: no cover
+        """Build OHLCV panel from QC History for revalidation (hourly if sub-hour live)."""
+        lookback = int(self.config.auto_revalidate_lookback_days)
+        end = self.Time
+        start = end - timedelta(days=lookback)
+        res = Resolution.Hour
+        if bool(self.config.use_sub_hour_bars):
+            res = Resolution.Minute
+        rows: list[dict] = []
+        tickers = list(self.active_universe or ["BTCUSD", "ETHUSD", "SOLUSD"])[:12]
+        for ticker in tickers:
+            sym = self.symbol_by_ticker.get(ticker)
+            if sym is None:
+                continue
+            try:
+                hist = self.History(sym, start, end, res)
+            except Exception:
+                continue
+            if hist is None or hist.empty:
+                continue
+            h = hist.reset_index() if isinstance(hist.index, pd.MultiIndex) else hist
+            cols = {str(c).lower(): c for c in h.columns}
+            sym_col = cols.get("symbol", None)
+            time_col = cols.get("time", cols.get("endtime", h.columns[0]))
+            for _, row in h.iterrows():
+                rows.append(
+                    {
+                        "symbol": ticker,
+                        "timestamp": pd.Timestamp(row[time_col], tz="UTC"),
+                        "open": float(row[cols.get("open", "open")]),
+                        "high": float(row[cols.get("high", "high")]),
+                        "low": float(row[cols.get("low", "low")]),
+                        "close": float(row[cols.get("close", "close")]),
+                        "volume": float(row.get(cols.get("volume", "volume"), 1000.0) or 1000.0),
+                    }
+                )
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        if bool(self.config.use_sub_hour_bars) and int(self.config.resolution_minutes) < 60:
+            return consolidate_minute_ohlcv(df, int(self.config.resolution_minutes))
+        return df.sort_values(["symbol", "timestamp"])
 
     def _run_ml_retrain(self) -> None:  # pragma: no cover
         if len(self.ml_trainer.samples) < int(self.config.ml_min_samples):

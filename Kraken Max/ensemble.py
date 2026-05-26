@@ -6,7 +6,12 @@ from pathlib import Path
 
 from config import KrakenMaxConfig, CONFIG
 from ml_scorer import MLScorer
-from regime_ensemble import config_for_regime, load_regime_weights
+from regime_ensemble import config_for_regime, load_regime_weights, load_regime_weights_from_object_store
+
+try:
+    from regime_walk_forward import load_regime_weights_merged
+except ImportError:
+    load_regime_weights_merged = load_regime_weights  # type: ignore
 
 ENSEMBLE_WEIGHTS_PATH = Path(__file__).resolve().parent / "ensemble_weights.json"
 
@@ -20,7 +25,14 @@ def load_optimized_ensemble_weights(path: Path | None = None) -> dict[str, float
 
 
 class AlphaEnsemble:
-    def __init__(self, config: KrakenMaxConfig = CONFIG, ml: MLScorer | None = None) -> None:
+    def __init__(
+        self,
+        config: KrakenMaxConfig = CONFIG,
+        ml: MLScorer | None = None,
+        *,
+        regime_weights: dict[str, dict[str, float]] | None = None,
+        algo=None,
+    ) -> None:
         opt = load_optimized_ensemble_weights()
         if opt:
             allowed = {"w_momentum", "w_breakout", "w_dip", "w_ml"}
@@ -28,7 +40,19 @@ class AlphaEnsemble:
             config = replace(config, **kwargs) if kwargs else config
         self.config = config
         self.ml = ml or MLScorer()
-        self._regime_weights = load_regime_weights() if bool(config.use_regime_ensembles) else {}
+        self._regime_weights: dict[str, dict[str, float]] = {}
+        if bool(config.use_regime_ensembles):
+            if regime_weights is not None:
+                self._regime_weights = regime_weights
+            elif algo is not None:
+                stored = load_regime_weights_from_object_store(algo)
+                self._regime_weights = stored or (
+                    load_regime_weights_merged() if bool(config.use_regime_wf_weights) else load_regime_weights()
+                )
+            else:
+                self._regime_weights = (
+                    load_regime_weights_merged() if bool(config.use_regime_wf_weights) else load_regime_weights()
+                )
 
     def score_symbol(
         self,

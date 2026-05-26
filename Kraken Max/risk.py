@@ -14,6 +14,7 @@ class PositionRisk:
     highest_close: float
     pyramid_count: int = 0
     predicted_score: float = 0.0
+    strategy_owner: str = "momentum"  # momentum | scalper
 
 
 class PortfolioRisk:

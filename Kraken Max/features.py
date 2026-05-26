@@ -79,6 +79,11 @@ def compute_bar_features(frame: pd.DataFrame) -> dict[str, float]:
 
     dd_63d = float((close.iloc[-1] / close.tail(min(len(close), 63 * 24)).max()) - 1.0)
     atr = float(_atr(high, low, close).iloc[-1])
+    ema50 = float(_ema(close, 50).iloc[-1])
+    ema200 = float(_ema(close, 200).iloc[-1])
+    ret_1h = float(close.iloc[-1] / close.iloc[-max(2, 2)] - 1.0) if len(close) > 2 else 0.0
+    look6 = min(len(close) - 1, 6)
+    ret_6h = float(close.iloc[-1] / close.iloc[-1 - look6] - 1.0) if look6 > 0 else 0.0
 
     return {
         "mom_7d": mom_7d,
@@ -95,7 +100,17 @@ def compute_bar_features(frame: pd.DataFrame) -> dict[str, float]:
         "dd_63d": dd_63d,
         "atr": atr,
         "close": float(close.iloc[-1]),
+        "ema50": ema50,
+        "ema200": ema200,
+        "ret_1h": ret_1h,
+        "ret_6h": ret_6h,
+        "adx": 18.0,
     }
+
+
+def btc_beta_vs(features: dict[str, float], btc_features: dict[str, float]) -> float:
+    """Simple beta proxy: coin 7d momentum minus BTC 7d momentum."""
+    return float(features.get("mom_7d", 0.0)) - float(btc_features.get("mom_7d", 0.0))
 
 
 class FeatureCache:

@@ -13,14 +13,22 @@ Designed for **high convexity** — concentrated momentum + breakout + dip-buy +
 - Alts are liquidity-filtered; meme/low-liquidity names are blacklisted
 - If you are subject to **$30k CAD alt limits**, prefer unlimited pairs or upgrade investor tier per [Kraken Canada limits](https://support.kraken.com/articles/15568473780628-cad-net-purchase-limits-for-certain-cryptocurrencies-in-canada)
 
-## Strategy stack
+## Strategy stack (v2)
 
 | Sleeve | Weight | Idea |
 |--------|--------|------|
 | Momentum | 35% | Risk-adjusted 7d/21d trend + cross-section rank |
 | Breakout | 25% | Donchian + volume surge |
 | Dip-in-trend | 15% | RSI pullback only when trend_quality > 0 |
-| ML logistic | 25% | `ml_weights.json` + online bias updates |
+| ML logistic | 25% | `ml_weights.json` + **monthly walk-forward retrain** |
+| **Scalper** (parallel) | 12% per slot × 2 | 6h mean-reversion in **ranging/neutral** regimes |
+
+**v2 upgrades:**
+- **Limit orders** at bid/ask with stale-limit escalation to market (Kraken maker bias)
+- **Participation cap** — order size ≤ 12% of hourly dollar volume
+- **Correlation filter** — greedy decorrelation so top 4 are not all SOL-beta clones
+- **Sentiment regime** — fear/greed + BTC dominance proxies adjust deployment
+- **ML auto-retrain** — monthly (+ when enough samples), persists to `ml_weights.json` / QC ObjectStore
 
 **Regimes:** bull (up to 98% deployed) → neutral (75%) → bear (35%, BTC/ETH bias) → chaos (flat).
 
@@ -49,7 +57,9 @@ Edit `config.py`:
 ## ML weights
 
 - Default weights: `ml_weights.json`
+- **Live/backtest:** `MLTrainer` retrains every `ml_retrain_days` (30) when ≥ `ml_min_samples` (80) closed trades exist
 - Refit offline: `python research/train_weights.py --csv your_features.csv`
+- QC ObjectStore key: `kraken_max_ml_weights.json`
 
 ## Local tests
 

@@ -1,16 +1,15 @@
 {
-  "bias": -0.15,
+  "bias": 0.0,
   "weights": {
-    "mom_7d": 0.85,
-    "mom_21d": 0.55,
-    "mom_accel": 0.70,
-    "breakout_strength": 0.95,
-    "volume_surge": 0.45,
-    "rsi_pullback": 0.35,
-    "trend_quality": 0.60,
-    "rv_21d_inv": 0.25,
-    "breadth": 0.40,
-    "btc_beta": -0.20
-  },
-  "note": "Offline-tunable logistic prior; research/train_weights.py can refit from walk-forward bars."
+    "mom_7d": 2.4394548880924e-18,
+    "mom_21d": 2.4394548880924e-18,
+    "mom_accel": 2.4394548880924e-18,
+    "breakout_strength": 2.4394548880924e-18,
+    "volume_surge": 2.4394548880924e-18,
+    "rsi_pullback": 2.4394548880924e-18,
+    "trend_quality": 2.4394548880924e-18,
+    "rv_21d_inv": 2.4394548880924e-18,
+    "breadth": 4.5276282722994066e-20,
+    "btc_beta": 4.5276282722994066e-20
+  }
 }

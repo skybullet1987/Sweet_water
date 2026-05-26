@@ -50,6 +50,15 @@ class AggressiveSizer:
         return edge > cost_pct * float(self.config.edge_cost_multiplier)
 
 
+def can_afford(algo, qty: float, price: float) -> tuple[bool, float, float]:
+    if qty <= 0:
+        return True, 0.0, free_cash_usd(algo)
+    safety = float(CONFIG.cash_safety_factor)
+    required = float(qty) * max(float(price), 0.0)
+    available = free_cash_usd(algo) * safety
+    return required <= available + 1e-9, required, available
+
+
 def free_cash_usd(algo) -> float:
     try:
         cash = float(algo.Portfolio.CashBook["USD"].Amount)

@@ -7,7 +7,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-DEFAULT_LOOKBACK = 24 * 30
+from config import CONFIG, KrakenMaxConfig
+
+DEFAULT_LOOKBACK = 24 * 30 * 4
 
 
 def _ema(close: pd.Series, span: int) -> pd.Series:
@@ -33,8 +35,9 @@ def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) ->
     return tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
 
 
-def compute_bar_features(frame: pd.DataFrame) -> dict[str, float]:
-    if frame is None or len(frame) < 60:
+def compute_bar_features(frame: pd.DataFrame, config: KrakenMaxConfig = CONFIG) -> dict[str, float]:
+    min_bars = max(60, int(config.feature_min_bars) // max(config.bph(), 1))
+    if frame is None or len(frame) < min_bars:
         return {}
     df = frame.copy()
     for col in ("open", "high", "low", "close", "volume"):
@@ -49,7 +52,7 @@ def compute_bar_features(frame: pd.DataFrame) -> dict[str, float]:
     ret = close.pct_change().fillna(0.0)
 
     def _mom(hours: int) -> float:
-        lookback = min(len(close) - 1, max(hours * 24, 1))
+        lookback = min(len(close) - 1, max(config.lookback_bars(hours), 1))
         base = float(close.iloc[-1 - lookback])
         if base <= 0:
             return 0.0
@@ -60,30 +63,31 @@ def compute_bar_features(frame: pd.DataFrame) -> dict[str, float]:
     mom_63d = _mom(63)
     mom_accel = mom_7d - mom_21d / 3.0
 
-    rv_21d = float(ret.tail(min(len(ret), 21 * 24)).std() * math.sqrt(24 * 365))
+    rv_window = min(len(ret), config.lookback_bars(21))
+    rv_21d = float(ret.tail(rv_window).std() * math.sqrt(24 * 365 * config.bph()))
     rv_21d_inv = 1.0 / max(rv_21d, 1e-6)
 
-    ema_fast = _ema(close, 24)
-    ema_slow = _ema(close, 24 * 5)
+    ema_fast = _ema(close, config.lookback_bars(24))
+    ema_slow = _ema(close, config.lookback_bars(24 * 5))
     trend_quality = float((ema_fast.iloc[-1] / ema_slow.iloc[-1]) - 1.0)
 
-    donchian = float(high.tail(min(len(high), 20 * 24)).max())
+    donchian = float(high.tail(min(len(high), config.lookback_bars(20 * 24))).max())
     breakout_strength = float((close.iloc[-1] / donchian) - 1.0) if donchian > 0 else 0.0
 
-    vol_med = float((close * volume).tail(min(len(close), 7 * 24)).median())
-    vol_recent = float((close * volume).tail(min(len(close), 24)).median())
+    vol_med = float((close * volume).tail(min(len(close), config.lookback_bars(7 * 24))).median())
+    vol_recent = float((close * volume).tail(min(len(close), config.lookback_bars(24))).median())
     volume_24h = vol_recent
     volume_surge = float(vol_recent / max(vol_med, 1e-9) - 1.0)
 
     rsi = float(_rsi(close).iloc[-1])
     rsi_pullback = max(0.0, (45.0 - rsi) / 45.0) if trend_quality > 0 else 0.0
 
-    dd_63d = float((close.iloc[-1] / close.tail(min(len(close), 63 * 24)).max()) - 1.0)
+    dd_63d = float((close.iloc[-1] / close.tail(min(len(close), config.lookback_bars(63 * 24))).max()) - 1.0)
     atr = float(_atr(high, low, close).iloc[-1])
     ema50 = float(_ema(close, 50).iloc[-1])
     ema200 = float(_ema(close, 200).iloc[-1])
     ret_1h = float(close.iloc[-1] / close.iloc[-max(2, 2)] - 1.0) if len(close) > 2 else 0.0
-    look6 = min(len(close) - 1, 6)
+    look6 = min(len(close) - 1, config.lookback_bars(6))
     ret_6h = float(close.iloc[-1] / close.iloc[-1 - look6] - 1.0) if look6 > 0 else 0.0
 
     return {

@@ -5,9 +5,13 @@ from dataclasses import dataclass, field
 ENABLE_SHORTS = False
 
 
+def bars_per_hour(resolution_minutes: int) -> int:
+    return max(1, 60 // max(1, int(resolution_minutes)))
+
+
 @dataclass(frozen=True)
 class KrakenMaxConfig:
-    """Aggressive Kraken spot config — v2 with execution, ML retrain, correlation, scalper."""
+    """Kraken Max v5 — sub-hour bars, shrinkage ERC, fill/drift monitors, QC regime gates."""
 
     start_year: int = 2022
     start_month: int = 1
@@ -17,8 +21,10 @@ class KrakenMaxConfig:
     end_day: int = 1
     starting_cash: float = 1000.0
     account_currency: str = "USD"
-    bar_resolution: str = "Hour"
-    warmup_bars: int = 24 * 14
+    bar_resolution: str = "Minute"
+    resolution_minutes: int = 15
+    use_sub_hour_bars: bool = True
+    warmup_bars: int = 24 * 14 * 4  # ~14 days of 15m bars
 
     universe_size: int = 24
     top_k: int = 4
@@ -44,8 +50,10 @@ class KrakenMaxConfig:
     btc_trend_ema: int = 100
     vol_stress_threshold: float = 1.05
     breadth_bull_threshold: float = 0.55
+    breadth_threshold: float = 0.30
     bear_deployment_cap: float = 0.35
     bear_prefer: tuple[str, ...] = ("BTCUSD", "ETHUSD")
+    chop_return_threshold: float = 0.002
 
     hard_stop_pct: float = -0.08
     catastrophic_stop_pct: float = -0.12
@@ -57,7 +65,7 @@ class KrakenMaxConfig:
 
     drawdown_halt_pct: float = -0.28
     drawdown_cooldown_hours: int = 24
-    max_orders_per_day: int = 12
+    max_orders_per_day: int = 16
     post_breaker_cooldown_hours: int = 12
 
     expected_round_trip_fees: float = 0.0052
@@ -67,11 +75,10 @@ class KrakenMaxConfig:
     assumed_slippage_bps: float = 12.0
     min_rebalance_weight_delta: float = 0.02
 
-    feature_min_bars: int = 48
+    feature_min_bars: int = 48 * 4
     score_clip: float = 4.0
     enable_shorts: bool = ENABLE_SHORTS
 
-    # --- v2: limit execution + participation ---
     use_limit_orders: bool = True
     max_participation_rate: float = 0.12
     limit_order_timeout_seconds: int = 45
@@ -80,26 +87,26 @@ class KrakenMaxConfig:
     failed_esc_cooldown_hours: float = 6.0
     stale_order_bars: int = 3
 
-    # --- v3: external data + walk-forward weights ---
     use_external_sentiment: bool = True
     use_qc_fear_greed_index: bool = True
     ensemble_weights_path: str = "ensemble_weights.json"
 
-    # --- v4: brackets, ERC sizing, advanced regime, alerts ---
     enable_brackets: bool = True
     use_erc_sizing: bool = True
     use_advanced_regime: bool = True
+    use_qc_regime_gates: bool = True
     enable_live_alerts: bool = True
     alert_on_drawdown_halt: bool = True
     alert_on_rebalance: bool = False
+    alert_on_drift: bool = True
     funding_symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
 
-    # --- v2: correlation filter ---
     corr_lookback_hours: int = 24 * 7
     max_pairwise_corr: float = 0.82
     min_corr_samples: int = 48
+    erc_shrinkage: float = 0.35
+    erc_turnover_penalty: float = 0.20
 
-    # --- v2: sentiment / dominance regime ---
     fg_extreme_fear: float = 0.25
     fg_extreme_greed: float = 0.78
     btc_dom_high: float = 0.58
@@ -107,14 +114,12 @@ class KrakenMaxConfig:
     sentiment_greed_boost: float = 0.08
     sentiment_fear_cut: float = 0.20
 
-    # --- v2: walk-forward ML retrain ---
     ml_retrain_days: int = 30
     ml_min_samples: int = 80
     ml_train_steps: int = 600
     ml_learning_rate: float = 0.06
     ml_object_store_key: str = "kraken_max_ml_weights.json"
 
-    # --- v2: scalper sleeve (6h mean-reversion in range) ---
     enable_scalper: bool = True
     scalper_cadence_hours: int = 6
     scalper_max_positions: int = 2
@@ -134,6 +139,16 @@ class KrakenMaxConfig:
     scalper_btc_6h_floor: float = -0.045
     scalper_adx_range_max: float = 22.0
 
+    enable_fill_tracking: bool = True
+    fill_rate_alert_threshold: float = 0.55
+    slippage_alert_bps: float = 35.0
+
+    enable_drift_monitor: bool = True
+    drift_window_hours: int = 24 * 30
+    baseline_sharpe: float = 0.50
+    drift_sharpe_ratio_threshold: float = 0.50
+    drift_object_store_key: str = "kraken_max_baseline_sharpe.json"
+
     min_qty_fallback: dict[str, float] = field(default_factory=lambda: {
         "BTCUSD": 0.0001,
         "ETHUSD": 0.001,
@@ -146,6 +161,12 @@ class KrakenMaxConfig:
         "LTCUSD": 0.05,
         "BCHUSD": 0.01,
     })
+
+    def bph(self) -> int:
+        return bars_per_hour(self.resolution_minutes)
+
+    def lookback_bars(self, hours: int) -> int:
+        return max(2, int(hours) * self.bph())
 
 
 CONFIG = KrakenMaxConfig()

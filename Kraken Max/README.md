@@ -2,9 +2,9 @@
 
 Aggressive **long-only**, **cash account** (no margin) crypto strategy for **QuantConnect** live/paper on **Kraken**, tuned for Canadian clients.
 
-**Current version: v4** — Binance funding/OI feeds, ERC portfolio sizing, Hurst/VR regime, exchange brackets, live alerts, QC history pipeline.
+**Current version: v5** — 15-minute bars, shrinkage ERC + turnover control, fill-quality + drift monitors, unified `qc_runtime` regime gates, Kraken Max CI.
 
-Previous: v3 (sentiment, walk-forward, execution bridge), v2 (corr filter, scalper), v1 (core ensemble).
+Previous: v4 (funding/OI, brackets, alerts), v3 (walk-forward), v2 (scalper), v1 (core).
 
 ## Objective
 
@@ -16,6 +16,19 @@ Designed for **high convexity** — concentrated momentum + breakout + dip-buy +
 - Universe prioritizes **BTC, ETH, LTC, BCH** (no CAD net-purchase limits on Kraken Canada)
 - Alts are liquidity-filtered; meme/low-liquidity names are blacklisted
 - If you are subject to **$30k CAD alt limits**, prefer unlimited pairs or upgrade investor tier per [Kraken Canada limits](https://support.kraken.com/articles/15568473780628-cad-net-purchase-limits-for-certain-cryptocurrencies-in-canada)
+
+## Strategy stack (v5)
+
+| Layer | Module | Description |
+|-------|--------|-------------|
+| **15m bars** | `main.py` | Minute data consolidated to 15m (configurable) |
+| **Shrinkage ERC** | `portfolio_optimizer.py` | Covariance shrinkage + turnover penalty vs prior weights |
+| **Unified regime** | `regime_bridge.py` | Hurst/VR + `qc_runtime` vol/breadth/EMA30d gates |
+| **Fill tracker** | `fill_tracker.py` | Limit fill rate + slippage bps alerts |
+| **Drift monitor** | `drift_monitor.py` | Live Sharpe vs walk-forward baseline |
+| **CI** | `.github/workflows/kraken_max_ci.yml` | Full test suite + walk-forward smoke on every PR |
+
+Set walk-forward baseline Sharpe via `ensemble_weights.json` metrics or ObjectStore key `kraken_max_baseline_sharpe.json`.
 
 ## Strategy stack (v4)
 
@@ -112,7 +125,7 @@ From repo root:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest tests/test_kraken_max.py tests/test_kraken_max_v3.py tests/test_kraken_max_v4.py -q
+pytest tests/test_kraken_max.py tests/test_kraken_max_v3.py tests/test_kraken_max_v4.py tests/test_kraken_max_v5.py -q
 ```
 
 ## Disclaimer

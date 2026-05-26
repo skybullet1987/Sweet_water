@@ -9,12 +9,13 @@ from config import CONFIG, KrakenMaxConfig
 def _covariance_matrix(cache, tickers: list[str], lookback_hours: int) -> tuple[pd.DataFrame, list[str]]:
     from correlation import hourly_returns
 
+    lookback_bars = CONFIG.lookback_bars(lookback_hours)
     series_map: dict[str, pd.Series] = {}
     for t in tickers:
         frame = cache.frame(t)
         if frame is None or frame.empty:
             continue
-        rets = hourly_returns(frame.tail(lookback_hours))
+        rets = hourly_returns(frame.tail(lookback_bars))
         if len(rets) >= int(CONFIG.min_corr_samples):
             series_map[t] = rets
     if len(series_map) < 2:
@@ -25,8 +26,17 @@ def _covariance_matrix(cache, tickers: list[str], lookback_hours: int) -> tuple[
     return aligned.cov(), list(aligned.columns)
 
 
+def shrink_covariance(cov: pd.DataFrame, intensity: float) -> pd.DataFrame:
+    """Ledoit-style shrinkage toward diagonal (v5)."""
+    if cov.empty:
+        return cov
+    k = float(intensity)
+    k = max(0.0, min(1.0, k))
+    target = pd.DataFrame(np.diag(np.diag(cov.values)), index=cov.index, columns=cov.columns)
+    return (1.0 - k) * cov + k * target
+
+
 def erc_weights(cov: pd.DataFrame, max_iter: int = 200, tol: float = 1e-8) -> dict[str, float]:
-    """Equal risk contribution weights (long-only, sum=1)."""
     cols = list(cov.columns)
     n = len(cols)
     if n == 0:
@@ -48,6 +58,25 @@ def erc_weights(cov: pd.DataFrame, max_iter: int = 200, tol: float = 1e-8) -> di
     return {cols[i]: float(w[i]) for i in range(n)}
 
 
+def _blend_weights(
+    new_w: dict[str, float],
+    prev_w: dict[str, float],
+    penalty: float,
+) -> dict[str, float]:
+    if not prev_w or penalty <= 0:
+        return new_w
+    keys = set(new_w) | set(prev_w)
+    blended = {}
+    for k in keys:
+        p = float(prev_w.get(k, 0.0))
+        n = float(new_w.get(k, 0.0))
+        blended[k] = (1.0 - penalty) * n + penalty * p
+    s = sum(blended.values())
+    if s <= 0:
+        return new_w
+    return {k: v / s for k, v in blended.items()}
+
+
 def allocate_erc_notionals(
     targets: list[str],
     cache,
@@ -55,6 +84,7 @@ def allocate_erc_notionals(
     deployment_cap: float,
     *,
     config: KrakenMaxConfig = CONFIG,
+    previous_weights: dict[str, float] | None = None,
 ) -> dict[str, float]:
     if not targets:
         return {}
@@ -63,12 +93,11 @@ def allocate_erc_notionals(
         per = equity * deployment_cap / len(targets)
         return {t: per for t in targets}
     sub = cov.loc[valid, valid] if set(valid).issubset(cov.index) else cov
+    sub = shrink_covariance(sub, float(config.erc_shrinkage))
     weights = erc_weights(sub)
+    weights = _blend_weights(weights, previous_weights or {}, float(config.erc_turnover_penalty))
     deployable = equity * deployment_cap
-    out: dict[str, float] = {}
-    for t in targets:
-        if t in weights:
-            out[t] = deployable * weights[t]
+    out = {t: deployable * weights[t] for t in targets if t in weights}
     if not out:
         per = deployable / len(targets)
         return {t: per for t in targets}

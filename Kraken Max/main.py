@@ -5,13 +5,18 @@ from datetime import timedelta
 import pandas as pd
 
 try:  # pragma: no cover
-    from AlgorithmImports import AccountType, BrokerageName, Market, QCAlgorithm, Resolution
+    from AlgorithmImports import AccountType, BrokerageName, Market, OrderStatus, QCAlgorithm, Resolution
 except ImportError:  # pragma: no cover
     class QCAlgorithm:  # type: ignore
         pass
 
     class Resolution:
         Hour = "Hour"
+        Minute = "Minute"
+
+    class OrderStatus:
+        Filled = "Filled"
+        Canceled = "Canceled"
 
     class BrokerageName:
         Kraken = "Kraken"
@@ -22,9 +27,10 @@ except ImportError:  # pragma: no cover
     class Market:
         Kraken = "Kraken"
 
-from advanced_regime import AdvancedRegimeEngine
 from brackets import set_bracket_prices, sync_brackets
 from config import CONFIG
+from drift_monitor import DriftMonitor
+from fill_tracker import FillTracker
 from correlation import filter_uncorrelated_picks
 from data_feeds import SentimentDataHub
 from ensemble import AlphaEnsemble, load_optimized_ensemble_weights
@@ -42,6 +48,7 @@ from ml_trainer import MLTrainer
 from notifications import AlertManager
 from portfolio_optimizer import allocate_erc_notionals
 from regime import RegimeEngine
+from regime_bridge import UnifiedRegimeEngine
 from risk import PortfolioRisk, PositionRisk
 from scalper_sleeve import build_scalper_features, evaluate_scalper_entry
 from sentiment import compute_sentiment, merge_external_sentiment
@@ -50,7 +57,7 @@ from universe import KRAKEN_MAX_UNIVERSE, REFERENCE_SYMBOLS, select_universe
 
 
 class KrakenMaxAlgorithm(QCAlgorithm):
-    """Kraken Max v4 — funding/OI, ERC sizing, Hurst/VR regime, brackets, alerts."""
+    """Kraken Max v5 — 15m bars, shrinkage ERC, fill/drift monitors, unified QC regime."""
 
     def Initialize(self):  # pragma: no cover
         self.config = CONFIG
@@ -59,7 +66,8 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.SetCash(float(self.config.starting_cash))
         self.SetStartDate(self.config.start_year, self.config.start_month, self.config.start_day)
         self.SetEndDate(self.config.end_year, self.config.end_month, self.config.end_day)
-        self.SetWarmup(self.config.warmup_bars, Resolution.Hour)
+        res = Resolution.Minute if bool(self.config.use_sub_hour_bars) else Resolution.Hour
+        self.SetWarmup(self.config.warmup_bars, res)
 
         init_execution_state(self)
         self.feature_cache = FeatureCache()
@@ -67,24 +75,41 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.sentiment_hub.initialize_algorithm(self)
         self.ml_trainer = MLTrainer(self.config)
         if bool(self.config.use_advanced_regime):
-            self.regime_engine = AdvancedRegimeEngine(self.config)
+            self.regime_engine = UnifiedRegimeEngine(self.config)
         else:
             self.regime_engine = RegimeEngine(self.config)
         self.ensemble = AlphaEnsemble(self.config, MLScorer(load_ml_weights()))
         self.sizer = AggressiveSizer(self.config)
         self.alerts = AlertManager(self) if bool(self.config.enable_live_alerts) else None
+        self.fill_tracker = FillTracker(self.config) if bool(self.config.enable_fill_tracking) else None
+        self.drift_monitor = DriftMonitor(self.config) if bool(self.config.enable_drift_monitor) else None
         self.portfolio_risk = PortfolioRisk(self.config)
         self.position_risk: dict = {}
         self.symbol_by_ticker: dict[str, object] = {}
+        self._sym_to_ticker: dict[object, str] = {}
         self.active_universe: list[str] = []
         self._last_rebalance = None
         self._last_scalper = None
         self._last_trade_hours: dict[str, float] = {}
+        self._erc_weights: dict[str, float] = {}
         self._bar_count = 0
 
         opt = load_optimized_ensemble_weights()
         if opt:
-            self.Debug(f"KRAKEN_MAX v3 ensemble_weights loaded {opt}")
+            self.Debug(f"KRAKEN_MAX ensemble_weights loaded {opt}")
+        if self.drift_monitor is not None:
+            self.drift_monitor.load_baseline_from_object_store(self)
+            try:
+                import json
+                from pathlib import Path
+
+                ew = Path(__file__).resolve().parent / "ensemble_weights.json"
+                if ew.exists():
+                    blob = json.loads(ew.read_text(encoding="utf-8"))
+                    sharpe = float((blob.get("metrics") or {}).get("oos_sharpe", self.config.baseline_sharpe))
+                    self.drift_monitor.baseline_sharpe = sharpe
+            except Exception:
+                pass
 
         for ticker in set(KRAKEN_MAX_UNIVERSE) | set(REFERENCE_SYMBOLS):
             self._subscribe(ticker)
@@ -99,31 +124,71 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self.TimeRules.At(0, 15),
             self._scheduled_ml_retrain,
         )
-        self.Debug("KRAKEN_MAX v4 init — funding/OI, ERC, Hurst/VR, brackets, alerts")
+        self.Debug(
+            f"KRAKEN_MAX v5 init res={self.config.resolution_minutes}m "
+            f"erc_shrink={self.config.erc_shrinkage} drift={self.config.enable_drift_monitor}"
+        )
 
     def _subscribe(self, ticker: str) -> None:
         try:
-            sec = self.AddCrypto(ticker, Resolution.Hour, Market.Kraken)
-            self.symbol_by_ticker[ticker] = sec.Symbol
+            res = Resolution.Minute if bool(self.config.use_sub_hour_bars) else Resolution.Hour
+            sec = self.AddCrypto(ticker, res, Market.Kraken)
+            sym = sec.Symbol
+            self.symbol_by_ticker[ticker] = sym
+            self._sym_to_ticker[sym] = ticker
+            if bool(self.config.use_sub_hour_bars):
+                self.Consolidate(
+                    sym,
+                    timedelta(minutes=int(self.config.resolution_minutes)),
+                    lambda bar, s=sym: self._on_consolidated_bar(s, bar),
+                )
         except Exception as exc:
             self.Debug(f"KRAKEN_MAX skip subscribe {ticker}: {exc}")
 
+    def _on_consolidated_bar(self, sym, bar) -> None:  # pragma: no cover
+        ticker = self._sym_to_ticker.get(sym, getattr(sym, "Value", str(sym)))
+        self.feature_cache.update(ticker, bar)
+        if ticker == "BTCUSD" and isinstance(self.regime_engine, UnifiedRegimeEngine):
+            close = float(bar.Close)
+            feats = self.feature_cache.features("BTCUSD")
+            ema200 = float(feats.get("ema200", close))
+            btc_ret = float(feats.get("ret_1h", 0.0))
+            rv = float(feats.get("rv_21d", 0.2))
+            self.regime_engine.update_market(
+                btc_close=close,
+                btc_return=btc_ret,
+                btc_vol=rv,
+                breadth=0.5,
+                btc_above_ema200=close > ema200,
+                ema200=ema200,
+            )
+
     def OnData(self, slice) -> None:  # pragma: no cover
-        self._bar_count += 1
-        for ticker, sym in self.symbol_by_ticker.items():
-            if sym not in slice.Bars:
-                continue
-            self.feature_cache.update(ticker, slice.Bars[sym])
-            if ticker == "BTCUSD" and isinstance(self.regime_engine, AdvancedRegimeEngine):
-                close = float(slice.Bars[sym].Close)
-                ema200 = float(self.feature_cache.features("BTCUSD").get("ema200", close))
-                self.regime_engine.update_btc_bar(close, ema200)
+        if not bool(self.config.use_sub_hour_bars):
+            self._bar_count += 1
+            for ticker, sym in self.symbol_by_ticker.items():
+                if sym not in slice.Bars:
+                    continue
+                self.feature_cache.update(ticker, slice.Bars[sym])
+                if ticker == "BTCUSD" and isinstance(self.regime_engine, UnifiedRegimeEngine):
+                    close = float(slice.Bars[sym].Close)
+                    feats = self.feature_cache.features("BTCUSD")
+                    self.regime_engine.update_market(
+                        btc_close=close,
+                        btc_return=float(feats.get("ret_1h", 0.0)),
+                        btc_vol=float(feats.get("rv_21d", 0.2)),
+                        breadth=0.5,
+                        btc_above_ema200=close > float(feats.get("ema200", close)),
+                        ema200=float(feats.get("ema200", close)),
+                    )
 
         if self.IsWarmingUp:
             return
 
         escalate_orders(self)
         now = self.Time
+        if self.drift_monitor is not None:
+            self.drift_monitor.record_equity(now, float(self.Portfolio.TotalPortfolioValue))
         if self._last_rebalance is None or (now - self._last_rebalance) >= timedelta(
             hours=int(self.config.rebalance_hours)
         ):
@@ -161,8 +226,30 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 )
             self._flatten_all("drawdown_halt")
             return
+        if self.fill_tracker is not None:
+            alert, msg = self.fill_tracker.should_alert()
+            if alert and self.alerts and bool(self.config.enable_live_alerts):
+                self.alerts.notify("FILL_QUALITY", msg, dedupe_key="fill_quality")
+        if self.drift_monitor is not None:
+            alert, msg = self.drift_monitor.should_alert()
+            if alert and self.alerts and bool(self.config.alert_on_drift):
+                self.alerts.notify("DRIFT", msg, dedupe_key="drift")
         if self.ml_trainer.should_retrain(self.Time):
             self._run_ml_retrain()
+
+    def OnOrderEvent(self, order_event) -> None:  # pragma: no cover
+        if self.fill_tracker is None:
+            return
+        status = str(getattr(order_event, "Status", ""))
+        oid = int(getattr(order_event, "OrderId", 0) or 0)
+        if "Canceled" in status:
+            self.fill_tracker.on_cancel(oid)
+        if "Filled" not in status:
+            return
+        fill_px = float(getattr(order_event, "FillPrice", 0.0) or 0.0)
+        tag = str(getattr(order_event, "Message", "") or "")
+        is_limit = "Limit" in tag or getattr(order_event, "OrderType", "") == "Limit"
+        self.fill_tracker.on_fill(oid, fill_px, is_limit=is_limit, tag=tag)
 
     def _scheduled_ml_retrain(self) -> None:  # pragma: no cover
         self._run_ml_retrain()
@@ -242,12 +329,17 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         breadth = sum(1 for f in feature_map.values() if float(f.get("mom_7d", 0)) > 0) / len(feature_map)
         btc_feat = feature_map.get("BTCUSD") or self.feature_cache.features("BTCUSD") or {}
         sentiment = self._build_sentiment(feature_map, slice)
-        if isinstance(self.regime_engine, AdvancedRegimeEngine):
-            regime = self.regime_engine.classify_advanced(
+        ema200 = float(btc_feat.get("ema200", 0.0))
+        btc_above = float(btc_feat.get("close", 0.0)) > ema200 if ema200 > 0 else True
+        if isinstance(self.regime_engine, UnifiedRegimeEngine):
+            regime = self.regime_engine.classify_unified(
                 btc_features=btc_feat,
                 breadth=breadth,
                 median_rv=median_rv,
                 sentiment=sentiment,
+                btc_return=float(btc_feat.get("ret_1h", 0.0)),
+                btc_vol=median_rv,
+                btc_above_ema200=btc_above,
             )
         else:
             regime = self.regime_engine.classify(
@@ -279,8 +371,15 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         equity = float(self.Portfolio.TotalPortfolioValue)
         if bool(self.config.use_erc_sizing) and targets:
             slot_notionals = allocate_erc_notionals(
-                targets, self.feature_cache, equity, regime.deployment_cap, config=self.config
+                targets,
+                self.feature_cache,
+                equity,
+                regime.deployment_cap,
+                config=self.config,
+                previous_weights=self._erc_weights,
             )
+            total = sum(slot_notionals.values()) or 1.0
+            self._erc_weights = {t: slot_notionals.get(t, 0.0) / total for t in targets}
         else:
             deployable = equity * regime.deployment_cap
             per = deployable / max(len(targets), 1)
@@ -357,9 +456,17 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             breadth=breadth,
             median_rv=median_rv,
         )
-        if isinstance(self.regime_engine, AdvancedRegimeEngine):
-            regime = self.regime_engine.classify_advanced(
-                btc_features=btc_feat, breadth=breadth, median_rv=median_rv, sentiment=sentiment
+        ema200 = float(btc_feat.get("ema200", 0.0))
+        btc_above = float(btc_feat.get("close", 0.0)) > ema200 if ema200 > 0 else True
+        if isinstance(self.regime_engine, UnifiedRegimeEngine):
+            regime = self.regime_engine.classify_unified(
+                btc_features=btc_feat,
+                breadth=breadth,
+                median_rv=median_rv,
+                sentiment=sentiment,
+                btc_return=float(btc_feat.get("ret_1h", 0.0)),
+                btc_vol=median_rv,
+                btc_above_ema200=btc_above,
             )
         else:
             regime = self.regime_engine.classify(

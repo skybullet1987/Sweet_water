@@ -1,0 +1,63 @@
+name: Kraken Max CI
+
+on:
+  pull_request:
+    paths:
+      - "Kraken Max/**"
+      - "tests/test_kraken_max*.py"
+      - "qc_runtime/**"
+      - ".github/workflows/kraken_max_ci.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "Kraken Max/**"
+      - "tests/test_kraken_max*.py"
+
+jobs:
+  kraken-max-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install pandas numpy pytest
+      - name: Run Kraken Max test suite
+        run: |
+          python3 -m pytest tests/test_kraken_max.py tests/test_kraken_max_v3.py tests/test_kraken_max_v4.py tests/test_kraken_max_v5.py -q
+      - name: Walk-forward smoke (synthetic multi-symbol)
+        run: |
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          import numpy as np
+          import pandas as pd
+
+          root = Path("Kraken Max").resolve()
+          sys.path.insert(0, str(root))
+          from walk_forward_engine import walk_forward_optimize, save_ensemble_weights
+
+          idx = pd.date_range("2024-01-01", periods=500, freq="h", tz="UTC")
+          rows = []
+          rng = np.random.default_rng(99)
+          for sym in ["BTCUSD", "ETHUSD", "SOLUSD"]:
+              c = 100.0
+              for ts in idx:
+                  c *= 1 + rng.normal(0.0002, 0.008)
+                  rows.append({
+                      "symbol": sym,
+                      "timestamp": ts.isoformat(),
+                      "open": c,
+                      "high": c * 1.001,
+                      "low": c * 0.999,
+                      "close": c,
+                      "volume": 1000.0,
+                  })
+          bars = pd.DataFrame(rows)
+          result = walk_forward_optimize(bars, n_folds=2)
+          save_ensemble_weights(result, root / "ensemble_weights.json")
+          assert "w_momentum" in result.best_weights
+          print("walk_forward ok sharpe=", round(result.oos_sharpe, 3))
+          PY

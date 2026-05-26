@@ -187,7 +187,8 @@ Set in algorithm **Parameters**:
 |--------|-----|
 | Compile error / red build | Open **Logs**; fix missing file or import. Ensure `kraken_ml.py` / `kraken_ops.py` are uploaded (names must be &gt; 3 characters). |
 | Build OK but nothing runs | Confirm `KrakenMaxAlgorithm` is the active class in `main.py`. |
-| Stuck on “Loading…” | Often **minute data** without a Minute subscription — keep `use_sub_hour_bars = False`. |
+| Stuck on “Loading…” / queued forever | **Stop** other backtests using your B4 node (Resources panel). Keep `use_sub_hour_bars = False`. Default now subscribes **8 symbols**, not ~50 (`subscribe_all_universe_on_init = False`). |
+| Runs but no progress for 10+ min | Shorten dates (e.g. 2024-01-01 → 2024-06-01). Check Logs for `KRAKEN_MAX warmup done`. |
 | No trades | Check **Debug** for `KRAKEN_MAX skip subscribe` — add Kraken crypto universe or fix tickers. |
 | `qc_runtime` not found | Upload `qc_runtime/` **inside** the QC project directory (same level as `main.py`). |
 

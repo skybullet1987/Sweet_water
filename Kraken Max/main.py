@@ -146,8 +146,16 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             except Exception:
                 pass
 
-        for ticker in set(KRAKEN_MAX_UNIVERSE) | set(REFERENCE_SYMBOLS):
+        if bool(self.config.subscribe_all_universe_on_init):
+            boot = set(KRAKEN_MAX_UNIVERSE) | set(REFERENCE_SYMBOLS)
+        else:
+            boot = set(self.config.seed_subscribe_symbols) | set(REFERENCE_SYMBOLS)
+        for ticker in sorted(boot):
             self._subscribe(ticker)
+        self.Debug(
+            f"KRAKEN_MAX subscribed {len(self.symbol_by_ticker)} symbols "
+            f"(all_universe={self.config.subscribe_all_universe_on_init}) warmup={warmup} res={res}"
+        )
 
         self.Schedule.On(
             self.DateRules.EveryDay(),
@@ -183,7 +191,14 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             f"regime_wf={self.config.use_regime_wf_weights}"
         )
 
+    def _ensure_subscribed(self, tickers: list[str]) -> None:
+        for ticker in tickers:
+            if ticker not in self.symbol_by_ticker:
+                self._subscribe(ticker)
+
     def _subscribe(self, ticker: str) -> None:
+        if ticker in self.symbol_by_ticker:
+            return
         try:
             res = Resolution.Minute if bool(self.config.use_sub_hour_bars) else Resolution.Hour
             sec = self.AddCrypto(ticker, res, Market.Kraken)
@@ -218,6 +233,13 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             )
 
     def OnData(self, slice) -> None:  # pragma: no cover
+        if not self.IsWarmingUp and not getattr(self, "_logged_warmup_done", False):
+            self._logged_warmup_done = True
+            self.Debug(
+                f"KRAKEN_MAX warmup done — trading from {self.Time} "
+                f"symbols={len(self.symbol_by_ticker)}"
+            )
+
         if not bool(self.config.use_sub_hour_bars):
             self._bar_count += 1
             for ticker, sym in self.symbol_by_ticker.items():
@@ -485,7 +507,12 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         if self.portfolio_risk.drawdown_halted(now, 0.0):
             return
 
-        self.active_universe = select_universe(self._history_provider, now)
+        self.active_universe = select_universe(
+            self._history_provider,
+            now,
+            candidates=tuple(self.symbol_by_ticker.keys()),
+        )
+        self._ensure_subscribed(self.active_universe)
         feature_map = {
             t: self.feature_cache.features(t)
             for t in self.active_universe

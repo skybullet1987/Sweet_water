@@ -46,7 +46,9 @@ def _hourly_bars(n: int = 400) -> pd.DataFrame:
 
 
 def test_v8_config():
-    assert CONFIG.enable_auto_revalidation
+    assert not CONFIG.enable_auto_revalidation  # off by default — heavy on QC backtests
+    assert not CONFIG.subscribe_all_universe_on_init
+    assert len(CONFIG.seed_subscribe_symbols) >= 6
     assert CONFIG.enable_dashboard_digest
     assert CONFIG.use_regime_wf_weights
 

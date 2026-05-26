@@ -24,8 +24,19 @@ class KrakenMaxConfig:
     bar_resolution: str = "Hour"
     resolution_minutes: int = 15
     use_sub_hour_bars: bool = False  # False=hourly (first QC backtest). True needs Kraken Minute data.
-    warmup_bars: int = 24 * 14  # ~14 days at hourly resolution
-    warmup_bars_sub_hour: int = 24 * 14 * 4  # ~14 days of 15m bars when use_sub_hour_bars=True
+    warmup_bars: int = 24 * 7  # ~7 days hourly (14d+50 symbols can look "stuck" on QC)
+    warmup_bars_sub_hour: int = 24 * 7 * 4  # ~7 days of 15m bars when use_sub_hour_bars=True
+    seed_subscribe_symbols: tuple[str, ...] = (
+        "BTCUSD",
+        "ETHUSD",
+        "LTCUSD",
+        "BCHUSD",
+        "SOLUSD",
+        "XRPUSD",
+        "LINKUSD",
+        "ADAUSD",
+    )
+    subscribe_all_universe_on_init: bool = False  # True=subscribes ~50 pairs (slow QC warmup)
 
     universe_size: int = 24
     top_k: int = 4
@@ -194,7 +205,7 @@ class KrakenMaxConfig:
     regime_wf_min_bars: int = 80
     regime_weights_object_store_key: str = "kraken_max_regime_weights.json"
 
-    enable_auto_revalidation: bool = True
+    enable_auto_revalidation: bool = False  # True runs heavy walk-forward on MonthStart (can freeze backtests)
     auto_revalidate_days: int = 30
     auto_revalidate_folds: int = 3
     auto_revalidate_lookback_days: int = 120

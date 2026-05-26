@@ -267,10 +267,13 @@ def _priority_boost(symbol: str) -> float:
 def select_universe(
     history_provider: Callable[[str, object, object], pd.DataFrame],
     asof_date,
+    *,
+    candidates: tuple[str, ...] | list[str] | None = None,
 ) -> list[str]:
     start = asof_date - timedelta(days=21)
     rows: list[tuple[str, float]] = []
-    for symbol in KRAKEN_MAX_UNIVERSE:
+    universe = tuple(candidates) if candidates is not None else KRAKEN_MAX_UNIVERSE
+    for symbol in universe:
         if symbol in BLACKLIST:
             continue
         frame = history_provider(symbol, start, asof_date)

@@ -22,8 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bars_util import consolidate_minute_ohlcv  # noqa: E402
-from walk_forward_engine import resample_bars_to_minutes  # noqa: E402
+from workflow import consolidate_minute_ohlcv  # noqa: E402
+from workflow import resample_bars_to_minutes  # noqa: E402
 
 
 def export_minute_history_qc(

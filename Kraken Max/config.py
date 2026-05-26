@@ -11,7 +11,7 @@ def bars_per_hour(resolution_minutes: int) -> int:
 
 @dataclass(frozen=True)
 class KrakenMaxConfig:
-    """Kraken Max v8 — regime WF weights, auto revalidation, native 15m export, dashboard digest."""
+    """Kraken Max config (v8). QC limit: keep each .py module under ~63,000 characters."""
 
     start_year: int = 2022
     start_month: int = 1

@@ -1,11 +1,18 @@
+"""Kraken Max — market data & sentiment (`data.py`)."""
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+import pandas as pd
+
+from config import CONFIG, KrakenMaxConfig
+
+# --- from data_feeds.py ---
+
 
 import pandas as pd
 
@@ -229,3 +236,205 @@ class SentimentDataHub:
             "funding_btc": self.last.funding_rate_btc,
             "open_interest_stress": self.last.open_interest_stress,
         }
+
+# --- from sentiment.py ---
+
+
+from config import KrakenMaxConfig, CONFIG
+
+
+@dataclass(frozen=True)
+class SentimentSnapshot:
+    """Combined proxy + external fear/greed, dominance, funding."""
+
+    fear_greed: float  # 0 = extreme fear, 1 = extreme greed
+    btc_dominance: float  # 0 = alt season, 1 = BTC leading
+    funding_proxy: float  # positive = long-bias stress in majors
+    fear_greed_index: float = 50.0  # raw 0-100
+    open_interest_stress: float = 0.0
+    data_source: str = "proxy"
+
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
+
+def compute_sentiment(
+    *,
+    btc_features: dict[str, float],
+    eth_features: dict[str, float] | None,
+    breadth: float,
+    median_rv: float,
+    alt_median_mom_7d: float = 0.0,
+    config: KrakenMaxConfig = CONFIG,
+) -> SentimentSnapshot:
+    btc_mom7 = float(btc_features.get("mom_7d", 0.0))
+    btc_mom21 = float(btc_features.get("mom_21d", 0.0))
+    eth_mom7 = float((eth_features or {}).get("mom_7d", btc_mom7))
+
+    # BTC dominance proxy: BTC short-term strength vs alt basket.
+    rel = btc_mom7 - alt_median_mom_7d
+    dom = _clamp01(0.5 + rel * 2.5)
+
+    # Fear/greed: breadth + trend + inverse vol stress.
+    vol_penalty = _clamp01((median_rv - 0.35) / 0.9)
+    trend_boost = _clamp01(0.5 + btc_mom21 * 2.0)
+    fg = _clamp01(0.45 * breadth + 0.35 * trend_boost + 0.20 * (1.0 - vol_penalty))
+
+    # Funding proxy: when BTC runs faster than ETH, long crowding risk rises.
+    funding = _clamp01(0.5 + (btc_mom7 - eth_mom7) * 4.0)
+
+    return SentimentSnapshot(
+        fear_greed=fg,
+        btc_dominance=dom,
+        funding_proxy=funding,
+        fear_greed_index=fg * 100.0,
+        data_source="proxy",
+    )
+
+
+def merge_external_sentiment(
+    proxy: SentimentSnapshot,
+    external: ExternalSentiment | None,
+    *,
+    config: KrakenMaxConfig = CONFIG,
+) -> SentimentSnapshot:
+    if external is None:
+        return proxy
+    fg_norm = _clamp01(float(external.fear_greed_normalized))
+    dom = _clamp01(0.6 * external.btc_dominance + 0.4 * proxy.btc_dominance)
+    funding = _clamp01(0.5 * external.funding_stress + 0.5 * proxy.funding_proxy)
+    return SentimentSnapshot(
+        fear_greed=fg_norm,
+        btc_dominance=dom,
+        funding_proxy=max(funding, float(external.funding_stress)),
+        fear_greed_index=float(external.fear_greed_index),
+        open_interest_stress=float(external.open_interest_stress),
+        data_source=str(external.source_fg),
+    )
+
+
+def adjust_deployment_cap(
+    base_cap: float,
+    sentiment: SentimentSnapshot,
+    regime_name: str,
+    config: KrakenMaxConfig = CONFIG,
+) -> float:
+    cap = float(base_cap)
+    if regime_name in {"chaos", "bear"}:
+        return cap
+    if sentiment.fear_greed <= float(config.fg_extreme_fear):
+        cap *= 1.0 - float(config.sentiment_fear_cut)
+    elif sentiment.fear_greed >= float(config.fg_extreme_greed) and regime_name == "bull":
+        cap = min(0.99, cap + float(config.sentiment_greed_boost))
+    if sentiment.btc_dominance >= float(config.btc_dom_high) and regime_name == "bull":
+        cap = min(0.99, cap * 1.02)
+    if sentiment.btc_dominance <= float(config.btc_dom_low) and regime_name == "neutral":
+        cap = min(0.99, cap * 1.03)
+    if sentiment.funding_proxy > 0.85:
+        cap *= 0.95
+    oi_stress = float(getattr(sentiment, "open_interest_stress", 0.0) or 0.0)
+    if oi_stress > 0.35:
+        cap *= 0.93
+    return max(0.0, min(0.99, cap))
+
+# --- from cross_venue.py ---
+
+
+import pandas as pd
+
+from config import CONFIG, KrakenMaxConfig
+
+_KRAKEN_MAX = Path(__file__).resolve().parent
+
+# Map Kraken tickers to Binance spot symbols in lead CSV
+_DEFAULT_MAP = {
+    "BTCUSD": "BTCUSDT",
+    "ETHUSD": "ETHUSDT",
+    "SOLUSD": "SOLUSDT",
+    "LINKUSD": "LINKUSDT",
+    "AVAXUSD": "AVAXUSDT",
+    "ADAUSD": "ADAUSDT",
+    "DOTUSD": "DOTUSDT",
+    "XRPUSD": "XRPUSDT",
+}
+
+
+@dataclass
+class LeadSignal:
+    symbol: str
+    ret_1h: float
+    z_score: float
+    boost: float
+
+
+class CrossVenueLead:
+    """
+    Optional Binance/Coinbase spot lead (v6).
+    Loads CSV with columns: symbol, timestamp, close (or ret_1h).
+    Execution remains on Kraken — lead only nudges entry scores.
+    """
+
+    def __init__(self, config: KrakenMaxConfig = CONFIG) -> None:
+        self.config = config
+        self._panel: dict[str, pd.Series] = {}
+        self._load_csv()
+
+    def _load_csv(self) -> None:
+        path = Path(self.config.cross_venue_lead_csv)
+        if not path.is_absolute():
+            path = _KRAKEN_MAX / path
+        if not path.exists():
+            return
+        try:
+            df = pd.read_csv(path)
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+            df = df.sort_values(["symbol", "timestamp"])
+            if "ret_1h" not in df.columns and "close" in df.columns:
+                df["ret_1h"] = df.groupby("symbol")["close"].pct_change().fillna(0.0)
+            for sym, grp in df.groupby("symbol"):
+                s = grp.set_index("timestamp")["ret_1h"].astype(float)
+                self._panel[str(sym)] = s
+        except Exception:
+            self._panel = {}
+
+    @property
+    def loaded(self) -> bool:
+        return bool(self._panel)
+
+    def _kraken_to_lead_symbol(self, kraken_ticker: str) -> str:
+        mapping = dict(_DEFAULT_MAP)
+        return mapping.get(kraken_ticker, kraken_ticker.replace("USD", "USDT"))
+
+    def lead_at(self, kraken_ticker: str, when) -> LeadSignal | None:
+        if not self._panel or not bool(self.config.use_cross_venue_lead):
+            return None
+        lead_sym = self._kraken_to_lead_symbol(kraken_ticker)
+        series = self._panel.get(lead_sym)
+        if series is None or series.empty:
+            return None
+        try:
+            ts = pd.Timestamp(when, tz="UTC")
+            idx = series.index.get_indexer([ts], method="pad")
+            if idx[0] < 0:
+                return None
+            ret = float(series.iloc[idx[0]])
+        except Exception:
+            ret = float(series.iloc[-1])
+        window = series.tail(max(24, self.config.cross_venue_z_window))
+        mu = float(window.mean())
+        sd = float(window.std()) or 1e-6
+        z = (ret - mu) / sd
+        cap = float(self.config.cross_venue_max_boost)
+        boost = max(-cap, min(cap, z * float(self.config.cross_venue_boost_per_z)))
+        return LeadSignal(symbol=kraken_ticker, ret_1h=ret, z_score=z, boost=boost)
+
+    def score_adjustment(self, kraken_ticker: str, when) -> float:
+        sig = self.lead_at(kraken_ticker, when)
+        return float(sig.boost) if sig else 0.0
+
+    def aggregate_boost(self, tickers: list[str], when) -> float:
+        if not tickers:
+            return 0.0
+        boosts = [self.score_adjustment(t, when) for t in tickers]
+        return float(sum(boosts) / len(boosts))

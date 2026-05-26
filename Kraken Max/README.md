@@ -2,9 +2,26 @@
 
 Aggressive **long-only**, **cash account** (no margin) crypto strategy for **QuantConnect** live/paper on **Kraken**, tuned for Canadian clients.
 
-**Current version: v8** — data-driven regime weights, monthly auto revalidation, native 15m QC export, Telegram/HTML dashboard.
+**Current version: v8** (refactored layout) — same features, **10 Python modules** for QuantConnect (each file &lt; 63k chars).
 
-Previous: v7 (validation/scorecard), v6 (telemetry), v5 (15m/ERC), v4–v1 (core stack).
+## Package layout (QC deploy)
+
+Upload the entire **`Kraken Max/`** folder plus **`qc_runtime/`**. Core code lives in:
+
+| File | Role |
+|------|------|
+| `main.py` | `KrakenMaxAlgorithm` entry point |
+| `config.py` | `KrakenMaxConfig` / `CONFIG` |
+| `core.py` | Features, universe, correlation, scalper, sizing, ensemble |
+| `regime.py` | Regime engines, QC gates, per-regime weights |
+| `risk.py` | Stops, portfolio risk, clusters, ERC optimizer |
+| `execution.py` | Limits, bridge to `qc_runtime`, brackets |
+| `data.py` | Sentiment, funding/OI feeds, cross-venue lead |
+| `ml.py` | Logistic scorer + trainer |
+| `ops.py` | Fill tracker, drift, scorecard, telemetry, alerts |
+| `workflow.py` | Walk-forward, validation, auto-revalidation |
+
+`research/` holds CLI scripts only (not required on QC cloud). JSON/CSV data files unchanged.
 
 ## Objective
 
@@ -21,10 +38,10 @@ Designed for **high convexity** — concentrated momentum + breakout + dip-buy +
 
 | Layer | Module | Description |
 |-------|--------|-------------|
-| **Regime walk-forward** | `regime_walk_forward.py` | Grid-search `w_*` per bull/neutral/bear/chaos from BTC labels |
-| **Auto revalidation** | `auto_revalidation.py` | Monthly: walk-forward + validation + baseline + regime weights → ObjectStore |
+| **Regime walk-forward** | `workflow.py` | Grid-search `w_*` per bull/neutral/bear/chaos from BTC labels |
+| **Auto revalidation** | `workflow.py` | Monthly: walk-forward + validation + baseline + regime weights → ObjectStore |
 | **Native 15m export** | `research/export_qc_minute_bars.py` | QC `Resolution.Minute` → consolidate (not hourly upsample) |
-| **Dashboard digest** | `dashboard_digest.py` | Text + HTML snapshot; daily Telegram/Discord via alerts |
+| **Dashboard digest** | `ops.py` | Text + HTML snapshot; daily Telegram/Discord via alerts |
 
 ### Regime weight optimization (local)
 

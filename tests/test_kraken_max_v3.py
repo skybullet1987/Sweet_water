@@ -10,16 +10,16 @@ KRAKEN_MAX = Path(__file__).resolve().parents[1] / "Kraken Max"
 if str(KRAKEN_MAX) not in sys.path:
     sys.path.insert(0, str(KRAKEN_MAX))
 
-from data_feeds import (  # noqa: E402
+from data import (  # noqa: E402
     compute_btc_dominance,
     load_fear_greed_csv,
     load_funding_csv,
     SentimentDataHub,
 )
-from ensemble import load_optimized_ensemble_weights  # noqa: E402
-from execution_bridge import _USE_PRO  # noqa: E402
-from sentiment import compute_sentiment, merge_external_sentiment  # noqa: E402
-from walk_forward_engine import prepare_hourly_panel, walk_forward_optimize  # noqa: E402
+from core import load_optimized_ensemble_weights  # noqa: E402
+from execution import _USE_PRO  # noqa: E402
+from data import compute_sentiment, merge_external_sentiment  # noqa: E402
+from workflow import prepare_hourly_panel, walk_forward_optimize  # noqa: E402
 
 
 def _multi_symbol_bars(n: int = 500) -> pd.DataFrame:
@@ -71,7 +71,7 @@ def test_merge_external_sentiment():
         breadth=0.6,
         median_rv=0.4,
     )
-    from data_feeds import ExternalSentiment
+    from data import ExternalSentiment
 
     ext = ExternalSentiment(fear_greed_index=25.0, fear_greed_normalized=0.25, btc_dominance=0.7, funding_stress=0.3)
     ext.source_fg = "csv_fg"

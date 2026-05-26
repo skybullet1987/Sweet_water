@@ -27,43 +27,55 @@ except ImportError:  # pragma: no cover
     class Market:
         Kraken = "Kraken"
 
-from baseline_manager import BaselineManager
-from brackets import set_bracket_prices, sync_brackets
-from cluster_risk import filter_cluster_caps, max_cluster_exposure
 from config import CONFIG
-from cost_model import CalibratedCostModel
-from cross_venue import CrossVenueLead
-from drift_monitor import DriftMonitor
-from fill_tracker import FillTracker
-from auto_revalidation import AutoRevalidator
-from bars_util import consolidate_minute_ohlcv
-from regime_ensemble import load_regime_weights_from_object_store
-from dashboard_digest import build_html_digest, build_text_digest, load_bundle, persist_digest
-from scorecard import PaperTradingScorecard
-from telemetry import TelemetryDashboard
-from correlation import filter_uncorrelated_picks
-from data_feeds import SentimentDataHub
-from ensemble import AlphaEnsemble, load_optimized_ensemble_weights
-from execution_bridge import (
+from core import (
+    AggressiveSizer,
+    AlphaEnsemble,
+    FeatureCache,
+    KRAKEN_MAX_UNIVERSE,
+    REFERENCE_SYMBOLS,
+    btc_beta_vs,
+    build_scalper_features,
+    cross_section_ranks,
+    evaluate_scalper_entry,
+    filter_uncorrelated_picks,
+    load_optimized_ensemble_weights,
+    select_universe,
+)
+from data import CrossVenueLead, SentimentDataHub, compute_sentiment, merge_external_sentiment
+from execution import (
     escalate_orders,
     init_execution_state,
     liquidate_symbol,
     manage_position_exit,
     place_buy_notional,
     position_qty,
+    set_bracket_prices,
+    sync_brackets,
 )
-from features import FeatureCache, btc_beta_vs, cross_section_ranks
-from ml_scorer import MLScorer, load_ml_weights
-from ml_trainer import MLTrainer
-from notifications import AlertManager
-from portfolio_optimizer import allocate_erc_notionals
-from regime import RegimeEngine
-from regime_bridge import UnifiedRegimeEngine
-from risk import PortfolioRisk, PositionRisk
-from scalper_sleeve import build_scalper_features, evaluate_scalper_entry
-from sentiment import compute_sentiment, merge_external_sentiment
-from sizing import AggressiveSizer
-from universe import KRAKEN_MAX_UNIVERSE, REFERENCE_SYMBOLS, select_universe
+from ml import MLScorer, MLTrainer, load_ml_weights
+from ops import (
+    AlertManager,
+    BaselineManager,
+    CalibratedCostModel,
+    DriftMonitor,
+    FillTracker,
+    PaperTradingScorecard,
+    TelemetryDashboard,
+    build_html_digest,
+    build_text_digest,
+    load_bundle,
+    persist_digest,
+)
+from regime import RegimeEngine, UnifiedRegimeEngine, load_regime_weights_from_object_store
+from risk import (
+    PortfolioRisk,
+    PositionRisk,
+    allocate_erc_notionals,
+    filter_cluster_caps,
+    max_cluster_exposure,
+)
+from workflow import AutoRevalidator, consolidate_minute_ohlcv
 
 
 class KrakenMaxAlgorithm(QCAlgorithm):

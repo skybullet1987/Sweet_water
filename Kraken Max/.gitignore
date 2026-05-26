@@ -1,1 +1,4 @@
 *.json test artifacts
+_merge_backup/
+validation_report_test.json
+regime_weights_test.json

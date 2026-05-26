@@ -13,14 +13,14 @@ KRAKEN_MAX = Path(__file__).resolve().parents[1] / "Kraken Max"
 if str(KRAKEN_MAX) not in sys.path:
     sys.path.insert(0, str(KRAKEN_MAX))
 
-from baseline_manager import BaselineManager  # noqa: E402
+from ops import BaselineManager  # noqa: E402
 from config import CONFIG  # noqa: E402
-from cross_venue import CrossVenueLead  # noqa: E402
-from drift_monitor import DriftMonitor  # noqa: E402
-from execution_bridge import track_order_submit  # noqa: E402
-from fill_tracker import FillTracker  # noqa: E402
-from telemetry import TelemetryDashboard  # noqa: E402
-from walk_forward_engine import (  # noqa: E402
+from data import CrossVenueLead  # noqa: E402
+from ops import DriftMonitor  # noqa: E402
+from execution import track_order_submit  # noqa: E402
+from ops import FillTracker  # noqa: E402
+from ops import TelemetryDashboard  # noqa: E402
+from workflow import (  # noqa: E402
     periods_per_year,
     prepare_bar_panel,
     resample_bars_to_minutes,

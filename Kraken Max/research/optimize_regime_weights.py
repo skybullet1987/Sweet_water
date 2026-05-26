@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from config import CONFIG  # noqa: E402
-from regime_walk_forward import optimize_regime_weights, save_regime_weights  # noqa: E402
+from workflow import optimize_regime_weights, save_regime_weights  # noqa: E402
 
 
 def main() -> None:

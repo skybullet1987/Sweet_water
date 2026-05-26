@@ -82,7 +82,7 @@ def pull_kraken_history_qc(
     )
     out = out.dropna().sort_values(["symbol", "timestamp"])
     if int(bar_minutes) < 60 and not out.empty:
-        from walk_forward_engine import resample_bars_to_minutes
+        from workflow import resample_bars_to_minutes
 
         out = resample_bars_to_minutes(out, bar_minutes=int(bar_minutes))
     return out
@@ -92,7 +92,7 @@ def export_15m_from_hourly_csv(csv_path, out_path, bar_minutes: int = 15) -> pd.
     """Local helper: upsample hourly export to N-minute bars for 15m walk-forward."""
     from pathlib import Path
 
-    from walk_forward_engine import resample_bars_to_minutes
+    from workflow import resample_bars_to_minutes
 
     df = pd.read_csv(csv_path)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)

@@ -20,26 +20,4 @@ jobs:
       - name: Smoke import execution module
         run: python -c "from qc_runtime.execution import KrakenTieredFeeModel, RealisticCryptoSlippage; print('ok')"
       - name: Validate walk-forward gates
-        run: |
-          python - <<'PY'
-          import sys
-          from pathlib import Path
-          import pandas as pd
-
-          root = Path('.').resolve()
-          sys.path.insert(0, str(root / 'qc_runtime'))
-          from config import CONFIG
-          from reporting import walk_forward_run
-
-          fixture = pd.read_csv(root / 'tests/fixtures/walk_forward_bars.csv')
-          out = walk_forward_run(fixture, CONFIG)
-          assert out['oos_sharpe'] >= 0.5, out
-          assert out['oos_max_dd'] <= 0.20, out
-          assert 30 <= out['oos_trade_count'] <= 300, out
-          assert out['oos_avg_win_avg_loss'] >= 1.2, out
-          assert out['oos_cancel_rate'] < 0.20, out
-          exits = out['exit_tag_distribution']
-          assert exits.get('TP', 0) >= 5, exits
-          assert exits.get('SL', 0) >= 3, exits
-          assert exits.get('TimeStop', 0) < exits.get('TP', 0) + exits.get('SL', 0) + exits.get('Chandelier', 0), exits
-          PY
+        run: pytest tests/test_walk_forward_gates.py -v

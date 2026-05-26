@@ -15,11 +15,11 @@ if str(KRAKEN_MAX) not in sys.path:
 from workflow import validate_bars  # noqa: E402
 from risk import filter_cluster_caps, max_cluster_exposure  # noqa: E402
 from config import CONFIG  # noqa: E402
-from ops import CalibratedCostModel  # noqa: E402
+from kraken_ops import CalibratedCostModel  # noqa: E402
 from core import AlphaEnsemble  # noqa: E402
-from ops import FillTracker  # noqa: E402
+from kraken_ops import FillTracker  # noqa: E402
 from regime import config_for_regime, normalize_regime_key  # noqa: E402
-from ops import PaperTradingScorecard  # noqa: E402
+from kraken_ops import PaperTradingScorecard  # noqa: E402
 
 
 class _FakeAlgo:

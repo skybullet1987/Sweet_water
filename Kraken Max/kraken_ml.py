@@ -1,4 +1,4 @@
-"""Kraken Max — ML scorer & trainer (`ml.py`)."""
+"""Kraken Max — ML scorer & trainer (`kraken_ml.py`)."""
 from __future__ import annotations
 
 import json

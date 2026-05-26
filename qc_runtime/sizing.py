@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections import deque
 import math
 
-from config import CONFIG, StrategyConfig
+try:
+    from config import CONFIG, StrategyConfig
+except ModuleNotFoundError:  # pragma: no cover
+    from .config import CONFIG, StrategyConfig  # type: ignore
 
 BPS_TO_DECIMAL = 10_000.0
 
@@ -172,7 +175,10 @@ class Executor:
         self.highest_close: dict[str, float] = {}
 
     def place_entry(self, symbol: str, target_weight: float, score: float) -> dict[str, float | str]:
-        from execution import KrakenTieredFeeModel
+        try:
+            from execution import KrakenTieredFeeModel
+        except ModuleNotFoundError:  # pragma: no cover
+            from .execution import KrakenTieredFeeModel  # type: ignore
 
         return {
             "symbol": symbol,

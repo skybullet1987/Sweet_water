@@ -37,7 +37,7 @@ jobs:
 
           root = Path("Kraken Max").resolve()
           sys.path.insert(0, str(root))
-          from walk_forward_engine import walk_forward_optimize, save_ensemble_weights
+          from workflow import walk_forward_optimize, save_ensemble_weights
 
           idx = pd.date_range("2024-01-01", periods=500, freq="h", tz="UTC")
           rows = []

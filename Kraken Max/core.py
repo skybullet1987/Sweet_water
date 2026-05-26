@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from config import CONFIG, KrakenMaxConfig
-from ml import MLScorer, load_ml_weights
+from kraken_ml import MLScorer, load_ml_weights
 from regime import (
     config_for_regime,
     load_regime_weights,
@@ -554,7 +554,7 @@ class AggressiveSizer:
         if score <= 0 or notional <= 0:
             return False
         if algo is not None and bool(self.config.use_calibrated_costs):
-            from ops import CalibratedCostModel
+            from kraken_ops import CalibratedCostModel
 
             return CalibratedCostModel(self.config).passes_edge_gate(score, notional, algo)
         fee = notional * float(self.config.expected_round_trip_fees)

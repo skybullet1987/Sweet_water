@@ -12,7 +12,7 @@ QC_LIMIT = 63_000
 
 MERGES: dict[str, list[str]] = {
     "data.py": ["data_feeds.py", "sentiment.py", "cross_venue.py"],
-    "ml.py": ["ml_scorer.py", "ml_trainer.py"],
+    "kraken_ml.py": ["ml_scorer.py", "ml_trainer.py"],
     "regime.py": ["regime.py", "advanced_regime.py", "regime_bridge.py", "regime_ensemble.py"],
     "core.py": [
         "features.py",
@@ -24,7 +24,7 @@ MERGES: dict[str, list[str]] = {
     ],
     "risk.py": ["risk.py", "cluster_risk.py", "portfolio_optimizer.py"],
     "execution.py": ["execution.py", "execution_bridge.py", "brackets.py"],
-    "ops.py": [
+    "kraken_ops.py": [
         "fill_tracker.py",
         "drift_monitor.py",
         "cost_model.py",
@@ -95,7 +95,7 @@ def patch_body(src: str, body: str) -> str:
             "from risk import max_cluster_exposure",
         )
     if src == "sizing.py":
-        body = body.replace("from cost_model import CalibratedCostModel", "from ops import CalibratedCostModel")
+        body = body.replace("from cost_model import CalibratedCostModel", "from kraken_ops import CalibratedCostModel")
     if src == "auto_revalidation.py":
         for pat in (
             r"from backtest_validator import.*\n",
@@ -110,7 +110,7 @@ def patch_body(src: str, body: str) -> str:
         body = re.sub(r"from walk_forward_engine import.*\n", "", body)
     if src == "walk_forward_engine.py":
         body = body.replace("from ensemble import AlphaEnsemble", "from core import AlphaEnsemble")
-        body = body.replace("from ml_scorer import MLScorer", "from ml import MLScorer")
+        body = body.replace("from ml_scorer import MLScorer", "from kraken_ml import MLScorer")
     if src == "backtest_validator.py":
         body = re.sub(r"from walk_forward_engine import.*\n", "", body)
     if src == "baseline_manager.py":
@@ -130,7 +130,7 @@ def header_for(name: str) -> list[str]:
     ]
     if name == "data.py":
         h += ["from config import CONFIG, KrakenMaxConfig", ""]
-    elif name == "ml.py":
+    elif name == "kraken_ml.py":
         h += ["from config import CONFIG, KrakenMaxConfig", ""]
     elif name == "regime.py":
         h += [
@@ -141,7 +141,7 @@ def header_for(name: str) -> list[str]:
     elif name == "core.py":
         h += [
             "from config import CONFIG, KrakenMaxConfig",
-            "from ml import MLScorer, load_ml_weights",
+            "from kraken_ml import MLScorer, load_ml_weights",
             "from regime import (",
             "    config_for_regime,",
             "    load_regime_weights,",
@@ -154,14 +154,14 @@ def header_for(name: str) -> list[str]:
         h += ["from config import CONFIG, KrakenMaxConfig", ""]
     elif name == "execution.py":
         h += ["from config import CONFIG", ""]
-    elif name == "ops.py":
+    elif name == "kraken_ops.py":
         h += ["from config import CONFIG, KrakenMaxConfig", ""]
     elif name == "workflow.py":
         h += [
             "from config import CONFIG, KrakenMaxConfig",
-            "from ops import BaselineManager, DriftMonitor",
+            "from kraken_ops import BaselineManager, DriftMonitor",
             "from core import AlphaEnsemble",
-            "from ml import MLScorer",
+            "from kraken_ml import MLScorer",
             "from regime import _DEFAULT_REGIME_MAP, _WEIGHT_KEYS, load_regime_weights, normalize_regime_key",
             "",
         ]
@@ -181,7 +181,7 @@ def merge_file(name: str, sources: list[str], cache: dict[str, str]) -> str:
             "from core import hourly_returns  # portfolio_optimizer",
             1,
         )
-    if name == "ops.py" and "from risk import max_cluster_exposure" not in text:
+    if name == "kraken_ops.py" and "from risk import max_cluster_exposure" not in text:
         text = text.replace(
             "def build(",
             "from risk import max_cluster_exposure  # telemetry\n\n\ndef build(",

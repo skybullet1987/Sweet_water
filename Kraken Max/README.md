@@ -17,8 +17,8 @@ Upload the entire **`Kraken Max/`** folder plus **`qc_runtime/`**. Core code liv
 | `risk.py` | Stops, portfolio risk, clusters, ERC optimizer |
 | `execution.py` | Limits, bridge to `qc_runtime`, brackets |
 | `data.py` | Sentiment, funding/OI feeds, cross-venue lead |
-| `ml.py` | Logistic scorer + trainer |
-| `ops.py` | Fill tracker, drift, scorecard, telemetry, alerts |
+| `kraken_ml.py` | Logistic scorer + trainer |
+| `kraken_ops.py` | Fill tracker, drift, scorecard, telemetry, alerts |
 | `workflow.py` | Walk-forward, validation, auto-revalidation |
 
 `research/` holds CLI scripts only (not required on QC cloud). JSON/CSV data files unchanged.
@@ -41,7 +41,7 @@ Designed for **high convexity** — concentrated momentum + breakout + dip-buy +
 | **Regime walk-forward** | `workflow.py` | Grid-search `w_*` per bull/neutral/bear/chaos from BTC labels |
 | **Auto revalidation** | `workflow.py` | Monthly: walk-forward + validation + baseline + regime weights → ObjectStore |
 | **Native 15m export** | `research/export_qc_minute_bars.py` | QC `Resolution.Minute` → consolidate (not hourly upsample) |
-| **Dashboard digest** | `ops.py` | Text + HTML snapshot; daily Telegram/Discord via alerts |
+| **Dashboard digest** | `kraken_ops.py` | Text + HTML snapshot; daily Telegram/Discord via alerts |
 
 ### Regime weight optimization (local)
 

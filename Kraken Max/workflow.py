@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from config import CONFIG, KrakenMaxConfig
-from ops import BaselineManager, DriftMonitor
+from kraken_ops import BaselineManager, DriftMonitor
 from regime import (
     _DEFAULT_REGIME_MAP,
     _WEIGHT_KEYS,
@@ -306,7 +306,7 @@ def walk_forward_optimize(
     for combo in combos:
         cfg = replace(config, **combo)
         from core import AlphaEnsemble
-        from ml import MLScorer
+        from kraken_ml import MLScorer
 
         ens = AlphaEnsemble(cfg, MLScorer())
         fold_sharpes = []
@@ -324,7 +324,7 @@ def walk_forward_optimize(
 
     final_cfg = replace(config, **best_combo)
     from core import AlphaEnsemble
-    from ml import MLScorer
+    from kraken_ml import MLScorer
 
     final_ens = AlphaEnsemble(final_cfg, MLScorer())
     all_rets: list[float] = []
@@ -499,7 +499,7 @@ def _eval_regime_weights(
 ) -> float:
     cfg = replace(config, **{k: float(weights[k]) for k in _WEIGHT_KEYS if k in weights})
     from core import AlphaEnsemble
-    from ml import MLScorer
+    from kraken_ml import MLScorer
 
     ens = AlphaEnsemble(cfg, MLScorer())
     indices = [i for i, lab in enumerate(regime_labels) if lab == target_regime]

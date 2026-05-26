@@ -33,15 +33,26 @@ try:
     from config import CONFIG, StrategyConfig
 except ModuleNotFoundError:  # pragma: no cover
     from .config import CONFIG, StrategyConfig  # type: ignore
-from sizing import (
-    Executor,
-    can_afford,
-    clear_rebalance_failure,
-    free_cash_usd,
-    is_price_stale,
-    mark_rebalance_failure,
-    rebalance_symbol_blocked,
-)
+try:
+    from sizing import (
+        Executor,
+        can_afford,
+        clear_rebalance_failure,
+        free_cash_usd,
+        is_price_stale,
+        mark_rebalance_failure,
+        rebalance_symbol_blocked,
+    )
+except ModuleNotFoundError:  # pragma: no cover
+    from .sizing import (  # type: ignore
+        Executor,
+        can_afford,
+        clear_rebalance_failure,
+        free_cash_usd,
+        is_price_stale,
+        mark_rebalance_failure,
+        rebalance_symbol_blocked,
+    )
 try:
     from risk import RealisticCryptoSlippage
 except ModuleNotFoundError:  # pragma: no cover

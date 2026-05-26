@@ -13,8 +13,8 @@ if str(KRAKEN_MAX) not in sys.path:
     sys.path.insert(0, str(KRAKEN_MAX))
 
 from config import CONFIG  # noqa: E402
-from ops import DriftMonitor  # noqa: E402
-from ops import FillTracker  # noqa: E402
+from kraken_ops import DriftMonitor  # noqa: E402
+from kraken_ops import FillTracker  # noqa: E402
 from risk import allocate_erc_notionals, erc_weights, shrink_covariance  # noqa: E402
 from regime import UnifiedRegimeEngine  # noqa: E402
 from core import FeatureCache, compute_bar_features  # noqa: E402

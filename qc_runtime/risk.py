@@ -5,7 +5,10 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Mapping
 
-from config import CONFIG, StrategyConfig
+try:
+    from config import CONFIG, StrategyConfig
+except ModuleNotFoundError:  # pragma: no cover
+    from .config import CONFIG, StrategyConfig  # type: ignore
 
 
 def equity_kill_switch_active(*, equity: float, equity_peak: float, max_drawdown: float = 0.15) -> bool:

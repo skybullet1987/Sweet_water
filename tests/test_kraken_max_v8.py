@@ -14,7 +14,7 @@ if str(KRAKEN_MAX) not in sys.path:
 from workflow import AutoRevalidator  # noqa: E402
 from workflow import consolidate_minute_ohlcv  # noqa: E402
 from config import CONFIG  # noqa: E402
-from ops import DigestBundle, build_html_digest, build_text_digest  # noqa: E402
+from kraken_ops import DigestBundle, build_html_digest, build_text_digest  # noqa: E402
 from workflow import (  # noqa: E402
     build_regime_index,
     optimize_regime_weights,

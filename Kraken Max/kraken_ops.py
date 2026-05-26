@@ -1,4 +1,4 @@
-"""Kraken Max — monitoring, alerts, scorecard (`ops.py`)."""
+"""Kraken Max — monitoring, alerts, scorecard (`kraken_ops.py`)."""
 from __future__ import annotations
 
 import json

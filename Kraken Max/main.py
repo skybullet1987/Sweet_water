@@ -53,8 +53,8 @@ from execution import (
     set_bracket_prices,
     sync_brackets,
 )
-from ml import MLScorer, MLTrainer, load_ml_weights
-from ops import (
+from kraken_ml import MLScorer, MLTrainer, load_ml_weights
+from kraken_ops import (
     AlertManager,
     BaselineManager,
     CalibratedCostModel,

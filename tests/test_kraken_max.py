@@ -17,8 +17,8 @@ from config import CONFIG  # noqa: E402
 from core import filter_uncorrelated_picks, return_correlation  # noqa: E402
 from core import AlphaEnsemble  # noqa: E402
 from core import FeatureCache, btc_beta_vs, compute_bar_features, cross_section_ranks  # noqa: E402
-from ml import MLScorer, load_ml_weights  # noqa: E402
-from ml import MLTrainer  # noqa: E402
+from kraken_ml import MLScorer, load_ml_weights  # noqa: E402
+from kraken_ml import MLTrainer  # noqa: E402
 from regime import RegimeEngine  # noqa: E402
 from risk import PositionRisk, should_exit  # noqa: E402
 from core import build_scalper_features, evaluate_scalper_entry, evaluate_scalper_exit  # noqa: E402

@@ -14,7 +14,7 @@ from regime import AdvancedRegimeEngine, HurstRegimeModel, VarianceRatioRegimeMo
 from execution import set_bracket_prices  # noqa: E402
 from config import CONFIG  # noqa: E402
 from data import load_open_interest_csv, load_funding_csv  # noqa: E402
-from ops import AlertManager  # noqa: E402
+from kraken_ops import AlertManager  # noqa: E402
 from risk import erc_weights, allocate_erc_notionals  # noqa: E402
 from core import FeatureCache  # noqa: E402
 from risk import PositionRisk  # noqa: E402

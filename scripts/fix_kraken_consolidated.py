@@ -39,7 +39,7 @@ import pandas as pd
 from config import CONFIG, KrakenMaxConfig
 
 ''',
-    "ml.py": '''"""Kraken Max — ML scorer & trainer (`ml.py`)."""
+    "kraken_ml.py": '''"""Kraken Max — ML scorer & trainer (`kraken_ml.py`)."""
 from __future__ import annotations
 
 import json
@@ -85,7 +85,7 @@ import numpy as np
 import pandas as pd
 
 from config import CONFIG, KrakenMaxConfig
-from ml import MLScorer, load_ml_weights
+from kraken_ml import MLScorer, load_ml_weights
 from regime import (
     config_for_regime,
     load_regime_weights,
@@ -119,7 +119,7 @@ from config import CONFIG
 from risk import PositionRisk, should_exit
 
 ''',
-    "ops.py": '''"""Kraken Max — monitoring, alerts, scorecard (`ops.py`)."""
+    "kraken_ops.py": '''"""Kraken Max — monitoring, alerts, scorecard (`kraken_ops.py`)."""
 from __future__ import annotations
 
 import json
@@ -149,7 +149,7 @@ import numpy as np
 import pandas as pd
 
 from config import CONFIG, KrakenMaxConfig
-from ops import BaselineManager, DriftMonitor
+from kraken_ops import BaselineManager, DriftMonitor
 from regime import (
     _DEFAULT_REGIME_MAP,
     _WEIGHT_KEYS,
@@ -189,15 +189,15 @@ def fix_telemetry_cluster(text: str) -> str:
 
 def fix_workflow(text: str) -> str:
     text = text.replace("from core import AlphaEnsemble\n", "")
-    text = text.replace("from ml import MLScorer\n", "")
+    text = text.replace("from kraken_ml import MLScorer\n", "")
     text = text.replace(
         "    ens = AlphaEnsemble(cfg, MLScorer())",
-        "    from core import AlphaEnsemble\n    from ml import MLScorer\n\n        ens = AlphaEnsemble(cfg, MLScorer())",
+        "    from core import AlphaEnsemble\n    from kraken_ml import MLScorer\n\n        ens = AlphaEnsemble(cfg, MLScorer())",
     )
     # fix indentation on ens line - read actual context
     text = text.replace(
         "        ens = AlphaEnsemble(cfg, MLScorer())",
-        "        from core import AlphaEnsemble\n        from ml import MLScorer\n        ens = AlphaEnsemble(cfg, MLScorer())",
+        "        from core import AlphaEnsemble\n        from kraken_ml import MLScorer\n        ens = AlphaEnsemble(cfg, MLScorer())",
     )
     # remove duplicate load_regime_weights_merged at end if we move to regime
     return text
@@ -215,7 +215,7 @@ def main() -> None:
         path = ROOT / name
         text = path.read_text(encoding="utf-8")
         text = reheader(name, text)
-        if name == "ops.py":
+        if name == "kraken_ops.py":
             text = fix_ops_scorecard(text)
             text = fix_telemetry_cluster(text)
         if name == "workflow.py":

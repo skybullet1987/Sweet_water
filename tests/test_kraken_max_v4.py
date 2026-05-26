@@ -10,15 +10,15 @@ KRAKEN_MAX = Path(__file__).resolve().parents[1] / "Kraken Max"
 if str(KRAKEN_MAX) not in sys.path:
     sys.path.insert(0, str(KRAKEN_MAX))
 
-from advanced_regime import AdvancedRegimeEngine, HurstRegimeModel, VarianceRatioRegimeModel  # noqa: E402
-from brackets import set_bracket_prices  # noqa: E402
+from regime import AdvancedRegimeEngine, HurstRegimeModel, VarianceRatioRegimeModel  # noqa: E402
+from execution import set_bracket_prices  # noqa: E402
 from config import CONFIG  # noqa: E402
-from data_feeds import load_open_interest_csv, load_funding_csv  # noqa: E402
-from notifications import AlertManager  # noqa: E402
-from portfolio_optimizer import erc_weights, allocate_erc_notionals  # noqa: E402
-from features import FeatureCache  # noqa: E402
+from data import load_open_interest_csv, load_funding_csv  # noqa: E402
+from ops import AlertManager  # noqa: E402
+from risk import erc_weights, allocate_erc_notionals  # noqa: E402
+from core import FeatureCache  # noqa: E402
 from risk import PositionRisk  # noqa: E402
-from sentiment import SentimentSnapshot, adjust_deployment_cap  # noqa: E402
+from data import SentimentSnapshot, adjust_deployment_cap  # noqa: E402
 
 
 def test_v4_config_flags():

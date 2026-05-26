@@ -12,14 +12,14 @@ KRAKEN_MAX = Path(__file__).resolve().parents[1] / "Kraken Max"
 if str(KRAKEN_MAX) not in sys.path:
     sys.path.insert(0, str(KRAKEN_MAX))
 
-from backtest_validator import validate_bars  # noqa: E402
-from cluster_risk import filter_cluster_caps, max_cluster_exposure  # noqa: E402
+from workflow import validate_bars  # noqa: E402
+from risk import filter_cluster_caps, max_cluster_exposure  # noqa: E402
 from config import CONFIG  # noqa: E402
-from cost_model import CalibratedCostModel  # noqa: E402
-from ensemble import AlphaEnsemble  # noqa: E402
-from fill_tracker import FillTracker  # noqa: E402
-from regime_ensemble import config_for_regime, normalize_regime_key  # noqa: E402
-from scorecard import PaperTradingScorecard  # noqa: E402
+from ops import CalibratedCostModel  # noqa: E402
+from core import AlphaEnsemble  # noqa: E402
+from ops import FillTracker  # noqa: E402
+from regime import config_for_regime, normalize_regime_key  # noqa: E402
+from ops import PaperTradingScorecard  # noqa: E402
 
 
 class _FakeAlgo:

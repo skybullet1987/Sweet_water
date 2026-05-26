@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from config import CONFIG  # noqa: E402
-from walk_forward_engine import save_ensemble_weights, walk_forward_optimize  # noqa: E402
+from workflow import save_ensemble_weights, walk_forward_optimize  # noqa: E402
 
 
 def main() -> None:
@@ -27,7 +27,7 @@ def main() -> None:
     bars = pd.read_csv(args.csv)
     bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True)
     if args.resample:
-        from walk_forward_engine import resample_bars_to_minutes
+        from workflow import resample_bars_to_minutes
 
         bars = resample_bars_to_minutes(bars, bar_minutes=15)
 

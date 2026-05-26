@@ -14,17 +14,17 @@ if str(KRAKEN_MAX) not in sys.path:
     sys.path.insert(0, str(KRAKEN_MAX))
 
 from config import CONFIG  # noqa: E402
-from correlation import filter_uncorrelated_picks, return_correlation  # noqa: E402
-from ensemble import AlphaEnsemble  # noqa: E402
-from features import FeatureCache, btc_beta_vs, compute_bar_features, cross_section_ranks  # noqa: E402
-from ml_scorer import MLScorer, load_ml_weights  # noqa: E402
-from ml_trainer import MLTrainer  # noqa: E402
+from core import filter_uncorrelated_picks, return_correlation  # noqa: E402
+from core import AlphaEnsemble  # noqa: E402
+from core import FeatureCache, btc_beta_vs, compute_bar_features, cross_section_ranks  # noqa: E402
+from ml import MLScorer, load_ml_weights  # noqa: E402
+from ml import MLTrainer  # noqa: E402
 from regime import RegimeEngine  # noqa: E402
 from risk import PositionRisk, should_exit  # noqa: E402
-from scalper_sleeve import build_scalper_features, evaluate_scalper_entry, evaluate_scalper_exit  # noqa: E402
-from sentiment import adjust_deployment_cap, compute_sentiment  # noqa: E402
-from sizing import AggressiveSizer, can_afford  # noqa: E402
-from universe import CANADA_UNLIMITED, BLACKLIST, select_universe  # noqa: E402
+from core import build_scalper_features, evaluate_scalper_entry, evaluate_scalper_exit  # noqa: E402
+from data import adjust_deployment_cap, compute_sentiment  # noqa: E402
+from core import AggressiveSizer, can_afford  # noqa: E402
+from core import CANADA_UNLIMITED, BLACKLIST, select_universe  # noqa: E402
 
 
 def _synthetic_ohlcv(rows: int = 200) -> pd.DataFrame:

@@ -11,11 +11,11 @@ KRAKEN_MAX = Path(__file__).resolve().parents[1] / "Kraken Max"
 if str(KRAKEN_MAX) not in sys.path:
     sys.path.insert(0, str(KRAKEN_MAX))
 
-from auto_revalidation import AutoRevalidator  # noqa: E402
-from bars_util import consolidate_minute_ohlcv  # noqa: E402
+from workflow import AutoRevalidator  # noqa: E402
+from workflow import consolidate_minute_ohlcv  # noqa: E402
 from config import CONFIG  # noqa: E402
-from dashboard_digest import DigestBundle, build_html_digest, build_text_digest  # noqa: E402
-from regime_walk_forward import (  # noqa: E402
+from ops import DigestBundle, build_html_digest, build_text_digest  # noqa: E402
+from workflow import (  # noqa: E402
     build_regime_index,
     optimize_regime_weights,
     regime_label_from_btc_row,

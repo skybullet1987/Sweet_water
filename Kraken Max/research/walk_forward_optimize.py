@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from walk_forward_engine import save_ensemble_weights, walk_forward_optimize  # noqa: E402
+from workflow import save_ensemble_weights, walk_forward_optimize  # noqa: E402
 
 
 def main() -> None:

@@ -11,7 +11,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from backtest_validator import save_validation_report, validate_bars  # noqa: E402
+from workflow import save_validation_report, validate_bars  # noqa: E402
 from config import CONFIG  # noqa: E402
 
 

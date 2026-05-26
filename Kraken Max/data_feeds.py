@@ -36,6 +36,7 @@ except ImportError:  # pragma: no cover
 DATA_DIR = Path(__file__).resolve().parent / "data"
 FEAR_GREED_CSV = DATA_DIR / "fear_greed_history.csv"
 FUNDING_CSV = DATA_DIR / "funding_rates.csv"
+OPEN_INTEREST_CSV = DATA_DIR / "open_interest.csv"
 
 
 @dataclass
@@ -46,6 +47,8 @@ class ExternalSentiment:
     funding_rate_btc: float = 0.0
     funding_rate_eth: float = 0.0
     funding_stress: float = 0.0
+    open_interest_btc: float = 0.0
+    open_interest_stress: float = 0.0
     source_fg: str = "proxy"
 
 
@@ -63,6 +66,16 @@ def load_fear_greed_csv(path: Path | None = None) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"], utc=True, errors="coerce")
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
     return df.dropna(subset=["date", "value"]).sort_values("date")
+
+
+def load_open_interest_csv(path: Path | None = None) -> pd.DataFrame:
+    target = path or OPEN_INTEREST_CSV
+    if not target.exists():
+        return pd.DataFrame(columns=["date", "symbol", "open_interest"])
+    df = pd.read_csv(target)
+    df["date"] = pd.to_datetime(df["date"], utc=True, errors="coerce")
+    df["open_interest"] = pd.to_numeric(df["open_interest"], errors="coerce")
+    return df.dropna(subset=["date", "symbol", "open_interest"])
 
 
 def load_funding_csv(path: Path | None = None) -> pd.DataFrame:
@@ -127,6 +140,7 @@ class SentimentDataHub:
         self.funding_symbols: dict[str, Any] = {}
         self._fg_history = load_fear_greed_csv()
         self._funding_history = load_funding_csv()
+        self._oi_history = load_open_interest_csv()
         self.last: ExternalSentiment = ExternalSentiment()
 
     def initialize_algorithm(self, algo) -> None:
@@ -167,6 +181,7 @@ class SentimentDataHub:
         dom = compute_btc_dominance(feature_map)
         fund_btc, fund_eth = self._latest_funding(algo)
         stress = _clamp01(max(0.0, fund_btc) * 200 + max(0.0, fund_eth) * 200)
+        oi_btc, oi_stress = self._latest_open_interest(algo)
 
         self.last = ExternalSentiment(
             fear_greed_index=float(fg_val),
@@ -174,7 +189,9 @@ class SentimentDataHub:
             btc_dominance=dom,
             funding_rate_btc=fund_btc,
             funding_rate_eth=fund_eth,
-            funding_stress=stress,
+            funding_stress=max(stress, oi_stress * 0.5),
+            open_interest_btc=oi_btc,
+            open_interest_stress=oi_stress,
             source_fg=source,
         )
         return self.last
@@ -191,10 +208,24 @@ class SentimentDataHub:
                 return b, e
         return 0.0, 0.0
 
+    def _latest_open_interest(self, algo) -> tuple[float, float]:
+        if self._oi_history.empty:
+            return 0.0, 0.0
+        ts = pd.Timestamp(getattr(algo, "Time", datetime.now(timezone.utc)), tz="UTC")
+        sub = self._oi_history[self._oi_history["date"] <= ts]
+        btc = sub[sub["symbol"].str.upper().str.contains("BTC", na=False)]
+        if btc.empty:
+            return 0.0, 0.0
+        oi = float(btc.iloc[-1]["open_interest"])
+        med = float(btc["open_interest"].median()) if len(btc) > 3 else oi
+        stress = _clamp01((oi / max(med, 1e-9)) - 1.0) if med > 0 else 0.0
+        return oi, stress
+
     def to_context(self) -> dict[str, float]:
         return {
             "fear_greed": self.last.fear_greed_normalized,
             "btc_dominance": self.last.btc_dominance,
             "funding_stress": self.last.funding_stress,
             "funding_btc": self.last.funding_rate_btc,
+            "open_interest_stress": self.last.open_interest_stress,
         }

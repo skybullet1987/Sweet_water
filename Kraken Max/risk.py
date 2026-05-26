@@ -15,6 +15,8 @@ class PositionRisk:
     pyramid_count: int = 0
     predicted_score: float = 0.0
     strategy_owner: str = "momentum"  # momentum | scalper
+    stop_price: float | None = None
+    take_profit_price: float | None = None
 
 
 class PortfolioRisk:

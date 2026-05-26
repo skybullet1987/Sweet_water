@@ -2,7 +2,9 @@
 
 Aggressive **long-only**, **cash account** (no margin) crypto strategy for **QuantConnect** live/paper on **Kraken**, tuned for Canadian clients.
 
-**Current version: v3** — external sentiment/funding data, `qc_runtime` execution bridge, walk-forward ensemble optimization.
+**Current version: v4** — Binance funding/OI feeds, ERC portfolio sizing, Hurst/VR regime, exchange brackets, live alerts, QC history pipeline.
+
+Previous: v3 (sentiment, walk-forward, execution bridge), v2 (corr filter, scalper), v1 (core ensemble).
 
 ## Objective
 
@@ -14,6 +16,23 @@ Designed for **high convexity** — concentrated momentum + breakout + dip-buy +
 - Universe prioritizes **BTC, ETH, LTC, BCH** (no CAD net-purchase limits on Kraken Canada)
 - Alts are liquidity-filtered; meme/low-liquidity names are blacklisted
 - If you are subject to **$30k CAD alt limits**, prefer unlimited pairs or upgrade investor tier per [Kraken Canada limits](https://support.kraken.com/articles/15568473780628-cad-net-purchase-limits-for-certain-cryptocurrencies-in-canada)
+
+## Strategy stack (v4)
+
+| Layer | Module | Description |
+|-------|--------|-------------|
+| Funding + OI | `research/fetch_external_data.py` | Binance perp funding + open interest → CSV |
+| ERC sizing | `portfolio_optimizer.py` | Equal-risk-contribution weights across picks |
+| Advanced regime | `advanced_regime.py` | Hurst + variance-ratio on BTC (from `qc_runtime` logic) |
+| Brackets | `brackets.py` | Stop-market SL + limit TP after each momentum entry |
+| Alerts | `notifications.py` | Telegram/Discord via algorithm parameters |
+| QC history | `research/qc_history_pipeline.py` | Multi-asset Kraken `History()` export for walk-forward |
+
+### Live alert parameters (QuantConnect)
+
+Set in algorithm **Parameters**:
+- `telegram_webhook` — Telegram bot sendMessage URL
+- `discord_webhook` — Discord channel webhook URL
 
 ## Strategy stack (v3)
 
@@ -93,7 +112,7 @@ From repo root:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest tests/test_kraken_max.py tests/test_kraken_max_v3.py -q
+pytest tests/test_kraken_max.py tests/test_kraken_max_v3.py tests/test_kraken_max_v4.py -q
 ```
 
 ## Disclaimer

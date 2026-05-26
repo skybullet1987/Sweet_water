@@ -18,6 +18,7 @@ class SentimentSnapshot:
     btc_dominance: float  # 0 = alt season, 1 = BTC leading
     funding_proxy: float  # positive = long-bias stress in majors
     fear_greed_index: float = 50.0  # raw 0-100
+    open_interest_stress: float = 0.0
     data_source: str = "proxy"
 
 
@@ -73,8 +74,9 @@ def merge_external_sentiment(
     return SentimentSnapshot(
         fear_greed=fg_norm,
         btc_dominance=dom,
-        funding_proxy=funding,
+        funding_proxy=max(funding, float(external.funding_stress)),
         fear_greed_index=float(external.fear_greed_index),
+        open_interest_stress=float(external.open_interest_stress),
         data_source=str(external.source_fg),
     )
 
@@ -98,4 +100,7 @@ def adjust_deployment_cap(
         cap = min(0.99, cap * 1.03)
     if sentiment.funding_proxy > 0.85:
         cap *= 0.95
+    oi_stress = float(getattr(sentiment, "open_interest_stress", 0.0) or 0.0)
+    if oi_stress > 0.35:
+        cap *= 0.93
     return max(0.0, min(0.99, cap))

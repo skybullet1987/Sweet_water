@@ -85,6 +85,15 @@ class KrakenMaxConfig:
     use_qc_fear_greed_index: bool = True
     ensemble_weights_path: str = "ensemble_weights.json"
 
+    # --- v4: brackets, ERC sizing, advanced regime, alerts ---
+    enable_brackets: bool = True
+    use_erc_sizing: bool = True
+    use_advanced_regime: bool = True
+    enable_live_alerts: bool = True
+    alert_on_drawdown_halt: bool = True
+    alert_on_rebalance: bool = False
+    funding_symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+
     # --- v2: correlation filter ---
     corr_lookback_hours: int = 24 * 7
     max_pairwise_corr: float = 0.82

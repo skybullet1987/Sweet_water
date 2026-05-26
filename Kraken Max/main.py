@@ -22,6 +22,8 @@ except ImportError:  # pragma: no cover
     class Market:
         Kraken = "Kraken"
 
+from advanced_regime import AdvancedRegimeEngine
+from brackets import set_bracket_prices, sync_brackets
 from config import CONFIG
 from correlation import filter_uncorrelated_picks
 from data_feeds import SentimentDataHub
@@ -37,6 +39,8 @@ from execution_bridge import (
 from features import FeatureCache, btc_beta_vs, cross_section_ranks
 from ml_scorer import MLScorer, load_ml_weights
 from ml_trainer import MLTrainer
+from notifications import AlertManager
+from portfolio_optimizer import allocate_erc_notionals
 from regime import RegimeEngine
 from risk import PortfolioRisk, PositionRisk
 from scalper_sleeve import build_scalper_features, evaluate_scalper_entry
@@ -46,7 +50,7 @@ from universe import KRAKEN_MAX_UNIVERSE, REFERENCE_SYMBOLS, select_universe
 
 
 class KrakenMaxAlgorithm(QCAlgorithm):
-    """Kraken Max v3 — external sentiment, pro execution, walk-forward weights."""
+    """Kraken Max v4 — funding/OI, ERC sizing, Hurst/VR regime, brackets, alerts."""
 
     def Initialize(self):  # pragma: no cover
         self.config = CONFIG
@@ -62,9 +66,13 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.sentiment_hub = SentimentDataHub(self.config)
         self.sentiment_hub.initialize_algorithm(self)
         self.ml_trainer = MLTrainer(self.config)
-        self.regime_engine = RegimeEngine(self.config)
+        if bool(self.config.use_advanced_regime):
+            self.regime_engine = AdvancedRegimeEngine(self.config)
+        else:
+            self.regime_engine = RegimeEngine(self.config)
         self.ensemble = AlphaEnsemble(self.config, MLScorer(load_ml_weights()))
         self.sizer = AggressiveSizer(self.config)
+        self.alerts = AlertManager(self) if bool(self.config.enable_live_alerts) else None
         self.portfolio_risk = PortfolioRisk(self.config)
         self.position_risk: dict = {}
         self.symbol_by_ticker: dict[str, object] = {}
@@ -91,7 +99,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self.TimeRules.At(0, 15),
             self._scheduled_ml_retrain,
         )
-        self.Debug("KRAKEN_MAX v3 init — external FG/funding, qc_runtime execution, WF weights")
+        self.Debug("KRAKEN_MAX v4 init — funding/OI, ERC, Hurst/VR, brackets, alerts")
 
     def _subscribe(self, ticker: str) -> None:
         try:
@@ -106,6 +114,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             if sym not in slice.Bars:
                 continue
             self.feature_cache.update(ticker, slice.Bars[sym])
+            if ticker == "BTCUSD" and isinstance(self.regime_engine, AdvancedRegimeEngine):
+                close = float(slice.Bars[sym].Close)
+                ema200 = float(self.feature_cache.features("BTCUSD").get("ema200", close))
+                self.regime_engine.update_btc_bar(close, ema200)
 
         if self.IsWarmingUp:
             return
@@ -125,12 +137,28 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self._scalper_pass(now)
             self._last_scalper = now
 
+        self._sync_brackets_all()
         self._manage_positions(now)
+
+    def _sync_brackets_all(self) -> None:
+        if not bool(self.config.enable_brackets):
+            return
+        for ticker, sym in self.symbol_by_ticker.items():
+            st = self.position_risk.get(ticker)
+            qty = position_qty(self, sym)
+            if st and qty > 0 and st.strategy_owner == "momentum":
+                sync_brackets(self, sym, st, qty)
 
     def _hourly_maintenance(self) -> None:  # pragma: no cover
         equity = float(self.Portfolio.TotalPortfolioValue)
         dd = self.portfolio_risk.update_peak(equity)
         if self.portfolio_risk.drawdown_halted(self.Time, dd):
+            if self.alerts and bool(self.config.alert_on_drawdown_halt):
+                self.alerts.notify(
+                    "DRAWDOWN_HALT",
+                    f"dd={dd:.2%} equity={equity:.2f}",
+                    dedupe_key="drawdown_halt",
+                )
             self._flatten_all("drawdown_halt")
             return
         if self.ml_trainer.should_retrain(self.Time):
@@ -214,12 +242,20 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         breadth = sum(1 for f in feature_map.values() if float(f.get("mom_7d", 0)) > 0) / len(feature_map)
         btc_feat = feature_map.get("BTCUSD") or self.feature_cache.features("BTCUSD") or {}
         sentiment = self._build_sentiment(feature_map, slice)
-        regime = self.regime_engine.classify(
-            btc_features=btc_feat,
-            breadth=breadth,
-            median_rv=median_rv,
-            sentiment=sentiment,
-        )
+        if isinstance(self.regime_engine, AdvancedRegimeEngine):
+            regime = self.regime_engine.classify_advanced(
+                btc_features=btc_feat,
+                breadth=breadth,
+                median_rv=median_rv,
+                sentiment=sentiment,
+            )
+        else:
+            regime = self.regime_engine.classify(
+                btc_features=btc_feat,
+                breadth=breadth,
+                median_rv=median_rv,
+                sentiment=sentiment,
+            )
         if not regime.allow_new_entries or regime.deployment_cap <= 0:
             self._flatten_momentum_only("regime_chaos")
             return
@@ -241,8 +277,14 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         targets = filter_uncorrelated_picks(candidates, self.feature_cache, top_k=int(self.config.top_k))
 
         equity = float(self.Portfolio.TotalPortfolioValue)
-        deployable = equity * regime.deployment_cap
-        per_slot = deployable / max(len(targets), 1)
+        if bool(self.config.use_erc_sizing) and targets:
+            slot_notionals = allocate_erc_notionals(
+                targets, self.feature_cache, equity, regime.deployment_cap, config=self.config
+            )
+        else:
+            deployable = equity * regime.deployment_cap
+            per = deployable / max(len(targets), 1)
+            slot_notionals = {t: per for t in targets}
 
         for ticker, sym in self.symbol_by_ticker.items():
             st = self.position_risk.get(ticker)
@@ -259,7 +301,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             feats = feature_map[ticker]
             sc = next((x[1] for x in scores if x[0] == ticker), 0.0)
             weight = self.sizer.weight_for_score(sc, float(feats.get("rv_21d", 0.2)), rank_mom.get(ticker, 0.5))
-            notional = min(per_slot, equity * weight)
+            notional = min(slot_notionals.get(ticker, 0.0), equity * weight)
             if not self.sizer.passes_cost_gate(sc, notional):
                 continue
             st = self.position_risk.get(ticker)
@@ -273,21 +315,29 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             if place_buy_notional(self, sym, notional, tag="KM:Momentum"):
                 self.portfolio_risk.record_order()
                 close = float(feats.get("close", self.Securities[sym].Price))
-                self.position_risk[ticker] = PositionRisk(
+                atr = float(feats.get("atr", close * 0.02))
+                state = PositionRisk(
                     entry_price=close,
                     entry_time=now,
-                    entry_atr=float(feats.get("atr", close * 0.02)),
+                    entry_atr=atr,
                     highest_close=close,
                     predicted_score=sc,
                     strategy_owner="momentum",
                 )
+                set_bracket_prices(state, close, atr)
+                self.position_risk[ticker] = state
+                qty = position_qty(self, sym)
+                if qty > 0:
+                    sync_brackets(self, sym, state, qty)
                 self._last_trade_hours[ticker] = 0.0
 
-        self.Debug(
-            f"KRAKEN_MAX rebalance regime={regime.name} fg={sentiment.fear_greed:.2f} "
-            f"fg_idx={getattr(sentiment, 'fear_greed_index', 50):.0f} src={getattr(sentiment, 'data_source', '?')} "
-            f"targets={targets}"
+        msg = (
+            f"KRAKEN_MAX rebalance regime={regime.name} micro={regime.micro_regime} "
+            f"fg={sentiment.fear_greed:.2f} targets={targets}"
         )
+        self.Debug(msg)
+        if self.alerts and bool(self.config.alert_on_rebalance):
+            self.alerts.notify("REBALANCE", msg, dedupe_key=f"rebal-{now.date()}")
 
     def _scalper_pass(self, now) -> None:  # pragma: no cover
         if self.portfolio_risk.drawdown_halted(now, 0.0):
@@ -307,9 +357,14 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             breadth=breadth,
             median_rv=median_rv,
         )
-        regime = self.regime_engine.classify(
-            btc_features=btc_feat, breadth=breadth, median_rv=median_rv, sentiment=sentiment
-        )
+        if isinstance(self.regime_engine, AdvancedRegimeEngine):
+            regime = self.regime_engine.classify_advanced(
+                btc_features=btc_feat, breadth=breadth, median_rv=median_rv, sentiment=sentiment
+            )
+        else:
+            regime = self.regime_engine.classify(
+                btc_features=btc_feat, breadth=breadth, median_rv=median_rv, sentiment=sentiment
+            )
         if not regime.allow_scalper:
             return
 

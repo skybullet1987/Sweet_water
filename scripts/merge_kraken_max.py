@@ -12,7 +12,7 @@ QC_LIMIT = 63_000
 
 MERGES: dict[str, list[str]] = {
     "data.py": ["data_feeds.py", "sentiment.py", "cross_venue.py"],
-    "ml.py": ["ml_scorer.py", "ml_trainer.py"],
+    "kraken_ml.py": ["ml_scorer.py", "ml_trainer.py"],
     "regime.py": ["regime.py", "advanced_regime.py", "regime_bridge.py", "regime_ensemble.py"],
     "core.py": [
         "features.py",
@@ -130,7 +130,7 @@ def header_for(name: str) -> list[str]:
     ]
     if name == "data.py":
         h += ["from config import CONFIG, KrakenMaxConfig", ""]
-    elif name == "ml.py":
+    elif name == "kraken_ml.py":
         h += ["from config import CONFIG, KrakenMaxConfig", ""]
     elif name == "regime.py":
         h += [
@@ -154,7 +154,7 @@ def header_for(name: str) -> list[str]:
         h += ["from config import CONFIG, KrakenMaxConfig", ""]
     elif name == "execution.py":
         h += ["from config import CONFIG", ""]
-    elif name == "ops.py":
+    elif name == "kraken_ops.py":
         h += ["from config import CONFIG, KrakenMaxConfig", ""]
     elif name == "workflow.py":
         h += [
@@ -181,7 +181,7 @@ def merge_file(name: str, sources: list[str], cache: dict[str, str]) -> str:
             "from core import hourly_returns  # portfolio_optimizer",
             1,
         )
-    if name == "ops.py" and "from risk import max_cluster_exposure" not in text:
+    if name == "kraken_ops.py" and "from risk import max_cluster_exposure" not in text:
         text = text.replace(
             "def build(",
             "from risk import max_cluster_exposure  # telemetry\n\n\ndef build(",

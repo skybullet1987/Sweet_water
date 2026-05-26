@@ -6,6 +6,7 @@ from pathlib import Path
 
 from config import KrakenMaxConfig, CONFIG
 from ml_scorer import MLScorer
+from regime_ensemble import config_for_regime, load_regime_weights
 
 ENSEMBLE_WEIGHTS_PATH = Path(__file__).resolve().parent / "ensemble_weights.json"
 
@@ -27,6 +28,7 @@ class AlphaEnsemble:
             config = replace(config, **kwargs) if kwargs else config
         self.config = config
         self.ml = ml or MLScorer()
+        self._regime_weights = load_regime_weights() if bool(config.use_regime_ensembles) else {}
 
     def score_symbol(
         self,
@@ -36,6 +38,7 @@ class AlphaEnsemble:
         rank_breakout: float = 0.5,
         breadth: float = 0.5,
         btc_beta: float = 0.0,
+        regime_name: str = "neutral",
     ) -> dict[str, float]:
         if not features:
             return {"final": -1e9, "momentum": 0.0, "breakout": 0.0, "dip": 0.0, "ml": 0.0}
@@ -59,10 +62,11 @@ class AlphaEnsemble:
         }
         ml_score = self.ml.score(features, ml_ctx)
 
-        w_m = float(self.config.w_momentum)
-        w_b = float(self.config.w_breakout)
-        w_d = float(self.config.w_dip)
-        w_ml = float(self.config.w_ml)
+        cfg = config_for_regime(self.config, regime_name, self._regime_weights)
+        w_m = float(cfg.w_momentum)
+        w_b = float(cfg.w_breakout)
+        w_d = float(cfg.w_dip)
+        w_ml = float(cfg.w_ml)
         final = w_m * momentum + w_b * breakout + w_d * dip + w_ml * ml_score
         clip = float(self.config.score_clip)
         final = max(-clip, min(clip, final))

@@ -29,10 +29,13 @@ except ImportError:  # pragma: no cover
 
 from baseline_manager import BaselineManager
 from brackets import set_bracket_prices, sync_brackets
+from cluster_risk import filter_cluster_caps, max_cluster_exposure
 from config import CONFIG
+from cost_model import CalibratedCostModel
 from cross_venue import CrossVenueLead
 from drift_monitor import DriftMonitor
 from fill_tracker import FillTracker
+from scorecard import PaperTradingScorecard
 from telemetry import TelemetryDashboard
 from correlation import filter_uncorrelated_picks
 from data_feeds import SentimentDataHub
@@ -60,7 +63,7 @@ from universe import KRAKEN_MAX_UNIVERSE, REFERENCE_SYMBOLS, select_universe
 
 
 class KrakenMaxAlgorithm(QCAlgorithm):
-    """Kraken Max v6 — telemetry, cross-venue lead, fill tracking, auto baseline refresh."""
+    """Kraken Max v7 — validation, calibrated costs, regime ensembles, cluster risk, scorecard."""
 
     def Initialize(self):  # pragma: no cover
         self.config = CONFIG
@@ -89,6 +92,8 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.telemetry = TelemetryDashboard(self.config) if bool(self.config.enable_telemetry) else None
         self.cross_venue = CrossVenueLead(self.config) if bool(self.config.use_cross_venue_lead) else None
         self.baseline_mgr = BaselineManager(self.config)
+        self.cost_model = CalibratedCostModel(self.config) if bool(self.config.use_calibrated_costs) else None
+        self.scorecard = PaperTradingScorecard(self.config) if bool(self.config.enable_scorecard) else None
         self._last_telemetry = None
         self._last_regime_state = ("", "", 0.0)
         self.portfolio_risk = PortfolioRisk(self.config)
@@ -139,9 +144,9 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 self._persist_telemetry,
             )
         self.Debug(
-            f"KRAKEN_MAX v6 init res={self.config.resolution_minutes}m "
-            f"xvenue={bool(self.cross_venue and self.cross_venue.loaded)} "
-            f"telemetry={self.config.enable_telemetry}"
+            f"KRAKEN_MAX v7 init res={self.config.resolution_minutes}m "
+            f"regime_ens={self.config.use_regime_ensembles} cluster={self.config.enable_cluster_risk} "
+            f"scorecard={self.config.enable_scorecard}"
         )
 
     def _subscribe(self, ticker: str) -> None:
@@ -204,6 +209,8 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         now = self.Time
         if self.drift_monitor is not None:
             self.drift_monitor.record_equity(now, float(self.Portfolio.TotalPortfolioValue))
+        if self.scorecard is not None:
+            self.scorecard.record_equity(now, float(self.Portfolio.TotalPortfolioValue))
         if self._last_rebalance is None or (now - self._last_rebalance) >= timedelta(
             hours=int(self.config.rebalance_hours)
         ):
@@ -251,6 +258,14 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 self.alerts.notify("DRIFT", msg, dedupe_key="drift")
         if self.ml_trainer.should_retrain(self.Time):
             self._run_ml_retrain()
+        if self.scorecard is not None:
+            snap = self.scorecard.build(self, fill_tracker=self.fill_tracker)
+            self.scorecard.persist(self, snap)
+            ok, reason = self.scorecard.passes_paper_gate(snap)
+            if not ok and self.alerts and bool(self.config.alert_on_paper_gate_fail):
+                self.alerts.notify("PAPER_GATE", reason, dedupe_key="paper_gate")
+            elif ok and snap.days_tracked >= float(self.config.paper_min_days):
+                self.Debug(self.scorecard.summary_line(snap))
         self._maybe_persist_telemetry()
 
     def _maybe_persist_telemetry(self) -> None:  # pragma: no cover
@@ -410,6 +425,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 rank_breakout=rank_bo.get(ticker, 0.5),
                 breadth=breadth,
                 btc_beta=btc_beta_vs(feats, btc_feat),
+                regime_name=regime.name,
             )
             final = float(comp["final"])
             if self.cross_venue is not None:
@@ -417,7 +433,26 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             scores.append((ticker, final, comp))
         scores.sort(key=lambda x: x[1], reverse=True)
         candidates = [(t, s) for t, s, _ in scores if s >= float(self.config.entry_score_threshold)]
-        targets = filter_uncorrelated_picks(candidates, self.feature_cache, top_k=int(self.config.top_k))
+        decorrelated = filter_uncorrelated_picks(
+            candidates, self.feature_cache, top_k=int(self.config.top_k) * 2
+        )
+        if bool(self.config.enable_cluster_risk):
+            holdings = [
+                t
+                for t, st in self.position_risk.items()
+                if st.strategy_owner == "momentum"
+                and (sym := self.symbol_by_ticker.get(t)) is not None
+                and position_qty(self, sym) > 0
+            ]
+            score_by_ticker = {t: s for t, s, _ in scores}
+            ranked = [(t, score_by_ticker.get(t, 0.0)) for t in decorrelated]
+            targets = filter_cluster_caps(
+                ranked,
+                current_holdings=holdings,
+                config=self.config,
+            )[: int(self.config.top_k)]
+        else:
+            targets = decorrelated[: int(self.config.top_k)]
 
         equity = float(self.Portfolio.TotalPortfolioValue)
         if bool(self.config.use_erc_sizing) and targets:
@@ -452,7 +487,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             sc = next((x[1] for x in scores if x[0] == ticker), 0.0)
             weight = self.sizer.weight_for_score(sc, float(feats.get("rv_21d", 0.2)), rank_mom.get(ticker, 0.5))
             notional = min(slot_notionals.get(ticker, 0.0), equity * weight)
-            if not self.sizer.passes_cost_gate(sc, notional):
+            if not self.sizer.passes_cost_gate(sc, notional, self):
                 continue
             st = self.position_risk.get(ticker)
             if position_qty(self, sym) > 0 and st and st.strategy_owner == "momentum":
@@ -592,6 +627,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         close = float(self.Securities[sym].Price)
         pnl = (close / state.entry_price) - 1.0 if state.entry_price else 0.0
         self.sizer.record_trade(pnl)
+        if self.scorecard is not None:
+            self.scorecard.record_trade(
+                ticker, pnl, strategy=str(state.strategy_owner), when=self.Time
+            )
         self.ensemble.ml.online_update(pnl, state.predicted_score)
         feats = self.feature_cache.features(ticker)
         ctx = self.sentiment_hub.to_context() if hasattr(self, "sentiment_hub") else {}

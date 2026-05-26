@@ -39,9 +39,13 @@ class AggressiveSizer:
         raw = vol_w * self._kelly() * conviction * rank_boost
         return min(float(self.config.max_position_pct), max(0.0, raw))
 
-    def passes_cost_gate(self, score: float, notional: float) -> bool:
+    def passes_cost_gate(self, score: float, notional: float, algo=None) -> bool:
         if score <= 0 or notional <= 0:
             return False
+        if algo is not None and bool(self.config.use_calibrated_costs):
+            from cost_model import CalibratedCostModel
+
+            return CalibratedCostModel(self.config).passes_edge_gate(score, notional, algo)
         fee = notional * float(self.config.expected_round_trip_fees)
         spread = notional * (float(self.config.assumed_spread_bps) / BPS)
         slip = notional * (float(self.config.assumed_slippage_bps) / BPS)

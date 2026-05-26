@@ -2,9 +2,9 @@
 
 Aggressive **long-only**, **cash account** (no margin) crypto strategy for **QuantConnect** live/paper on **Kraken**, tuned for Canadian clients.
 
-**Current version: v6** — telemetry dashboard, cross-venue lead, 15m walk-forward, fill submit tracking, auto baseline refresh.
+**Current version: v7** — validation gates, calibrated costs, regime-specific ensembles, cluster risk caps, paper scorecard.
 
-Previous: v5 (15m bars, ERC shrinkage, drift/fill monitors), v4 (funding/OI), v3 (walk-forward), v2 (scalper), v1 (core).
+Previous: v6 (telemetry, cross-venue), v5 (15m/ERC/drift), v4 (funding/OI), v3 (walk-forward), v2 (scalper), v1 (core).
 
 ## Objective
 
@@ -16,6 +16,28 @@ Designed for **high convexity** — concentrated momentum + breakout + dip-buy +
 - Universe prioritizes **BTC, ETH, LTC, BCH** (no CAD net-purchase limits on Kraken Canada)
 - Alts are liquidity-filtered; meme/low-liquidity names are blacklisted
 - If you are subject to **$30k CAD alt limits**, prefer unlimited pairs or upgrade investor tier per [Kraken Canada limits](https://support.kraken.com/articles/15568473780628-cad-net-purchase-limits-for-certain-cryptocurrencies-in-canada)
+
+## Strategy stack (v7)
+
+| Layer | Module | Description |
+|-------|--------|-------------|
+| **Backtest validator** | `backtest_validator.py` | Walk-forward PASS/FAIL vs Sharpe, DD, trades, win-rate thresholds |
+| **Paper scorecard** | `scorecard.py` | Live/paper metrics → ObjectStore; optional `PAPER_GATE` alert |
+| **Calibrated costs** | `cost_model.py` | Edge gate uses live fill slippage + fill-rate spread adjustment |
+| **Regime ensembles** | `regime_ensemble.py` + `regime_weights.json` | Different `w_*` in bull / neutral / bear / chaos |
+| **Cluster risk** | `cluster_risk.py` | Max N positions per beta cluster (major, L1, defi, …) |
+
+### Validation (local)
+
+```bash
+python3 "Kraken Max/research/run_backtest_validation.py" --csv kraken_hourly.csv --folds 3
+```
+
+Tune thresholds in `config.py`: `validation_min_sharpe`, `validation_max_drawdown`, etc.
+
+### Paper gate (live)
+
+After `paper_min_days` (default 30), alerts if live Sharpe, drawdown, or trade count fail `paper_*` thresholds.
 
 ## Strategy stack (v6)
 

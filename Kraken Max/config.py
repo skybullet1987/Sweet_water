@@ -11,7 +11,7 @@ def bars_per_hour(resolution_minutes: int) -> int:
 
 @dataclass(frozen=True)
 class KrakenMaxConfig:
-    """Kraken Max v6 — telemetry, cross-venue lead, 15m walk-forward, auto baseline refresh."""
+    """Kraken Max v7 — validation gates, calibrated costs, regime ensembles, cluster risk, scorecard."""
 
     start_year: int = 2022
     start_month: int = 1
@@ -164,6 +164,30 @@ class KrakenMaxConfig:
 
     walk_forward_bar_minutes: int = 15
     walk_forward_min_bars: int = 1600
+
+    use_regime_ensembles: bool = True
+    regime_weights_path: str = "regime_weights.json"
+    enable_cluster_risk: bool = True
+    max_positions_per_cluster: int = 2
+
+    use_calibrated_costs: bool = True
+    cost_calibration_min_fills: int = 5
+
+    enable_scorecard: bool = True
+    scorecard_object_store_key: str = "kraken_max_scorecard.json"
+    scorecard_max_points: int = 24 * 90 * 4
+    scorecard_max_trades: int = 500
+    paper_min_days: float = 30.0
+    paper_min_sharpe: float = 0.35
+    paper_max_drawdown: float = -0.35
+    paper_min_trades: int = 12
+    alert_on_paper_gate_fail: bool = True
+
+    validation_min_sharpe: float = 0.15
+    validation_max_drawdown: float = -0.45
+    validation_min_trades: int = 8
+    validation_min_win_rate: float = 0.38
+    validation_report_path: str = "validation_report.json"
 
     min_qty_fallback: dict[str, float] = field(default_factory=lambda: {
         "BTCUSD": 0.0001,

@@ -23,9 +23,13 @@ class TelemetrySnapshot:
     baseline_sharpe: float
     drift_ratio: float
     cross_venue_boost: float
+    scorecard_sharpe: float = 0.0
+    scorecard_win_rate: float = 0.0
+    scorecard_trades: int = 0
+    cluster_exposure: dict[str, float] = field(default_factory=dict)
     active_universe: list[str] = field(default_factory=list)
     erc_weights: dict[str, float] = field(default_factory=dict)
-    version: str = "v6"
+    version: str = "v7"
 
 
 class TelemetryDashboard:
@@ -59,8 +63,25 @@ class TelemetryDashboard:
             drift_ratio = float(snap.ratio)
         now = getattr(algo, "Time", datetime.now(timezone.utc))
         ts = now.isoformat() if hasattr(now, "isoformat") else str(now)
+        sc_sharpe = 0.0
+        sc_wr = 0.0
+        sc_trades = 0
+        sc = getattr(algo, "scorecard", None)
+        if sc is not None and sc._trades:
+            snap_sc = sc.build(algo, fill_tracker=ft)
+            sc_sharpe = float(snap_sc.live_sharpe)
+            sc_wr = float(snap_sc.win_rate)
+            sc_trades = int(snap_sc.n_trades)
         universe = list(getattr(algo, "active_universe", []) or [])
         erc = {k: float(v) for k, v in (getattr(algo, "_erc_weights", {}) or {}).items()}
+        clusters = {}
+        if erc:
+            try:
+                from cluster_risk import max_cluster_exposure
+
+                clusters = max_cluster_exposure(erc)
+            except Exception:
+                clusters = {}
         return TelemetrySnapshot(
             ts=ts,
             equity=equity,
@@ -73,6 +94,10 @@ class TelemetryDashboard:
             baseline_sharpe=base_sh,
             drift_ratio=drift_ratio,
             cross_venue_boost=float(cross_venue_boost),
+            scorecard_sharpe=sc_sharpe,
+            scorecard_win_rate=sc_wr,
+            scorecard_trades=sc_trades,
+            cluster_exposure=clusters,
             active_universe=universe,
             erc_weights=erc,
         )

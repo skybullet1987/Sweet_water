@@ -11,7 +11,7 @@ def bars_per_hour(resolution_minutes: int) -> int:
 
 @dataclass(frozen=True)
 class KrakenMaxConfig:
-    """Kraken Max v5 — sub-hour bars, shrinkage ERC, fill/drift monitors, QC regime gates."""
+    """Kraken Max v6 — telemetry, cross-venue lead, 15m walk-forward, auto baseline refresh."""
 
     start_year: int = 2022
     start_month: int = 1
@@ -148,6 +148,22 @@ class KrakenMaxConfig:
     baseline_sharpe: float = 0.50
     drift_sharpe_ratio_threshold: float = 0.50
     drift_object_store_key: str = "kraken_max_baseline_sharpe.json"
+    baseline_meta_object_store_key: str = "kraken_max_baseline_meta.json"
+    auto_refresh_baseline: bool = True
+    auto_save_ensemble_weights: bool = False
+
+    enable_telemetry: bool = True
+    telemetry_object_store_key: str = "kraken_max_telemetry.json"
+    telemetry_cadence_hours: int = 1
+
+    use_cross_venue_lead: bool = True
+    cross_venue_lead_csv: str = "data/binance_spot_lead.csv"
+    cross_venue_boost_per_z: float = 0.04
+    cross_venue_max_boost: float = 0.12
+    cross_venue_z_window: int = 96
+
+    walk_forward_bar_minutes: int = 15
+    walk_forward_min_bars: int = 1600
 
     min_qty_fallback: dict[str, float] = field(default_factory=lambda: {
         "BTCUSD": 0.0001,

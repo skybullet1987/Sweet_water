@@ -27,10 +27,13 @@ except ImportError:  # pragma: no cover
     class Market:
         Kraken = "Kraken"
 
+from baseline_manager import BaselineManager
 from brackets import set_bracket_prices, sync_brackets
 from config import CONFIG
+from cross_venue import CrossVenueLead
 from drift_monitor import DriftMonitor
 from fill_tracker import FillTracker
+from telemetry import TelemetryDashboard
 from correlation import filter_uncorrelated_picks
 from data_feeds import SentimentDataHub
 from ensemble import AlphaEnsemble, load_optimized_ensemble_weights
@@ -57,7 +60,7 @@ from universe import KRAKEN_MAX_UNIVERSE, REFERENCE_SYMBOLS, select_universe
 
 
 class KrakenMaxAlgorithm(QCAlgorithm):
-    """Kraken Max v5 — 15m bars, shrinkage ERC, fill/drift monitors, unified QC regime."""
+    """Kraken Max v6 — telemetry, cross-venue lead, fill tracking, auto baseline refresh."""
 
     def Initialize(self):  # pragma: no cover
         self.config = CONFIG
@@ -83,6 +86,11 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.alerts = AlertManager(self) if bool(self.config.enable_live_alerts) else None
         self.fill_tracker = FillTracker(self.config) if bool(self.config.enable_fill_tracking) else None
         self.drift_monitor = DriftMonitor(self.config) if bool(self.config.enable_drift_monitor) else None
+        self.telemetry = TelemetryDashboard(self.config) if bool(self.config.enable_telemetry) else None
+        self.cross_venue = CrossVenueLead(self.config) if bool(self.config.use_cross_venue_lead) else None
+        self.baseline_mgr = BaselineManager(self.config)
+        self._last_telemetry = None
+        self._last_regime_state = ("", "", 0.0)
         self.portfolio_risk = PortfolioRisk(self.config)
         self.position_risk: dict = {}
         self.symbol_by_ticker: dict[str, object] = {}
@@ -124,9 +132,16 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self.TimeRules.At(0, 15),
             self._scheduled_ml_retrain,
         )
+        if self.telemetry is not None:
+            self.Schedule.On(
+                self.DateRules.EveryDay(),
+                self.TimeRules.Every(timedelta(hours=int(self.config.telemetry_cadence_hours))),
+                self._persist_telemetry,
+            )
         self.Debug(
-            f"KRAKEN_MAX v5 init res={self.config.resolution_minutes}m "
-            f"erc_shrink={self.config.erc_shrinkage} drift={self.config.enable_drift_monitor}"
+            f"KRAKEN_MAX v6 init res={self.config.resolution_minutes}m "
+            f"xvenue={bool(self.cross_venue and self.cross_venue.loaded)} "
+            f"telemetry={self.config.enable_telemetry}"
         )
 
     def _subscribe(self, ticker: str) -> None:
@@ -236,6 +251,34 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 self.alerts.notify("DRIFT", msg, dedupe_key="drift")
         if self.ml_trainer.should_retrain(self.Time):
             self._run_ml_retrain()
+        self._maybe_persist_telemetry()
+
+    def _maybe_persist_telemetry(self) -> None:  # pragma: no cover
+        if self.telemetry is None:
+            return
+        cadence = timedelta(hours=int(self.config.telemetry_cadence_hours))
+        now = self.Time
+        if self._last_telemetry is not None and (now - self._last_telemetry) < cadence:
+            return
+        self._persist_telemetry()
+
+    def _persist_telemetry(self) -> None:  # pragma: no cover
+        if self.telemetry is None:
+            return
+        reg, micro, cap = self._last_regime_state
+        xb = 0.0
+        if self.cross_venue is not None and self.active_universe:
+            xb = self.cross_venue.aggregate_boost(self.active_universe[:8], self.Time)
+        snap = self.telemetry.build(
+            self,
+            regime_name=reg,
+            micro_regime=micro,
+            deployment_cap=cap,
+            cross_venue_boost=xb,
+        )
+        self.telemetry.persist(self, snap)
+        self._last_telemetry = self.Time
+        self.Debug(self.telemetry.summary_line(snap))
 
     def OnOrderEvent(self, order_event) -> None:  # pragma: no cover
         if self.fill_tracker is None:
@@ -259,7 +302,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             return
         blob = self.ml_trainer.retrain(self.ensemble.ml, self.Time)
         self.ml_trainer.try_persist_object_store(self, blob)
-        self.Debug(f"KRAKEN_MAX ml_retrain samples={blob.get('trained_samples', 0)}")
+        acc = float(blob.get("train_accuracy", 0.0) or 0.0)
+        pseudo_sharpe = max(0.05, (acc - 0.5) * 2.0)
+        self.baseline_mgr.refresh_from_sharpe(self, pseudo_sharpe, source="ml_retrain", drift=self.drift_monitor)
+        self.Debug(f"KRAKEN_MAX ml_retrain samples={blob.get('trained_samples', 0)} acc={acc:.3f}")
 
     def _history_provider(self, ticker: str, start, end) -> pd.DataFrame:
         sym = self.symbol_by_ticker.get(ticker)
@@ -348,6 +394,8 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 median_rv=median_rv,
                 sentiment=sentiment,
             )
+        self._last_regime_state = (regime.name, str(regime.micro_regime), float(regime.deployment_cap))
+
         if not regime.allow_new_entries or regime.deployment_cap <= 0:
             self._flatten_momentum_only("regime_chaos")
             return
@@ -363,7 +411,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 breadth=breadth,
                 btc_beta=btc_beta_vs(feats, btc_feat),
             )
-            scores.append((ticker, float(comp["final"]), comp))
+            final = float(comp["final"])
+            if self.cross_venue is not None:
+                final += self.cross_venue.score_adjustment(ticker, now)
+            scores.append((ticker, final, comp))
         scores.sort(key=lambda x: x[1], reverse=True)
         candidates = [(t, s) for t, s, _ in scores if s >= float(self.config.entry_score_threshold)]
         targets = filter_uncorrelated_picks(candidates, self.feature_cache, top_k=int(self.config.top_k))

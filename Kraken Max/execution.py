@@ -136,7 +136,7 @@ def place_limit_or_market(
     return True
 
 
-def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry") -> bool:
+def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry", force_market: bool = False) -> bool:
     price = float(algo.Securities[symbol].Price)
     if price <= 0 or usd_notional <= 0:
         return False
@@ -150,7 +150,7 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry")
     qty = min(qty, max_affordable)
     if qty < min_qty:
         return False
-    return place_limit_or_market(algo, symbol, qty, tag=tag)
+    return place_limit_or_market(algo, symbol, qty, tag=tag, force_market=force_market)
 
 
 def liquidate_symbol(algo, symbol, *, force_market: bool = True) -> None:

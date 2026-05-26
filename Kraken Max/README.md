@@ -2,9 +2,9 @@
 
 Aggressive **long-only**, **cash account** (no margin) crypto strategy for **QuantConnect** live/paper on **Kraken**, tuned for Canadian clients.
 
-**Current version: v5** — 15-minute bars, shrinkage ERC + turnover control, fill-quality + drift monitors, unified `qc_runtime` regime gates, Kraken Max CI.
+**Current version: v6** — telemetry dashboard, cross-venue lead, 15m walk-forward, fill submit tracking, auto baseline refresh.
 
-Previous: v4 (funding/OI, brackets, alerts), v3 (walk-forward), v2 (scalper), v1 (core).
+Previous: v5 (15m bars, ERC shrinkage, drift/fill monitors), v4 (funding/OI), v3 (walk-forward), v2 (scalper), v1 (core).
 
 ## Objective
 
@@ -16,6 +16,34 @@ Designed for **high convexity** — concentrated momentum + breakout + dip-buy +
 - Universe prioritizes **BTC, ETH, LTC, BCH** (no CAD net-purchase limits on Kraken Canada)
 - Alts are liquidity-filtered; meme/low-liquidity names are blacklisted
 - If you are subject to **$30k CAD alt limits**, prefer unlimited pairs or upgrade investor tier per [Kraken Canada limits](https://support.kraken.com/articles/15568473780628-cad-net-purchase-limits-for-certain-cryptocurrencies-in-canada)
+
+## Strategy stack (v6)
+
+| Layer | Module | Description |
+|-------|--------|-------------|
+| **Telemetry** | `telemetry.py` | Hourly ObjectStore snapshot: equity, regime, fill rate, drift, ERC weights |
+| **Cross-venue lead** | `cross_venue.py` | Binance spot CSV lead nudges entry scores; execution stays on Kraken |
+| **Fill submit wire** | `execution_bridge.py` | `track_order_submit()` → `FillTracker` on every limit entry |
+| **15m walk-forward** | `walk_forward_engine.py` + `research/walk_forward_15m.py` | Bar-frequency-aware OOS optimization |
+| **Auto baseline** | `baseline_manager.py` | Refresh drift baseline after ML retrain / walk-forward |
+| **CI** | `.github/workflows/kraken_max_ci.yml` | v1–v6 tests + walk-forward smoke |
+
+### v6 ObjectStore keys
+
+- `kraken_max_telemetry.json` — latest dashboard snapshot
+- `kraken_max_baseline_sharpe.json` — drift baseline Sharpe
+- `kraken_max_baseline_meta.json` — last refresh source (walk_forward / ml_retrain)
+
+### Cross-venue CSV
+
+Place `data/binance_spot_lead.csv` with columns `symbol,timestamp,close` (Binance symbols e.g. `BTCUSDT`). Generate via `research/fetch_external_data.py` or your own pipeline.
+
+### 15m walk-forward (local)
+
+```bash
+python3 "Kraken Max/research/qc_history_pipeline.py" --csv kraken_hourly.csv --to-15m --out kraken_15m.csv
+python3 "Kraken Max/research/walk_forward_15m.py" --csv kraken_15m.csv --folds 3
+```
 
 ## Strategy stack (v5)
 

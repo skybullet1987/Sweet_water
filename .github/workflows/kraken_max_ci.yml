@@ -26,7 +26,7 @@ jobs:
         run: pip install pandas numpy pytest
       - name: Run Kraken Max test suite
         run: |
-          python3 -m pytest tests/test_kraken_max.py tests/test_kraken_max_v3.py tests/test_kraken_max_v4.py tests/test_kraken_max_v5.py -q
+          python3 -m pytest tests/test_kraken_max.py tests/test_kraken_max_v3.py tests/test_kraken_max_v4.py tests/test_kraken_max_v5.py tests/test_kraken_max_v6.py -q
       - name: Walk-forward smoke (synthetic multi-symbol)
         run: |
           python3 - <<'PY'

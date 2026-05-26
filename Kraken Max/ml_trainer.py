@@ -74,10 +74,13 @@ class MLTrainer:
             grad = (p - y) / max(len(y), 1)
             w -= lr * (x.T @ grad)
             b -= lr * float(grad.sum())
+        preds = _sigmoid(x @ w + b) >= 0.5
+        acc = float(np.mean(preds == y)) if len(y) else 0.5
         return {
             "bias": float(b),
             "weights": {c: float(wi) for c, wi in zip(FEATURE_COLS, w)},
             "trained_samples": len(rows),
+            "train_accuracy": acc,
         }
 
     def retrain(self, scorer: MLScorer, now, persist_path: Path | None = None) -> dict[str, Any]:

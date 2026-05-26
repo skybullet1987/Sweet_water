@@ -44,23 +44,61 @@ def _sharpe(returns: np.ndarray, periods_per_year: float = 24 * 365) -> float:
     return (mu / sd) * math.sqrt(periods_per_year)
 
 
-def prepare_hourly_panel(bars: pd.DataFrame) -> dict[str, pd.DataFrame]:
+def periods_per_year(config: KrakenMaxConfig = CONFIG) -> float:
+    return float(24 * 365 * config.bph())
+
+
+def infer_bar_minutes(timestamps: list) -> int:
+    if len(timestamps) < 2:
+        return 60
+    ts = pd.Series(pd.to_datetime(timestamps, utc=True)).sort_values()
+    median_min = ts.diff().dropna().median().total_seconds() / 60.0
+    if median_min <= 20:
+        return 15
+    if median_min <= 90:
+        return 60
+    return 60
+
+
+def bar_step_hours(config: KrakenMaxConfig = CONFIG) -> float:
+    return max(1.0 / config.bph(), float(config.resolution_minutes) / 60.0)
+
+
+def prepare_bar_panel(bars: pd.DataFrame, config: KrakenMaxConfig = CONFIG) -> dict[str, pd.DataFrame]:
+    """Feature panel at config bar frequency (15m default in v6, hourly if resolution_minutes=60)."""
+    bph = config.bph()
+    bars_24h = 24 * bph
+    bars_7d = 24 * 7 * bph
+    bars_20d = 20 * 24 * bph
+    bars_21d = 24 * 21 * bph
+    ema_fast = max(20 * bph, 20)
+    ema_slow = max(50 * bph, 50)
+    atr_win = max(14 * bph, 14)
+
     data = bars.copy()
     data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True)
     data = data.sort_values(["symbol", "timestamp"])
     out: dict[str, pd.DataFrame] = {}
+    ppy = periods_per_year(config)
     for sym, grp in data.groupby("symbol"):
         f = grp.reset_index(drop=True)
         f["ret"] = f["close"].pct_change().fillna(0.0)
-        f["ret24"] = f["close"].pct_change(24).fillna(0.0)
-        f["ret168"] = f["close"].pct_change(168).fillna(0.0)
-        f["ema20"] = f["close"].ewm(span=20, adjust=False).mean()
-        f["ema50"] = f["close"].ewm(span=50, adjust=False).mean()
-        f["atr"] = (f["high"] - f["low"]).rolling(14, min_periods=1).mean().bfill()
-        f["rv"] = f["ret"].rolling(24 * 21, min_periods=24).std() * math.sqrt(24 * 365)
-        f["breakout"] = f["close"] / f["high"].rolling(20 * 24, min_periods=5).max() - 1.0
+        f["ret24"] = f["close"].pct_change(bars_24h).fillna(0.0)
+        f["ret168"] = f["close"].pct_change(bars_7d).fillna(0.0)
+        f["ema20"] = f["close"].ewm(span=ema_fast, adjust=False).mean()
+        f["ema50"] = f["close"].ewm(span=ema_slow, adjust=False).mean()
+        f["atr"] = (f["high"] - f["low"]).rolling(atr_win, min_periods=1).mean().bfill()
+        f["rv"] = f["ret"].rolling(bars_21d, min_periods=max(bph, 24)).std() * math.sqrt(ppy)
+        f["breakout"] = f["close"] / f["high"].rolling(bars_20d, min_periods=5).max() - 1.0
         out[sym] = f
     return out
+
+
+def prepare_hourly_panel(bars: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    from dataclasses import replace
+
+    hourly = replace(CONFIG, resolution_minutes=60, use_sub_hour_bars=False)
+    return prepare_bar_panel(bars, hourly)
 
 
 def _score_row(row: pd.Series, rank24: float, rank_bo: float, breadth: float, ensemble: AlphaEnsemble) -> float:
@@ -113,9 +151,10 @@ def simulate_oos_fold(
 
         best_sym = None
         best_sc = -1e9
+        hold_fwd = max(24 * config.bph(), 24)
         for s in syms:
             f = panel[s]
-            if i + 24 >= len(f) or i >= len(f):
+            if i + hold_fwd >= len(f) or i >= len(f):
                 continue
             sc = _score_row(f.iloc[i], rank24.get(s, 0.5), rankbo.get(s, 0.5), breadth, ensemble)
             if sc > best_sc:
@@ -128,7 +167,8 @@ def simulate_oos_fold(
         f = panel[best_sym]
         entry = float(f.iloc[i]["close"])
         atr = max(float(f.iloc[i]["atr"]), entry * 0.01)
-        exit_i = min(i + int(config.time_stop_hours), len(f) - 1)
+        hold_bars = max(1, int(config.time_stop_hours * config.bph()))
+        exit_i = min(i + hold_bars, len(f) - 1)
         exit_px = float(f.iloc[exit_i]["close"])
         for j in range(i + 1, exit_i + 1):
             row = f.iloc[j]
@@ -148,19 +188,56 @@ def simulate_oos_fold(
     return rets, trade_pnls, trades
 
 
+def resample_bars_to_minutes(bars: pd.DataFrame, bar_minutes: int = 15) -> pd.DataFrame:
+    """Upsample hourly OHLCV to synthetic N-minute bars for local walk-forward smoke tests."""
+    data = bars.copy()
+    data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True)
+    rule = f"{int(bar_minutes)}min"
+    out_rows: list[dict] = []
+    for sym, grp in data.groupby("symbol"):
+        g = grp.set_index("timestamp").sort_index()
+        ohlc = g[["open", "high", "low", "close", "volume"]].resample(rule).ffill()
+        ohlc = ohlc.dropna(subset=["close"])
+        for ts, row in ohlc.iterrows():
+            out_rows.append(
+                {
+                    "symbol": sym,
+                    "timestamp": ts,
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(row["volume"]),
+                }
+            )
+    return pd.DataFrame(out_rows)
+
+
 def walk_forward_optimize(
     bars: pd.DataFrame,
     *,
     n_folds: int = 4,
     config: KrakenMaxConfig = CONFIG,
     weight_grid: dict[str, list[float]] | None = None,
+    bar_minutes: int | None = None,
 ) -> WalkForwardResult:
-    panel = prepare_hourly_panel(bars)
+    ts = sorted(set(pd.to_datetime(bars["timestamp"], utc=True)))
+    inferred = infer_bar_minutes(ts)
+    use_minutes = int(bar_minutes) if bar_minutes is not None else inferred
+    if bar_minutes is not None or int(config.resolution_minutes) != use_minutes:
+        from dataclasses import replace
+
+        config = replace(
+            config,
+            resolution_minutes=use_minutes,
+            use_sub_hour_bars=use_minutes < 60,
+        )
+    panel = prepare_bar_panel(bars, config)
     if "BTCUSD" not in panel:
         raise ValueError("bars must include BTCUSD")
-    ts = sorted(set(pd.to_datetime(bars["timestamp"], utc=True)))
-    if len(ts) < 400:
-        raise ValueError("need at least 400 hourly timestamps for walk-forward")
+    min_bars = 400 if int(config.resolution_minutes) >= 60 else int(getattr(config, "walk_forward_min_bars", 1600))
+    if len(ts) < min_bars:
+        raise ValueError(f"need at least {min_bars} bar timestamps for walk-forward")
 
     grid = weight_grid or {
         "w_momentum": [0.30, 0.35, 0.40],
@@ -186,7 +263,7 @@ def walk_forward_optimize(
             rets, _pnls, _tr = simulate_oos_fold(
                 panel, train_end_idx=train_end, test_end_idx=test_end, timestamps=ts, config=cfg, ensemble=ens
             )
-            fold_sharpes.append(_sharpe(rets))
+            fold_sharpes.append(_sharpe(rets, periods_per_year=periods_per_year(config)))
         mean_sh = float(np.mean(fold_sharpes)) if fold_sharpes else 0.0
         if mean_sh > best_sharpe:
             best_sharpe = mean_sh
@@ -212,13 +289,14 @@ def walk_forward_optimize(
             equity_curve.append(equity_curve[-1] * float(np.prod(1.0 + rets)))
         fold_metrics.append({
             "fold": float(fold),
-            "sharpe": _sharpe(rets),
+            "sharpe": _sharpe(rets, periods_per_year=periods_per_year(config)),
             "trades": float(tr),
         })
 
     eq = np.array(equity_curve)
+    ppy = periods_per_year(config)
     return WalkForwardResult(
-        oos_sharpe=_sharpe(np.array(all_rets)),
+        oos_sharpe=_sharpe(np.array(all_rets), periods_per_year=ppy),
         oos_max_drawdown=_max_drawdown(eq),
         oos_total_return=float(eq[-1] / eq[0] - 1.0) if len(eq) else 0.0,
         oos_trades=total_trades,

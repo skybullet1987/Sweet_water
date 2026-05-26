@@ -54,6 +54,18 @@ def init_execution_state(algo) -> None:
     algo.min_notional = float(getattr(getattr(algo, "config", None), "min_position_floor_usd", 25.0) or 25.0)
 
 
+def track_order_submit(algo, ticket, *, symbol, qty: float, expected_price: float, force_market: bool = False) -> None:
+    """Notify FillTracker when a limit (or market) order is submitted (v6)."""
+    ft = getattr(algo, "fill_tracker", None)
+    if ft is None or ticket is None:
+        return
+    oid = int(getattr(ticket, "OrderId", 0) or 0)
+    if oid <= 0:
+        return
+    is_limit = not force_market and bool(getattr(getattr(algo, "config", None), "use_limit_orders", True))
+    ft.on_submit(oid, is_limit=is_limit, expected_price=float(expected_price), qty=abs(float(qty)))
+
+
 def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry", force_market: bool = False) -> bool:
     if _USE_PRO and _qc_execution is not None:
         from config import CONFIG as KM_CONFIG
@@ -68,9 +80,23 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry",
         if qty <= 0:
             return False
         ticket = _qc_execution.place_entry(algo, symbol, qty, tag=tag, force_market=force_market)
+        if ticket is not None:
+            track_order_submit(algo, ticket, symbol=symbol, qty=qty, expected_price=price, force_market=force_market)
         return ticket is not None
     if _local_execution is not None:
-        return bool(_local_execution.place_buy_notional(algo, symbol, usd_notional, tag=tag))
+        ok = bool(_local_execution.place_buy_notional(algo, symbol, usd_notional, tag=tag, force_market=force_market))
+        if ok:
+            pending = (getattr(algo, "_pending_limits", {}) or {}).get(symbol)
+            if pending:
+                track_order_submit(
+                    algo,
+                    type("T", (), {"OrderId": pending.get("order_id")})(),
+                    symbol=symbol,
+                    qty=float(pending.get("qty", qty)),
+                    expected_price=price,
+                    force_market=force_market,
+                )
+        return ok
     return False
 
 

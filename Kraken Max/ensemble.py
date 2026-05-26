@@ -1,11 +1,30 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
+from pathlib import Path
+
 from config import KrakenMaxConfig, CONFIG
 from ml_scorer import MLScorer
+
+ENSEMBLE_WEIGHTS_PATH = Path(__file__).resolve().parent / "ensemble_weights.json"
+
+
+def load_optimized_ensemble_weights(path: Path | None = None) -> dict[str, float]:
+    target = path or ENSEMBLE_WEIGHTS_PATH
+    if not target.exists():
+        return {}
+    blob = json.loads(target.read_text(encoding="utf-8"))
+    return {str(k): float(v) for k, v in (blob.get("ensemble") or {}).items()}
 
 
 class AlphaEnsemble:
     def __init__(self, config: KrakenMaxConfig = CONFIG, ml: MLScorer | None = None) -> None:
+        opt = load_optimized_ensemble_weights()
+        if opt:
+            allowed = {"w_momentum", "w_breakout", "w_dip", "w_ml"}
+            kwargs = {k: v for k, v in opt.items() if k in allowed}
+            config = replace(config, **kwargs) if kwargs else config
         self.config = config
         self.ml = ml or MLScorer()
 

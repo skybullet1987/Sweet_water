@@ -72,6 +72,7 @@ def compute_bar_features(frame: pd.DataFrame) -> dict[str, float]:
 
     vol_med = float((close * volume).tail(min(len(close), 7 * 24)).median())
     vol_recent = float((close * volume).tail(min(len(close), 24)).median())
+    volume_24h = vol_recent
     volume_surge = float(vol_recent / max(vol_med, 1e-9) - 1.0)
 
     rsi = float(_rsi(close).iloc[-1])
@@ -95,6 +96,7 @@ def compute_bar_features(frame: pd.DataFrame) -> dict[str, float]:
         "trend_quality": trend_quality,
         "breakout_strength": breakout_strength,
         "volume_surge": volume_surge,
+        "volume_24h": volume_24h,
         "rsi": rsi,
         "rsi_pullback": rsi_pullback,
         "dd_63d": dd_63d,

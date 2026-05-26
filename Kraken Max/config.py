@@ -78,6 +78,12 @@ class KrakenMaxConfig:
     stale_price_minutes: int = 90
     cash_safety_factor: float = 0.97
     failed_esc_cooldown_hours: float = 6.0
+    stale_order_bars: int = 3
+
+    # --- v3: external data + walk-forward weights ---
+    use_external_sentiment: bool = True
+    use_qc_fear_greed_index: bool = True
+    ensemble_weights_path: str = "ensemble_weights.json"
 
     # --- v2: correlation filter ---
     corr_lookback_hours: int = 24 * 7

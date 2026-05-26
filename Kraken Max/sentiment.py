@@ -4,14 +4,21 @@ from dataclasses import dataclass
 
 from config import KrakenMaxConfig, CONFIG
 
+try:
+    from data_feeds import ExternalSentiment
+except ImportError:
+    from .data_feeds import ExternalSentiment  # type: ignore
+
 
 @dataclass(frozen=True)
 class SentimentSnapshot:
-    """Proxies for fear/greed and BTC dominance without external API feeds."""
+    """Combined proxy + external fear/greed, dominance, funding."""
 
     fear_greed: float  # 0 = extreme fear, 1 = extreme greed
     btc_dominance: float  # 0 = alt season, 1 = BTC leading
     funding_proxy: float  # positive = long-bias stress in majors
+    fear_greed_index: float = 50.0  # raw 0-100
+    data_source: str = "proxy"
 
 
 def _clamp01(x: float) -> float:
@@ -43,7 +50,33 @@ def compute_sentiment(
     # Funding proxy: when BTC runs faster than ETH, long crowding risk rises.
     funding = _clamp01(0.5 + (btc_mom7 - eth_mom7) * 4.0)
 
-    return SentimentSnapshot(fear_greed=fg, btc_dominance=dom, funding_proxy=funding)
+    return SentimentSnapshot(
+        fear_greed=fg,
+        btc_dominance=dom,
+        funding_proxy=funding,
+        fear_greed_index=fg * 100.0,
+        data_source="proxy",
+    )
+
+
+def merge_external_sentiment(
+    proxy: SentimentSnapshot,
+    external: ExternalSentiment | None,
+    *,
+    config: KrakenMaxConfig = CONFIG,
+) -> SentimentSnapshot:
+    if external is None:
+        return proxy
+    fg_norm = _clamp01(float(external.fear_greed_normalized))
+    dom = _clamp01(0.6 * external.btc_dominance + 0.4 * proxy.btc_dominance)
+    funding = _clamp01(0.5 * external.funding_stress + 0.5 * proxy.funding_proxy)
+    return SentimentSnapshot(
+        fear_greed=fg_norm,
+        btc_dominance=dom,
+        funding_proxy=funding,
+        fear_greed_index=float(external.fear_greed_index),
+        data_source=str(external.source_fg),
+    )
 
 
 def adjust_deployment_cap(

@@ -2,6 +2,8 @@
 
 Aggressive **long-only**, **cash account** (no margin) crypto strategy for **QuantConnect** live/paper on **Kraken**, tuned for Canadian clients.
 
+**Current version: v3** — external sentiment/funding data, `qc_runtime` execution bridge, walk-forward ensemble optimization.
+
 ## Objective
 
 Designed for **high convexity** — concentrated momentum + breakout + dip-buy + logistic ML ensemble — with explicit acceptance of **large drawdowns** in exchange for upside tail exposure. The nominal story is growing **$1,000 → $20,000**; that requires exceptional market conditions and carries a **high probability of total loss**. Treat this as experimental capital only.
@@ -12,6 +14,15 @@ Designed for **high convexity** — concentrated momentum + breakout + dip-buy +
 - Universe prioritizes **BTC, ETH, LTC, BCH** (no CAD net-purchase limits on Kraken Canada)
 - Alts are liquidity-filtered; meme/low-liquidity names are blacklisted
 - If you are subject to **$30k CAD alt limits**, prefer unlimited pairs or upgrade investor tier per [Kraken Canada limits](https://support.kraken.com/articles/15568473780628-cad-net-purchase-limits-for-certain-cryptocurrencies-in-canada)
+
+## Strategy stack (v3)
+
+| Layer | Module | Description |
+|-------|--------|-------------|
+| External data | `data_feeds.py` | QC `FearGreedIndex` + CSV fallback; funding CSV; cap-weight BTC dominance |
+| Execution | `execution_bridge.py` | Uses `qc_runtime/execution.py` when available (limits, dust, stale escalate) |
+| Walk-forward | `walk_forward_engine.py` | OOS Sharpe optimization → `ensemble_weights.json` |
+| Research | `research/KrakenMax_V3_WalkForward.ipynb` | QC Research / local notebook |
 
 ## Strategy stack (v2)
 
@@ -61,13 +72,28 @@ Edit `config.py`:
 - Refit offline: `python research/train_weights.py --csv your_features.csv`
 - QC ObjectStore key: `kraken_max_ml_weights.json`
 
+## v3 setup
+
+```bash
+# Refresh Fear & Greed CSV (alternative.me API)
+python "Kraken Max/research/fetch_external_data.py"
+
+# Walk-forward optimize ensemble weights
+python "Kraken Max/research/walk_forward_optimize.py" \
+  --csv your_hourly_bars.csv --folds 4
+
+# Or open research/KrakenMax_V3_WalkForward.ipynb in QC Research
+```
+
+Upload **`Kraken Max/`** and **`qc_runtime/`** to QuantConnect for full execution bridge (recommended).
+
 ## Local tests
 
 From repo root:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest tests/test_kraken_max.py -q
+pytest tests/test_kraken_max.py tests/test_kraken_max_v3.py -q
 ```
 
 ## Disclaimer

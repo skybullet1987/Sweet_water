@@ -109,11 +109,12 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.sentiment_hub = SentimentDataHub(self.config)
         self.sentiment_hub.initialize_algorithm(self)
         self.ml_trainer = MLTrainer(self.config)
+        ml_blob = self.ml_trainer.load_from_object_store(self) or load_ml_weights()
         if bool(self.config.use_advanced_regime):
             self.regime_engine = UnifiedRegimeEngine(self.config)
         else:
             self.regime_engine = RegimeEngine(self.config)
-        self.ensemble = AlphaEnsemble(self.config, MLScorer(load_ml_weights()), algo=self)
+        self.ensemble = AlphaEnsemble(self.config, MLScorer(ml_blob), algo=self)
         self.revalidator = AutoRevalidator(self.config) if bool(self.config.enable_auto_revalidation) else None
         self.sizer = AggressiveSizer(self.config)
         self.alerts = AlertManager(self) if bool(self.config.enable_live_alerts) else None
@@ -142,17 +143,6 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self.Debug(f"KRAKEN_MAX ensemble_weights loaded {opt}")
         if self.drift_monitor is not None:
             self.drift_monitor.load_baseline_from_object_store(self)
-            try:
-                import json
-
-                ew = Path(__file__).resolve().parent / "ensemble_weights.json"
-                if ew.is_file():
-                    blob = json.loads(ew.read_text(encoding="utf-8"))
-                    sharpe = float((blob.get("metrics") or {}).get("oos_sharpe", 0.0))
-                    if sharpe > 0:
-                        self.drift_monitor.baseline_sharpe = sharpe
-            except Exception:
-                pass
 
         if bool(self.config.subscribe_all_universe_on_init):
             boot = set(KRAKEN_MAX_UNIVERSE) | set(REFERENCE_SYMBOLS)

@@ -609,21 +609,12 @@ def round_qty(qty: float, min_qty: float) -> float:
 
 from config import KrakenMaxConfig, CONFIG
 
-ENSEMBLE_WEIGHTS_PATH = Path(__file__).resolve().parent / "ensemble_weights.json"
-
-
-def load_optimized_ensemble_weights(path: Path | None = None) -> dict[str, float]:
+def load_optimized_ensemble_weights(algo=None) -> dict[str, float]:
+    """Python builtins only (no project JSON on QuantConnect)."""
     from kraken_defaults import ENSEMBLE_WEIGHTS
 
-    target = path or ENSEMBLE_WEIGHTS_PATH
-    if not target.is_file():
-        return dict(ENSEMBLE_WEIGHTS)
-    try:
-        blob = json.loads(target.read_text(encoding="utf-8"))
-        weights = {str(k): float(v) for k, v in (blob.get("ensemble") or {}).items()}
-        return weights or dict(ENSEMBLE_WEIGHTS)
-    except (OSError, json.JSONDecodeError):
-        return dict(ENSEMBLE_WEIGHTS)
+    _ = algo
+    return dict(ENSEMBLE_WEIGHTS)
 
 
 class AlphaEnsemble:

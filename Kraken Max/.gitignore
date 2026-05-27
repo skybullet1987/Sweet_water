@@ -1,4 +1,6 @@
-*.json test artifacts
+*.json
+!data/
+_merge_backup/
 _merge_backup/
 validation_report_test.json
 regime_weights_test.json

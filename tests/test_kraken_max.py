@@ -92,9 +92,8 @@ def test_ml_trainer_retrain():
     assert "weights" in blob or scorer.weights
 
 
-def test_load_ml_weights_missing_file(tmp_path):
-    missing = tmp_path / "no_ml_weights.json"
-    blob = load_ml_weights(missing)
+def test_load_ml_weights_builtin_only():
+    blob = load_ml_weights()
     assert blob["bias"] == 0.0
     assert "weights" in blob
     assert MLScorer(blob).weights

@@ -1,9 +1,8 @@
 """
-Built-in strategy parameters for QuantConnect cloud.
+Built-in strategy parameters — single source of truth for QuantConnect cloud.
 
-QuantConnect often fails to ship or resolve ``.json`` files in the project tree.
-All runtime loaders should fall back to these Python constants; JSON/CSV files are
-optional overrides for local research and walk-forward exports.
+Do not rely on ``.json`` project files on QC; edit this module to change defaults.
+Research scripts may still export JSON locally, but the live algorithm never reads them.
 """
 from __future__ import annotations
 
@@ -22,13 +21,11 @@ ML_FEATURE_NAMES: tuple[str, ...] = (
     "btc_beta",
 )
 
-# Neutral ML (matches repo ml_weights.json shape; retrain fills real values)
 ML_WEIGHTS: dict[str, Any] = {
     "bias": 0.0,
     "weights": {name: 0.0 for name in ML_FEATURE_NAMES},
 }
 
-# Global ensemble (CONFIG is fallback; this matches walk-forward export shape)
 ENSEMBLE_WEIGHTS: dict[str, float] = {
     "w_momentum": 0.35,
     "w_breakout": 0.25,

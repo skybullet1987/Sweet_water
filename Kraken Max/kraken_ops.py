@@ -553,15 +553,8 @@ def load_bundle(algo, config: KrakenMaxConfig = CONFIG) -> DigestBundle:
 
 
 def _load_local_validation(config: KrakenMaxConfig) -> dict[str, Any]:
-    from pathlib import Path
-
-    p = Path(__file__).resolve().parent / str(config.validation_report_path)
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    _ = config
+    return {}
 
 
 def build_text_digest(bundle: DigestBundle) -> str:
@@ -718,16 +711,12 @@ class BaselineManager:
         drift: DriftMonitor | None = None,
         persist_ensemble: bool = True,
     ) -> float:
-        from workflow import save_ensemble_weights
-
         sharpe = float(result.oos_sharpe)
         dm = drift or getattr(algo, "drift_monitor", None)
         if dm is not None:
             dm.baseline_sharpe = sharpe
             dm.save_baseline_to_object_store(algo, sharpe)
-        if persist_ensemble and bool(self.config.auto_save_ensemble_weights):
-            root = Path(__file__).resolve().parent
-            save_ensemble_weights(result, root / str(self.config.ensemble_weights_path))
+        _ = persist_ensemble
         self._save_meta(algo, sharpe, source="walk_forward", extra={"weights": result.best_weights})
         return sharpe
 

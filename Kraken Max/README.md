@@ -8,7 +8,7 @@ Aggressive **long-only**, **cash account** (no margin) crypto strategy for **Qua
 
 Upload the entire **`Kraken Max/`** folder plus **`qc_runtime/`**. Core code lives in:
 
-**QC tip:** The strategy is **Python** (`.py` only required). JSON files (`ml_weights.json`, `ensemble_weights.json`, `regime_weights.json`) are **optional** — defaults live in **`kraken_defaults.py`**. CSV files under `data/` are optional (sentiment falls back to proxies).
+**QC deploy:** Upload **`.py` files only** (plus optional `data/*.csv`). All weights live in **`kraken_defaults.py`** — no project JSON. Research scripts may still write JSON locally; the cloud algorithm never reads them.
 
 | File | Role |
 |------|------|

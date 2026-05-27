@@ -6,7 +6,6 @@ import math
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -22,11 +21,27 @@ def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
 
+FEATURE_COLS = ML_FEATURE_NAMES
+
+
+def default_ml_weights() -> dict[str, Any]:
+    return {"bias": float(BUILTIN_ML_WEIGHTS["bias"]), "weights": dict(BUILTIN_ML_WEIGHTS["weights"])}
+
+
+def load_ml_weights(algo=None) -> dict[str, Any]:
+    """Python builtins only; optional QuantConnect ObjectStore override (no project JSON)."""
+    if algo is not None:
+        stored = MLTrainer(CONFIG).load_from_object_store(algo)
+        if stored:
+            return stored
+    return default_ml_weights()
+
+
 class MLScorer:
     """Lightweight logistic ensemble — no sklearn required on QC cloud."""
 
     def __init__(self, weights_blob: dict[str, Any] | None = None) -> None:
-        blob = weights_blob or load_ml_weights()
+        blob = weights_blob or default_ml_weights()
         self.bias = float(blob.get("bias", 0.0))
         self.weights: dict[str, float] = {
             str(k): float(v) for k, v in (blob.get("weights") or {}).items()
@@ -44,7 +59,6 @@ class MLScorer:
         return max(0.0, min(1.0, 2.0 * (raw - 0.5)))
 
     def online_update(self, realized_return: float, predicted_score: float) -> None:
-        """Exponential bias nudge from trade outcomes (risky — fast adaptation)."""
         err = float(realized_return) - float(predicted_score) * 0.05
         self._n_updates += 1
         decay = 0.98
@@ -53,29 +67,6 @@ class MLScorer:
         self._online_bias = max(-clip, min(clip, self._online_bias))
 
 # --- from ml_trainer.py ---
-
-
-FEATURE_COLS = ML_FEATURE_NAMES
-
-
-def default_ml_weights() -> dict[str, Any]:
-    return {**BUILTIN_ML_WEIGHTS, "weights": dict(BUILTIN_ML_WEIGHTS["weights"])}
-
-
-def load_ml_weights(path: Path | None = None) -> dict[str, Any]:
-    """Load ML weights: optional JSON override, else Python builtins (QC-safe)."""
-    root = Path(__file__).resolve().parent
-    target = path or (root / "ml_weights.json")
-    if not target.is_file():
-        return default_ml_weights()
-    try:
-        with open(target, encoding="utf-8") as fh:
-            blob = json.load(fh)
-        if not isinstance(blob, dict):
-            return default_ml_weights()
-        return blob
-    except (OSError, json.JSONDecodeError):
-        return default_ml_weights()
 
 
 def _sigmoid_batch(z: np.ndarray) -> np.ndarray:
@@ -111,7 +102,7 @@ class MLTrainer:
     def fit_logistic(self) -> dict[str, Any]:
         rows = list(self.samples)
         if len(rows) < int(self.config.ml_min_samples):
-            return load_ml_weights()
+            return default_ml_weights()
         x = np.array([[r[c] for c in FEATURE_COLS] for r, _ in rows], dtype=float)
         y = np.array([lab for _, lab in rows], dtype=float)
         w = np.zeros(x.shape[1])
@@ -133,23 +124,18 @@ class MLTrainer:
             "train_accuracy": acc,
         }
 
-    def retrain(self, scorer: MLScorer, now, persist_path: Path | None = None) -> dict[str, Any]:
+    def retrain(self, scorer: MLScorer, now, persist_path=None) -> dict[str, Any]:
         blob = self.fit_logistic()
         scorer.bias = float(blob.get("bias", scorer.bias))
         scorer.weights = {str(k): float(v) for k, v in (blob.get("weights") or {}).items()}
         self.last_retrain = now
-        path = persist_path or (Path(__file__).resolve().parent / "ml_weights.json")
-        path.write_text(json.dumps({"bias": scorer.bias, "weights": scorer.weights}, indent=2), encoding="utf-8")
         return blob
 
     def try_persist_object_store(self, algo, blob: dict[str, Any]) -> None:
         key = str(self.config.ml_object_store_key)
         try:
-            if hasattr(algo, "ObjectStore") and algo.ObjectStore.ContainsKey(key):
-                pass
-            payload = json.dumps(blob)
             if hasattr(algo, "ObjectStore"):
-                algo.ObjectStore.Save(key, payload)
+                algo.ObjectStore.Save(key, json.dumps(blob))
         except Exception:
             return
 

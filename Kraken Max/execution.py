@@ -21,6 +21,17 @@ from core import can_afford, evaluate_scalper_exit, free_cash_usd, round_qty
 POSITION_TOLERANCE = 1e-9
 
 
+def _order_tag(order) -> str:
+    return str(getattr(order, "Tag", "") or getattr(order, "tag", "") or "")
+
+
+def _open_orders(algo, symbol) -> list:
+    try:
+        return list(algo.Transactions.GetOpenOrders(symbol))
+    except Exception:
+        return []
+
+
 def get_min_qty(algo, symbol) -> float:
     ticker = symbol.Value if hasattr(symbol, "Value") else str(symbol)
     try:
@@ -52,6 +63,58 @@ def position_qty(algo, symbol) -> float:
         return float(getattr(algo.Portfolio[symbol], "Quantity", 0.0) or 0.0)
     except Exception:
         return 0.0
+
+
+def _order_signed_qty(order) -> float:
+    qty = float(getattr(order, "Quantity", 0.0) or 0.0)
+    if qty != 0.0:
+        return qty
+    abs_qty = float(getattr(order, "AbsoluteQuantity", 0.0) or 0.0)
+    if abs_qty <= 0:
+        return 0.0
+    direction = getattr(order, "Direction", None)
+    if direction is not None:
+        try:
+            from AlgorithmImports import OrderDirection
+
+            if direction == OrderDirection.Sell:
+                return -abs_qty
+            if direction == OrderDirection.Buy:
+                return abs_qty
+        except Exception:
+            pass
+        name = str(getattr(direction, "name", direction) or "").lower()
+        if "sell" in name:
+            return -abs_qty
+        if "buy" in name:
+            return abs_qty
+    return 0.0
+
+
+def reserved_sell_qty(algo, symbol) -> float:
+    """Quantity already committed by open sell/stop orders (cash model)."""
+    reserved = 0.0
+    for order in _open_orders(algo, symbol):
+        qty = _order_signed_qty(order)
+        if qty < 0:
+            reserved += abs(qty)
+    return max(0.0, reserved)
+
+
+def available_sell_qty(algo, symbol) -> float:
+    hold = max(0.0, position_qty(algo, symbol))
+    return max(0.0, hold - reserved_sell_qty(algo, symbol))
+
+
+def cancel_open_orders(algo, symbol) -> None:
+    for order in _open_orders(algo, symbol):
+        oid = getattr(order, "Id", None) or getattr(order, "OrderId", None)
+        if oid is None:
+            continue
+        try:
+            algo.Transactions.CancelOrder(oid)
+        except Exception:
+            pass
 
 
 def hourly_dollar_volume(algo, symbol) -> float:
@@ -114,8 +177,9 @@ def place_limit_or_market(
     if quantity > 0 and getattr(algo, "long_only", True):
         pass
     elif quantity < 0:
-        hold = position_qty(algo, symbol)
-        quantity = -min(abs(quantity), hold)
+        avail = available_sell_qty(algo, symbol)
+        quantity = -min(abs(quantity), avail)
+        quantity = round_quantity(algo, symbol, quantity)
         if quantity == 0:
             return False
 
@@ -163,8 +227,9 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry",
 
 
 def liquidate_symbol(algo, symbol, *, force_market: bool = True) -> None:
-    qty = position_qty(algo, symbol)
-    if qty > 0:
+    cancel_open_orders(algo, symbol)
+    qty = available_sell_qty(algo, symbol)
+    if qty > POSITION_TOLERANCE:
         place_limit_or_market(algo, symbol, -qty, tag="Exit", force_market=force_market)
 
 
@@ -387,18 +452,6 @@ def estimate_fee_pct(algo, notional: float, is_limit: bool = True) -> float:
 # --- from brackets.py ---
 
 
-
-def _order_tag(order) -> str:
-    return str(getattr(order, "Tag", "") or getattr(order, "tag", "") or "")
-
-
-def _open_orders(algo, symbol) -> list:
-    try:
-        return list(algo.Transactions.GetOpenOrders(symbol))
-    except Exception:
-        return []
-
-
 def set_bracket_prices(state: PositionRisk, entry_price: float, atr: float) -> None:
     atr = max(float(atr), entry_price * 0.008)
     state.stop_price = entry_price - float(CONFIG.sl_atr_mult) * atr
@@ -406,18 +459,21 @@ def set_bracket_prices(state: PositionRisk, entry_price: float, atr: float) -> N
 
 
 def sync_brackets(algo, symbol, state: PositionRisk, qty: float) -> dict:
-    """Attach SL stop-market + TP limit for long spot (Kraken via QC)."""
-    if not bool(getattr(CONFIG, "enable_brackets", True)):
+    """Stop-market SL only on cash spot — full SL+TP limits double-book holdings."""
+    if not bool(getattr(CONFIG, "enable_brackets", False)):
         return {"has_sl": False, "has_tp": False}
     qty_abs = abs(float(qty))
-    if qty_abs <= 0:
+    if qty_abs <= POSITION_TOLERANCE:
         return {"has_sl": True, "has_tp": True}
     stop_px = float(getattr(state, "stop_price", 0.0) or 0.0)
-    tp_px = float(getattr(state, "take_profit_price", 0.0) or 0.0)
-    if stop_px <= 0 or tp_px <= 0:
+    if stop_px <= 0:
         return {"has_sl": False, "has_tp": False}
 
-    exit_qty = -qty_abs
+    free = available_sell_qty(algo, symbol)
+    exit_qty = round_quantity(algo, symbol, -min(qty_abs, free))
+    if exit_qty == 0:
+        return {"has_sl": False, "has_tp": False}
+
     has_sl = False
     has_tp = False
     for order in _open_orders(algo, symbol):
@@ -425,7 +481,12 @@ def sync_brackets(algo, symbol, state: PositionRisk, qty: float) -> dict:
         if tag == "SL":
             has_sl = True
         if tag == "TP":
-            has_tp = True
+            try:
+                oid = getattr(order, "Id", None) or getattr(order, "OrderId", None)
+                if oid is not None:
+                    algo.Transactions.CancelOrder(oid)
+            except Exception:
+                pass
 
     if not has_sl:
         try:
@@ -434,11 +495,4 @@ def sync_brackets(algo, symbol, state: PositionRisk, qty: float) -> dict:
         except Exception as exc:
             if hasattr(algo, "Debug"):
                 algo.Debug(f"BRACKET_SL_FAIL {symbol} {exc}")
-    if not has_tp:
-        try:
-            algo.LimitOrder(symbol, exit_qty, tp_px, tag="TP")
-            has_tp = True
-        except Exception as exc:
-            if hasattr(algo, "Debug"):
-                algo.Debug(f"BRACKET_TP_FAIL {symbol} {exc}")
     return {"has_sl": has_sl, "has_tp": has_tp}

@@ -107,7 +107,7 @@ class KrakenMaxConfig:
     use_qc_fear_greed_index: bool = False  # True needs F&G dataset; can stall backtests at 0%
     ensemble_weights_path: str = "ensemble_weights.json"
 
-    enable_brackets: bool = True
+    enable_brackets: bool = False  # cash spot: broker SL+TP double-books sell qty
     use_erc_sizing: bool = True
     use_advanced_regime: bool = True
     use_qc_regime_gates: bool = True

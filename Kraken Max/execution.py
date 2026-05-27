@@ -327,14 +327,17 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry",
         if ok:
             pending = (getattr(algo, "_pending_limits", {}) or {}).get(symbol)
             if pending:
-                track_order_submit(
-                    algo,
-                    type("T", (), {"OrderId": pending.get("order_id")})(),
-                    symbol=symbol,
-                    qty=float(pending.get("qty", qty)),
-                    expected_price=price,
-                    force_market=force_market,
-                )
+                px = float(algo.Securities[symbol].Price)
+                order_qty = float(pending.get("qty", 0.0))
+                if order_qty > 0 and px > 0:
+                    track_order_submit(
+                        algo,
+                        type("T", (), {"OrderId": pending.get("order_id")})(),
+                        symbol=symbol,
+                        qty=order_qty,
+                        expected_price=px,
+                        force_market=force_market,
+                    )
         return ok
     return False
 

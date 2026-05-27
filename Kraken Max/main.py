@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
 import pandas as pd
 
@@ -94,6 +95,13 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             if bool(self.config.use_sub_hour_bars)
             else int(self.config.warmup_bars)
         )
+        if bool(self.config.fast_qc_backtest) and not getattr(self, "LiveMode", False):
+            sy, sm, sd = self.config.fast_qc_start
+            ey, em, ed = self.config.fast_qc_end
+            self.SetStartDate(int(sy), int(sm), int(sd))
+            self.SetEndDate(int(ey), int(em), int(ed))
+            warmup = int(self.config.warmup_bars_fast)
+            self.Debug(f"KRAKEN_MAX fast_qc_backtest {sy}-{sm}-{sd} → {ey}-{em}-{ed} warmup={warmup}")
         self.SetWarmup(warmup, res)
 
         init_execution_state(self)
@@ -101,11 +109,12 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.sentiment_hub = SentimentDataHub(self.config)
         self.sentiment_hub.initialize_algorithm(self)
         self.ml_trainer = MLTrainer(self.config)
+        ml_blob = self.ml_trainer.load_from_object_store(self) or load_ml_weights()
         if bool(self.config.use_advanced_regime):
             self.regime_engine = UnifiedRegimeEngine(self.config)
         else:
             self.regime_engine = RegimeEngine(self.config)
-        self.ensemble = AlphaEnsemble(self.config, MLScorer(load_ml_weights()), algo=self)
+        self.ensemble = AlphaEnsemble(self.config, MLScorer(ml_blob), algo=self)
         self.revalidator = AutoRevalidator(self.config) if bool(self.config.enable_auto_revalidation) else None
         self.sizer = AggressiveSizer(self.config)
         self.alerts = AlertManager(self) if bool(self.config.enable_live_alerts) else None
@@ -134,20 +143,22 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self.Debug(f"KRAKEN_MAX ensemble_weights loaded {opt}")
         if self.drift_monitor is not None:
             self.drift_monitor.load_baseline_from_object_store(self)
-            try:
-                import json
-                from pathlib import Path
 
-                ew = Path(__file__).resolve().parent / "ensemble_weights.json"
-                if ew.exists():
-                    blob = json.loads(ew.read_text(encoding="utf-8"))
-                    sharpe = float((blob.get("metrics") or {}).get("oos_sharpe", self.config.baseline_sharpe))
-                    self.drift_monitor.baseline_sharpe = sharpe
-            except Exception:
-                pass
-
-        for ticker in set(KRAKEN_MAX_UNIVERSE) | set(REFERENCE_SYMBOLS):
+        if bool(self.config.subscribe_all_universe_on_init):
+            boot = set(KRAKEN_MAX_UNIVERSE) | set(REFERENCE_SYMBOLS)
+        else:
+            boot = set(self.config.seed_subscribe_symbols) | set(REFERENCE_SYMBOLS)
+        for ticker in sorted(boot):
             self._subscribe(ticker)
+        if not self.symbol_by_ticker:
+            raise RuntimeError(
+                "KRAKEN_MAX: no Kraken symbols subscribed — enable Crypto Price data (Kraken) "
+                "and check tickers in config.seed_subscribe_symbols."
+            )
+        self.Debug(
+            f"KRAKEN_MAX subscribed {len(self.symbol_by_ticker)} symbols "
+            f"(all_universe={self.config.subscribe_all_universe_on_init}) warmup={warmup} res={res}"
+        )
 
         self.Schedule.On(
             self.DateRules.EveryDay(),
@@ -183,7 +194,14 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             f"regime_wf={self.config.use_regime_wf_weights}"
         )
 
+    def _ensure_subscribed(self, tickers: list[str]) -> None:
+        for ticker in tickers:
+            if ticker not in self.symbol_by_ticker:
+                self._subscribe(ticker)
+
     def _subscribe(self, ticker: str) -> None:
+        if ticker in self.symbol_by_ticker:
+            return
         try:
             res = Resolution.Minute if bool(self.config.use_sub_hour_bars) else Resolution.Hour
             sec = self.AddCrypto(ticker, res, Market.Kraken)
@@ -218,6 +236,21 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             )
 
     def OnData(self, slice) -> None:  # pragma: no cover
+        if not self.IsWarmingUp and not getattr(self, "_logged_warmup_done", False):
+            self._logged_warmup_done = True
+            self.Debug(
+                f"KRAKEN_MAX warmup done — trading from {self.Time} "
+                f"symbols={len(self.symbol_by_ticker)} equity={self.Portfolio.TotalPortfolioValue:.2f}"
+            )
+
+        if not self.IsWarmingUp:
+            self._progress_bars = int(getattr(self, "_progress_bars", 0)) + 1
+            if self._progress_bars in (1, 24, 168):
+                self.Debug(
+                    f"KRAKEN_MAX progress bars={self._progress_bars} time={self.Time} "
+                    f"equity={self.Portfolio.TotalPortfolioValue:.2f}"
+                )
+
         if not bool(self.config.use_sub_hour_bars):
             self._bar_count += 1
             for ticker, sym in self.symbol_by_ticker.items():
@@ -485,7 +518,12 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         if self.portfolio_risk.drawdown_halted(now, 0.0):
             return
 
-        self.active_universe = select_universe(self._history_provider, now)
+        self.active_universe = select_universe(
+            self._history_provider,
+            now,
+            candidates=tuple(self.symbol_by_ticker.keys()),
+        )
+        self._ensure_subscribed(self.active_universe)
         feature_map = {
             t: self.feature_cache.features(t)
             for t in self.active_universe

@@ -366,12 +366,7 @@ class UnifiedRegimeEngine(AdvancedRegimeEngine):
 from config import CONFIG, KrakenMaxConfig
 
 _WEIGHT_KEYS = ("w_momentum", "w_breakout", "w_dip", "w_ml")
-_DEFAULT_REGIME_MAP = {
-    "bull": {"w_momentum": 0.40, "w_breakout": 0.30, "w_dip": 0.10, "w_ml": 0.20},
-    "neutral": {"w_momentum": 0.35, "w_breakout": 0.25, "w_dip": 0.15, "w_ml": 0.25},
-    "bear": {"w_momentum": 0.25, "w_breakout": 0.15, "w_dip": 0.20, "w_ml": 0.40},
-    "chaos": {"w_momentum": 0.20, "w_breakout": 0.20, "w_dip": 0.10, "w_ml": 0.50},
-}
+from kraken_defaults import REGIME_WEIGHTS as _DEFAULT_REGIME_MAP
 
 
 def load_regime_weights_from_object_store(algo, key: str | None = None) -> dict[str, dict[str, float]] | None:
@@ -391,18 +386,8 @@ def load_regime_weights_from_object_store(algo, key: str | None = None) -> dict[
 
 
 def load_regime_weights(path: Path | None = None) -> dict[str, dict[str, float]]:
-    target = path or (Path(__file__).resolve().parent / "regime_weights.json")
-    if not target.exists():
-        return {k: dict(v) for k, v in _DEFAULT_REGIME_MAP.items()}
-    try:
-        blob = json.loads(target.read_text(encoding="utf-8"))
-        regimes = blob.get("regimes") or {}
-        out: dict[str, dict[str, float]] = {}
-        for name, weights in regimes.items():
-            out[str(name)] = {k: float(weights[k]) for k in _WEIGHT_KEYS if k in weights}
-        return out or {k: dict(v) for k, v in _DEFAULT_REGIME_MAP.items()}
-    except Exception:
-        return {k: dict(v) for k, v in _DEFAULT_REGIME_MAP.items()}
+    _ = path
+    return {k: dict(v) for k, v in _DEFAULT_REGIME_MAP.items()}
 
 
 def normalize_regime_key(regime_name: str) -> str:
@@ -425,17 +410,5 @@ def config_for_regime(base: KrakenMaxConfig, regime_name: str, regime_map: dict[
     return replace(base, **kwargs) if kwargs else base
 
 def load_regime_weights_merged(path: Path | None = None) -> dict[str, dict[str, float]]:
-    base = load_regime_weights(path)
-    target = path or (Path(__file__).resolve().parent / str(CONFIG.regime_weights_path))
-    if not target.exists():
-        return base
-    try:
-        blob = json.loads(target.read_text(encoding="utf-8"))
-        if blob.get("source", "").startswith("regime_walk_forward"):
-            regimes = blob.get("regimes") or {}
-            for name, w in regimes.items():
-                key = normalize_regime_key(name)
-                base[key] = {k: float(w[k]) for k in _WEIGHT_KEYS if k in w}
-    except Exception:
-        pass
-    return base
+    _ = path
+    return load_regime_weights()

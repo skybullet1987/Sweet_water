@@ -605,15 +605,6 @@ class AutoRevalidator:
         validation: ValidationReport = validate_bars(bars, config=self.config, n_folds=folds)
         wf = walk_forward_optimize(bars, n_folds=folds, config=self.config)
         regime_w = optimize_regime_weights(bars, config=self.config)
-        root = Path(__file__).resolve().parent
-        if bool(self.config.auto_save_ensemble_weights):
-            save_ensemble_weights(wf, root / str(self.config.ensemble_weights_path))
-        save_regime_weights(
-            regime_w,
-            root / str(self.config.regime_weights_path),
-            metrics={"oos_sharpe": wf.oos_sharpe, "validation_passed": validation.passed},
-        )
-        save_validation_report(validation, root / str(self.config.validation_report_path))
         if algo is not None:
             self.baseline_mgr.apply_walk_forward_result(algo, wf, persist_ensemble=False)
             self._persist_object_store(algo, validation, wf, regime_w)

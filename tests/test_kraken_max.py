@@ -92,6 +92,13 @@ def test_ml_trainer_retrain():
     assert "weights" in blob or scorer.weights
 
 
+def test_load_ml_weights_builtin_only():
+    blob = load_ml_weights()
+    assert blob["bias"] == 0.0
+    assert "weights" in blob
+    assert MLScorer(blob).weights
+
+
 def test_scalper_entry_ranging():
     frame = _synthetic_ohlcv(120)
     frame["close"] = frame["close"] * 0.92

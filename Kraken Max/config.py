@@ -19,13 +19,28 @@ class KrakenMaxConfig:
     end_year: int = 2026
     end_month: int = 5
     end_day: int = 1
+    fast_qc_backtest: bool = True  # 3-month window + short warmup so QC % moves off 0%
+    fast_qc_start: tuple[int, int, int] = (2024, 1, 1)
+    fast_qc_end: tuple[int, int, int] = (2024, 4, 1)
+    warmup_bars_fast: int = 48  # ~2 days hourly
     starting_cash: float = 1000.0
     account_currency: str = "USD"
     bar_resolution: str = "Hour"
     resolution_minutes: int = 15
     use_sub_hour_bars: bool = False  # False=hourly (first QC backtest). True needs Kraken Minute data.
-    warmup_bars: int = 24 * 14  # ~14 days at hourly resolution
-    warmup_bars_sub_hour: int = 24 * 14 * 4  # ~14 days of 15m bars when use_sub_hour_bars=True
+    warmup_bars: int = 24 * 7  # ~7 days hourly (14d+50 symbols can look "stuck" on QC)
+    warmup_bars_sub_hour: int = 24 * 7 * 4  # ~7 days of 15m bars when use_sub_hour_bars=True
+    seed_subscribe_symbols: tuple[str, ...] = (
+        "BTCUSD",
+        "ETHUSD",
+        "LTCUSD",
+        "BCHUSD",
+        "SOLUSD",
+        "XRPUSD",
+        "LINKUSD",
+        "ADAUSD",
+    )
+    subscribe_all_universe_on_init: bool = False  # True=subscribes ~50 pairs (slow QC warmup)
 
     universe_size: int = 24
     top_k: int = 4
@@ -89,7 +104,7 @@ class KrakenMaxConfig:
     stale_order_bars: int = 3
 
     use_external_sentiment: bool = True
-    use_qc_fear_greed_index: bool = True
+    use_qc_fear_greed_index: bool = False  # True needs F&G dataset; can stall backtests at 0%
     ensemble_weights_path: str = "ensemble_weights.json"
 
     enable_brackets: bool = True
@@ -194,7 +209,7 @@ class KrakenMaxConfig:
     regime_wf_min_bars: int = 80
     regime_weights_object_store_key: str = "kraken_max_regime_weights.json"
 
-    enable_auto_revalidation: bool = True
+    enable_auto_revalidation: bool = False  # True runs heavy walk-forward on MonthStart (can freeze backtests)
     auto_revalidate_days: int = 30
     auto_revalidate_folds: int = 3
     auto_revalidate_lookback_days: int = 120

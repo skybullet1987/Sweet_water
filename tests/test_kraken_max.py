@@ -92,6 +92,14 @@ def test_ml_trainer_retrain():
     assert "weights" in blob or scorer.weights
 
 
+def test_load_ml_weights_missing_file(tmp_path):
+    missing = tmp_path / "no_ml_weights.json"
+    blob = load_ml_weights(missing)
+    assert blob["bias"] == 0.0
+    assert "weights" in blob
+    assert MLScorer(blob).weights
+
+
 def test_scalper_entry_ranging():
     frame = _synthetic_ohlcv(120)
     frame["close"] = frame["close"] * 0.92

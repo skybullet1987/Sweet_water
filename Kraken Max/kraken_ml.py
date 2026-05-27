@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 
 from config import CONFIG, KrakenMaxConfig
+from kraken_defaults import ML_FEATURE_NAMES, ML_WEIGHTS as BUILTIN_ML_WEIGHTS
 
 # --- from ml_scorer.py ---
 
@@ -19,13 +20,6 @@ from config import CONFIG, KrakenMaxConfig
 def _sigmoid(x: float) -> float:
     x = max(-20.0, min(20.0, x))
     return 1.0 / (1.0 + math.exp(-x))
-
-
-def load_ml_weights(path: Path | None = None) -> dict[str, Any]:
-    root = Path(__file__).resolve().parent
-    target = path or (root / "ml_weights.json")
-    with open(target, encoding="utf-8") as fh:
-        return json.load(fh)
 
 
 class MLScorer:
@@ -61,18 +55,27 @@ class MLScorer:
 # --- from ml_trainer.py ---
 
 
-FEATURE_COLS = (
-    "mom_7d",
-    "mom_21d",
-    "mom_accel",
-    "breakout_strength",
-    "volume_surge",
-    "rsi_pullback",
-    "trend_quality",
-    "rv_21d_inv",
-    "breadth",
-    "btc_beta",
-)
+FEATURE_COLS = ML_FEATURE_NAMES
+
+
+def default_ml_weights() -> dict[str, Any]:
+    return {**BUILTIN_ML_WEIGHTS, "weights": dict(BUILTIN_ML_WEIGHTS["weights"])}
+
+
+def load_ml_weights(path: Path | None = None) -> dict[str, Any]:
+    """Load ML weights: optional JSON override, else Python builtins (QC-safe)."""
+    root = Path(__file__).resolve().parent
+    target = path or (root / "ml_weights.json")
+    if not target.is_file():
+        return default_ml_weights()
+    try:
+        with open(target, encoding="utf-8") as fh:
+            blob = json.load(fh)
+        if not isinstance(blob, dict):
+            return default_ml_weights()
+        return blob
+    except (OSError, json.JSONDecodeError):
+        return default_ml_weights()
 
 
 def _sigmoid_batch(z: np.ndarray) -> np.ndarray:

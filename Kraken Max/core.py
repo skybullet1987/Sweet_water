@@ -267,10 +267,13 @@ def _priority_boost(symbol: str) -> float:
 def select_universe(
     history_provider: Callable[[str, object, object], pd.DataFrame],
     asof_date,
+    *,
+    candidates: tuple[str, ...] | list[str] | None = None,
 ) -> list[str]:
     start = asof_date - timedelta(days=21)
     rows: list[tuple[str, float]] = []
-    for symbol in KRAKEN_MAX_UNIVERSE:
+    universe = tuple(candidates) if candidates is not None else KRAKEN_MAX_UNIVERSE
+    for symbol in universe:
         if symbol in BLACKLIST:
             continue
         frame = history_provider(symbol, start, asof_date)
@@ -610,11 +613,17 @@ ENSEMBLE_WEIGHTS_PATH = Path(__file__).resolve().parent / "ensemble_weights.json
 
 
 def load_optimized_ensemble_weights(path: Path | None = None) -> dict[str, float]:
+    from kraken_defaults import ENSEMBLE_WEIGHTS
+
     target = path or ENSEMBLE_WEIGHTS_PATH
-    if not target.exists():
-        return {}
-    blob = json.loads(target.read_text(encoding="utf-8"))
-    return {str(k): float(v) for k, v in (blob.get("ensemble") or {}).items()}
+    if not target.is_file():
+        return dict(ENSEMBLE_WEIGHTS)
+    try:
+        blob = json.loads(target.read_text(encoding="utf-8"))
+        weights = {str(k): float(v) for k, v in (blob.get("ensemble") or {}).items()}
+        return weights or dict(ENSEMBLE_WEIGHTS)
+    except (OSError, json.JSONDecodeError):
+        return dict(ENSEMBLE_WEIGHTS)
 
 
 class AlphaEnsemble:

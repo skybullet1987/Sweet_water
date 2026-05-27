@@ -8,6 +8,8 @@ Aggressive **long-only**, **cash account** (no margin) crypto strategy for **Qua
 
 Upload the entire **`Kraken Max/`** folder plus **`qc_runtime/`**. Core code lives in:
 
+**QC tip:** The strategy is **Python** (`.py` only required). JSON files (`ml_weights.json`, `ensemble_weights.json`, `regime_weights.json`) are **optional** — defaults live in **`kraken_defaults.py`**. CSV files under `data/` are optional (sentiment falls back to proxies).
+
 | File | Role |
 |------|------|
 | `main.py` | `KrakenMaxAlgorithm` entry point |
@@ -18,6 +20,7 @@ Upload the entire **`Kraken Max/`** folder plus **`qc_runtime/`**. Core code liv
 | `execution.py` | Limits, bridge to `qc_runtime`, brackets |
 | `data.py` | Sentiment, funding/OI feeds, cross-venue lead |
 | `kraken_ml.py` | Logistic scorer + trainer |
+| `kraken_defaults.py` | Built-in weights (no JSON upload needed on QC) |
 | `kraken_ops.py` | Fill tracker, drift, scorecard, telemetry, alerts |
 | `workflow.py` | Walk-forward, validation, auto-revalidation |
 
@@ -187,7 +190,8 @@ Set in algorithm **Parameters**:
 |--------|-----|
 | Compile error / red build | Open **Logs**; fix missing file or import. Ensure `kraken_ml.py` / `kraken_ops.py` are uploaded (names must be &gt; 3 characters). |
 | Build OK but nothing runs | Confirm `KrakenMaxAlgorithm` is the active class in `main.py`. |
-| Stuck on “Loading…” | Often **minute data** without a Minute subscription — keep `use_sub_hour_bars = False`. |
+| Stuck on “Loading…” / queued forever | **Stop** other backtests using your B4 node (Resources panel). Keep `use_sub_hour_bars = False`. Default now subscribes **8 symbols**, not ~50 (`subscribe_all_universe_on_init = False`). |
+| Runs but no progress for 10+ min | Shorten dates (e.g. 2024-01-01 → 2024-06-01). Check Logs for `KRAKEN_MAX warmup done`. |
 | No trades | Check **Debug** for `KRAKEN_MAX skip subscribe` — add Kraken crypto universe or fix tickers. |
 | `qc_runtime` not found | Upload `qc_runtime/` **inside** the QC project directory (same level as `main.py`). |
 

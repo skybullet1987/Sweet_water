@@ -151,7 +151,7 @@ class SentimentDataHub:
         self.last: ExternalSentiment = ExternalSentiment()
 
     def initialize_algorithm(self, algo) -> None:
-        if HAS_QC:
+        if HAS_QC and bool(self.config.use_qc_fear_greed_index):
             try:
                 self.fg_symbol = algo.AddData(FearGreedIndex, "FG").Symbol
                 algo.Debug("KRAKEN_MAX v3 FearGreedIndex subscribed")

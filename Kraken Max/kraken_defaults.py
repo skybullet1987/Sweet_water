@@ -33,6 +33,17 @@ ENSEMBLE_WEIGHTS: dict[str, float] = {
     "w_ml": 0.25,
 }
 
+SEED_SUBSCRIBE_SYMBOLS: tuple[str, ...] = (
+    "BTCUSD",
+    "ETHUSD",
+    "LTCUSD",
+    "BCHUSD",
+    "SOLUSD",
+    "XRPUSD",
+    "LINKUSD",
+    "ADAUSD",
+)
+
 REGIME_WEIGHTS: dict[str, dict[str, float]] = {
     "bull": {"w_momentum": 0.40, "w_breakout": 0.30, "w_dip": 0.10, "w_ml": 0.20},
     "neutral": {"w_momentum": 0.35, "w_breakout": 0.25, "w_dip": 0.15, "w_ml": 0.25},

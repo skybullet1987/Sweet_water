@@ -77,6 +77,7 @@ from risk import (
     max_cluster_exposure,
 )
 from workflow import AutoRevalidator, consolidate_minute_ohlcv
+from kraken_defaults import SEED_SUBSCRIBE_SYMBOLS
 
 
 class KrakenMaxAlgorithm(QCAlgorithm):
@@ -89,18 +90,21 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.SetCash(float(self.config.starting_cash))
         self.SetStartDate(self.config.start_year, self.config.start_month, self.config.start_day)
         self.SetEndDate(self.config.end_year, self.config.end_month, self.config.end_day)
-        res = Resolution.Minute if bool(self.config.use_sub_hour_bars) else Resolution.Hour
+        cfg = self.config
+        _g = lambda name, default: getattr(cfg, name, default)  # noqa: E731 — QC partial uploads
+
+        res = Resolution.Minute if bool(_g("use_sub_hour_bars", False)) else Resolution.Hour
         warmup = (
-            int(self.config.warmup_bars_sub_hour)
-            if bool(self.config.use_sub_hour_bars)
-            else int(self.config.warmup_bars)
+            int(_g("warmup_bars_sub_hour", 24 * 7 * 4))
+            if bool(_g("use_sub_hour_bars", False))
+            else int(_g("warmup_bars", 24 * 7))
         )
-        if bool(self.config.fast_qc_backtest) and not getattr(self, "LiveMode", False):
-            sy, sm, sd = self.config.fast_qc_start
-            ey, em, ed = self.config.fast_qc_end
+        if bool(_g("fast_qc_backtest", True)) and not getattr(self, "LiveMode", False):
+            sy, sm, sd = _g("fast_qc_start", (2024, 1, 1))
+            ey, em, ed = _g("fast_qc_end", (2024, 4, 1))
             self.SetStartDate(int(sy), int(sm), int(sd))
             self.SetEndDate(int(ey), int(em), int(ed))
-            warmup = int(self.config.warmup_bars_fast)
+            warmup = int(_g("warmup_bars_fast", 48))
             self.Debug(f"KRAKEN_MAX fast_qc_backtest {sy}-{sm}-{sd} → {ey}-{em}-{ed} warmup={warmup}")
         self.SetWarmup(warmup, res)
 
@@ -115,7 +119,9 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         else:
             self.regime_engine = RegimeEngine(self.config)
         self.ensemble = AlphaEnsemble(self.config, MLScorer(ml_blob), algo=self)
-        self.revalidator = AutoRevalidator(self.config) if bool(self.config.enable_auto_revalidation) else None
+        self.revalidator = (
+            AutoRevalidator(self.config) if bool(_g("enable_auto_revalidation", False)) else None
+        )
         self.sizer = AggressiveSizer(self.config)
         self.alerts = AlertManager(self) if bool(self.config.enable_live_alerts) else None
         self.fill_tracker = FillTracker(self.config) if bool(self.config.enable_fill_tracking) else None
@@ -144,10 +150,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         if self.drift_monitor is not None:
             self.drift_monitor.load_baseline_from_object_store(self)
 
-        if bool(self.config.subscribe_all_universe_on_init):
+        if bool(_g("subscribe_all_universe_on_init", False)):
             boot = set(KRAKEN_MAX_UNIVERSE) | set(REFERENCE_SYMBOLS)
         else:
-            boot = set(self.config.seed_subscribe_symbols) | set(REFERENCE_SYMBOLS)
+            boot = set(_g("seed_subscribe_symbols", SEED_SUBSCRIBE_SYMBOLS)) | set(REFERENCE_SYMBOLS)
         for ticker in sorted(boot):
             self._subscribe(ticker)
         if not self.symbol_by_ticker:
@@ -157,7 +163,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             )
         self.Debug(
             f"KRAKEN_MAX subscribed {len(self.symbol_by_ticker)} symbols "
-            f"(all_universe={self.config.subscribe_all_universe_on_init}) warmup={warmup} res={res}"
+            f"(all_universe={_g('subscribe_all_universe_on_init', False)}) warmup={warmup} res={res}"
         )
 
         self.Schedule.On(

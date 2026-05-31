@@ -87,6 +87,17 @@ def test_sellable_qty_for_exit_shaves_buffer_lot():
     assert sellable > 0.05234
 
 
+def test_dust_link_hold_below_lot_marks_abandoned():
+    from execution import effective_lot_size, is_dust_symbol, mark_dust_symbol
+
+    symbol = _Symbol("LINKUSD")
+    algo, symbol, _, _ = _algo(hold=0.18816325, open_orders=[])
+    algo.Securities[symbol].SymbolProperties = type("SP", (), {"LotSize": 0.2, "MinimumOrderSize": 0.2})()
+    sellable = sellable_qty_for_exit(algo, symbol)
+    assert sellable == 0.0
+    assert is_dust_symbol(algo, symbol)
+
+
 def test_reserved_sell_qty_reduces_available():
     algo, symbol, _, _ = _algo(hold=1.0, open_orders=[_Order(-0.4, tag="SL")])
     assert reserved_sell_qty(algo, symbol) == 0.4

@@ -47,15 +47,48 @@ def get_min_qty(algo, symbol) -> float:
     return float(CONFIG.min_qty_fallback.get(ticker, 0.0001))
 
 
-def round_quantity(algo, symbol, quantity: float) -> float:
+def effective_lot_size(algo, symbol) -> float:
+    lot = 0.0
+    min_size = 0.0
     try:
-        lot = float(getattr(algo.Securities[symbol].SymbolProperties, "LotSize", 0.0) or 0.0)
+        sp = algo.Securities[symbol].SymbolProperties
+        lot = float(getattr(sp, "LotSize", 0.0) or 0.0)
+        min_size = float(getattr(sp, "MinimumOrderSize", 0.0) or 0.0)
     except Exception:
-        lot = 0.0
+        pass
+    if lot <= 0 and min_size > 0:
+        lot = min_size
     if lot <= 0:
-        return round_qty(float(quantity), get_min_qty(algo, symbol))
+        lot = get_min_qty(algo, symbol)
+    return max(lot, POSITION_TOLERANCE)
+
+
+def floor_holdings_to_lot(hold: float, lot: float) -> float:
+    if hold <= 0:
+        return 0.0
+    if lot <= 0:
+        return hold
+    return math.floor(hold / lot + 1e-12) * lot
+
+
+def mark_dust_symbol(algo, symbol, reason: str = "") -> None:
+    dust = getattr(algo, "_abandoned_dust", None)
+    if dust is None:
+        algo._abandoned_dust = set()
+        dust = algo._abandoned_dust
+    if symbol not in dust and hasattr(algo, "Debug") and reason:
+        algo.Debug(f"KM_DUST {getattr(symbol, 'Value', symbol)} {reason}")
+    dust.add(symbol)
+
+
+def is_dust_symbol(algo, symbol) -> bool:
+    return symbol in getattr(algo, "_abandoned_dust", set())
+
+
+def round_quantity(algo, symbol, quantity: float) -> float:
+    lot = effective_lot_size(algo, symbol)
     sign = 1.0 if quantity >= 0 else -1.0
-    return sign * math.floor(abs(quantity) / lot) * lot
+    return sign * floor_holdings_to_lot(abs(float(quantity)), lot)
 
 
 def position_qty(algo, symbol) -> float:
@@ -107,19 +140,24 @@ def available_sell_qty(algo, symbol) -> float:
 
 
 def sellable_qty_for_exit(algo, symbol) -> float:
-    """Portfolio qty to sell on exit — buffered so cash accounts don't oversell after fees."""
+    """Sell qty floored to lot steps — never round up above portfolio (cash/dust safe)."""
+    if is_dust_symbol(algo, symbol):
+        return 0.0
     avail = available_sell_qty(algo, symbol)
     if avail <= POSITION_TOLERANCE:
         return 0.0
-    lot = max(get_min_qty(algo, symbol), POSITION_TOLERANCE)
+    lot = effective_lot_size(algo, symbol)
+    qty = floor_holdings_to_lot(avail, lot)
+    if qty <= POSITION_TOLERANCE:
+        mark_dust_symbol(algo, symbol, f"hold={avail:.8f}<lot={lot:.8f}")
+        return 0.0
     buffer_lots = int(getattr(CONFIG, "exit_sell_buffer_lots", 1) or 1)
-    buffered = avail - buffer_lots * lot
-    if buffered <= lot:
-        buffered = avail
-    qty = round_quantity(algo, symbol, buffered)
-    if qty <= 0 and avail >= lot:
-        qty = round_quantity(algo, symbol, avail - lot)
-    return max(0.0, min(qty, avail))
+    if qty > buffer_lots * lot:
+        qty = floor_holdings_to_lot(qty - buffer_lots * lot, lot)
+    if qty <= POSITION_TOLERANCE:
+        mark_dust_symbol(algo, symbol, "buffer_zero")
+        return 0.0
+    return min(qty, avail)
 
 
 def cancel_open_orders(algo, symbol) -> None:
@@ -187,17 +225,21 @@ def place_limit_or_market(
     tag: str = "Entry",
     force_market: bool = False,
 ) -> bool:
-    quantity = round_quantity(algo, symbol, float(quantity))
-    if quantity == 0:
-        return False
-    if quantity > 0 and getattr(algo, "long_only", True):
-        pass
-    elif quantity < 0:
+    raw = float(quantity)
+    if raw < 0:
+        if is_dust_symbol(algo, symbol):
+            return False
         hold = max(0.0, position_qty(algo, symbol))
         avail = available_sell_qty(algo, symbol)
-        sell_abs = min(abs(quantity), avail, hold)
-        quantity = round_quantity(algo, symbol, -sell_abs)
-        if quantity == 0 or abs(quantity) > hold + POSITION_TOLERANCE:
+        lot = effective_lot_size(algo, symbol)
+        sell_abs = floor_holdings_to_lot(min(abs(raw), avail, hold), lot)
+        if sell_abs <= POSITION_TOLERANCE:
+            mark_dust_symbol(algo, symbol, "sell_zero")
+            return False
+        quantity = -sell_abs
+    else:
+        quantity = round_quantity(algo, symbol, raw)
+        if quantity == 0:
             return False
 
     price_est = _limit_price(algo, symbol, quantity)
@@ -293,7 +335,7 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry",
 
 
 def liquidate_symbol(algo, symbol, *, force_market: bool = True) -> bool:
-    if _exit_blocked(algo, symbol):
+    if is_dust_symbol(algo, symbol) or _exit_blocked(algo, symbol):
         return False
     cancel_open_orders(algo, symbol)
     qty = sellable_qty_for_exit(algo, symbol)
@@ -498,10 +540,11 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry",
 
 
 def liquidate_symbol(algo, symbol, *, force_market: bool = True) -> bool:
-    if _USE_PRO and _qc_execution is not None:
-        return bool(_qc_execution.smart_liquidate(algo, symbol, tag="KM:Exit"))
+    # Always prefer local cash-safe liquidate (qc_runtime smart_liquidate can oversell dust).
     if _local_execution is not None:
         return bool(_local_execution.liquidate_symbol(algo, symbol, force_market=force_market))
+    if _USE_PRO and _qc_execution is not None:
+        return bool(_qc_execution.smart_liquidate(algo, symbol, tag="KM:Exit"))
     return False
 
 

@@ -117,6 +117,7 @@ class KrakenMaxConfig:
     alert_on_drawdown_halt: bool = True
     alert_on_rebalance: bool = False
     alert_on_drift: bool = True
+    ops_alerts_live_only: bool = True  # suppress DRIFT/PAPER_GATE Debug spam in backtests
     funding_symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
 
     corr_lookback_hours: int = 24 * 7
@@ -229,7 +230,7 @@ class KrakenMaxConfig:
         "SOLUSD": 0.05,
         "XRPUSD": 2.0,
         "ADAUSD": 10.0,
-        "LINKUSD": 0.5,
+        "LINKUSD": 0.01,
         "DOTUSD": 1.0,
         "AVAXUSD": 0.2,
         "LTCUSD": 0.05,

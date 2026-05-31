@@ -60,15 +60,35 @@ def effective_lot_size(algo, symbol) -> float:
         lot = min_size
     if lot <= 0:
         lot = get_min_qty(algo, symbol)
-    return max(lot, POSITION_TOLERANCE)
+    return max(lot, 1e-6)
 
 
 def floor_holdings_to_lot(hold: float, lot: float) -> float:
     if hold <= 0:
         return 0.0
     if lot <= 0:
-        return hold
+        return 0.0
     return math.floor(hold / lot + 1e-12) * lot
+
+
+def hold_is_dust(algo, symbol) -> bool:
+    """True when holdings are below one lot or economic minimum — do not place exits."""
+    if is_dust_symbol(algo, symbol):
+        return True
+    hold = max(0.0, position_qty(algo, symbol))
+    if hold <= POSITION_TOLERANCE:
+        return True
+    lot = effective_lot_size(algo, symbol)
+    if hold + 1e-15 < lot:
+        return True
+    try:
+        px = float(algo.Securities[symbol].Price)
+    except Exception:
+        px = 0.0
+    dust_usd = float(getattr(CONFIG, "dust_notional_usd", 1.0) or 1.0)
+    if px > 0 and hold * px < dust_usd:
+        return True
+    return False
 
 
 def mark_dust_symbol(algo, symbol, reason: str = "") -> None:
@@ -141,7 +161,8 @@ def available_sell_qty(algo, symbol) -> float:
 
 def sellable_qty_for_exit(algo, symbol) -> float:
     """Sell qty floored to lot steps — never round up above portfolio (cash/dust safe)."""
-    if is_dust_symbol(algo, symbol):
+    if hold_is_dust(algo, symbol):
+        mark_dust_symbol(algo, symbol, "sellable_dust")
         return 0.0
     avail = available_sell_qty(algo, symbol)
     if avail <= POSITION_TOLERANCE:
@@ -227,7 +248,8 @@ def place_limit_or_market(
 ) -> bool:
     raw = float(quantity)
     if raw < 0:
-        if is_dust_symbol(algo, symbol):
+        if hold_is_dust(algo, symbol):
+            mark_dust_symbol(algo, symbol, "sell_blocked_dust")
             return False
         hold = max(0.0, position_qty(algo, symbol))
         avail = available_sell_qty(algo, symbol)
@@ -335,7 +357,9 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry",
 
 
 def liquidate_symbol(algo, symbol, *, force_market: bool = True) -> bool:
-    if is_dust_symbol(algo, symbol) or _exit_blocked(algo, symbol):
+    if hold_is_dust(algo, symbol) or _exit_blocked(algo, symbol):
+        if hold_is_dust(algo, symbol):
+            mark_dust_symbol(algo, symbol, "liquidate_dust")
         return False
     cancel_open_orders(algo, symbol)
     qty = sellable_qty_for_exit(algo, symbol)

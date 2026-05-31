@@ -100,6 +100,7 @@ class KrakenMaxConfig:
     limit_order_timeout_seconds: int = 45
     exit_retry_cooldown_hours: float = 12.0
     exit_sell_buffer_lots: int = 1  # shave lot steps off sells (fee/settlement buffer)
+    dust_notional_usd: float = 1.0  # holdings below this notional are non-tradable dust
     stale_price_minutes: int = 90
     cash_safety_factor: float = 0.97
     failed_esc_cooldown_hours: float = 6.0

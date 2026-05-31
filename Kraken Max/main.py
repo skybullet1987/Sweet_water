@@ -46,9 +46,11 @@ from core import (
 from data import CrossVenueLead, SentimentDataHub, compute_sentiment, merge_external_sentiment
 from execution import (
     escalate_orders,
+    hold_is_dust,
     init_execution_state,
     liquidate_symbol,
     manage_position_exit,
+    mark_dust_symbol,
     place_buy_notional,
     position_qty,
     set_bracket_prices,
@@ -423,14 +425,14 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             if is_exit:
                 ticker = self._ticker_for_symbol(sym)
                 st = self.position_risk.get(ticker) if ticker else None
-                if ticker and st and position_qty(self, sym) <= 1e-8:
+                if ticker and st and (hold_is_dust(self, sym) or position_qty(self, sym) <= 1e-8):
+                    if hold_is_dust(self, sym):
+                        mark_dust_symbol(self, sym, "post_exit_residual")
                     self._record_exit(ticker, st, sym)
 
         if sym is not None and "Invalid" in status and is_exit:
             self._mark_exit_fail_local(sym)
-            if not hasattr(self, "_abandoned_dust"):
-                self._abandoned_dust = set()
-            self._abandoned_dust.add(sym)
+            mark_dust_symbol(self, sym, "invalid_exit")
 
         if self.fill_tracker is None:
             return
@@ -859,15 +861,19 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             if position_qty(self, sym) <= 0:
                 self.position_risk.pop(ticker, None)
                 continue
+            if hold_is_dust(self, sym):
+                mark_dust_symbol(self, sym, "manage_positions_dust")
+                self.position_risk.pop(ticker, None)
+                continue
             state = self.position_risk.get(ticker)
             if state is None:
-                liquidate_symbol(self, sym, force_market=True)
                 continue
             close = float(self.Securities[sym].Price)
             state.highest_close = max(state.highest_close, close)
             feats = build_scalper_features(self.feature_cache.frame(ticker)) if state.strategy_owner == "scalper" else {}
             manage_position_exit(self, sym, state, close, now, feats or None)
-            if position_qty(self, sym) <= 1e-8:
+            if hold_is_dust(self, sym) or position_qty(self, sym) <= 1e-8:
+                mark_dust_symbol(self, sym, "flat_after_exit")
                 self._record_exit(ticker, state, sym)
 
     def _flatten_momentum_only(self, reason: str) -> None:

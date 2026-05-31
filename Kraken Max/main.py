@@ -41,6 +41,7 @@ from core import (
     evaluate_scalper_entry,
     filter_uncorrelated_picks,
     select_entry_candidates,
+    momentum_entry_notional,
     load_optimized_ensemble_weights,
     select_universe,
 )
@@ -801,9 +802,16 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             feats = feature_map[ticker]
             sc = next((x[1] for x in scores if x[0] == ticker), 0.0)
             weight = self.sizer.weight_for_score(sc, float(feats.get("rv_21d", 0.2)), rank_mom.get(ticker, 0.5))
-            notional = min(slot_notionals.get(ticker, 0.0), equity * weight)
+            notional = momentum_entry_notional(
+                ticker, slot_notionals, equity, weight, config=self.config
+            )
             if not self.sizer.passes_cost_gate(sc, notional, self):
                 gate_blocked += 1
+                if gate_blocked <= 2:
+                    self.Debug(
+                        f"KRAKEN_MAX gate_block {ticker} sc={sc:.3f} "
+                        f"n=${notional:.2f} slot=${float(slot_notionals.get(ticker, 0)):.2f} w={weight:.3f}"
+                    )
                 continue
             st = self.position_risk.get(ticker)
             if position_qty(self, sym) > 0 and st and st.strategy_owner == "scalper":

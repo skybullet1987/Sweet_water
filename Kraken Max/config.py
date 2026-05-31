@@ -55,7 +55,8 @@ class KrakenMaxConfig:
     pyramid_min_unrealized_pct: float = 0.03
     target_annual_vol: float = 0.85
     kelly_cap: float = 0.55
-    min_position_floor_usd: float = 15.0
+    min_position_floor_usd: float = 10.0  # $1k account; must be <= typical ERC slot
+    min_slot_deploy_pct: float = 0.85  # use at least this fraction of ERC slot when weight cap is tiny
 
     w_momentum: float = 0.35
     w_breakout: float = 0.25

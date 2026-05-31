@@ -590,10 +590,10 @@ class AggressiveSizer:
         vol_w = min(0.55, float(self.config.target_annual_vol) / vol)
         conviction = min(1.0, max(0.0, (eff_score - thr * 0.35) / 0.8))
         if float(score) < thr:
-            conviction *= 0.55
+            conviction = max(0.28, conviction)
         rank_boost = 0.5 + 0.5 * max(0.0, rank_pct - 0.5)
         raw = vol_w * self._kelly() * conviction * rank_boost
-        return min(float(self.config.max_position_pct), max(0.0, raw))
+        return min(float(self.config.max_position_pct), max(0.08, raw))
 
     def passes_cost_gate(self, score: float, notional: float, algo=None) -> bool:
         if notional <= 0:
@@ -626,6 +626,25 @@ class AggressiveSizer:
         cost_pct = (fee + spread + slip) / notional
         edge = edge_score * float(self.config.edge_scale)
         return edge > cost_pct * float(self.config.edge_cost_multiplier)
+
+
+def momentum_entry_notional(
+    ticker: str,
+    slot_notionals: dict[str, float],
+    equity: float,
+    weight: float,
+    *,
+    config: KrakenMaxConfig = CONFIG,
+) -> float:
+    """ERC slot is primary; vol-weight only caps — never shrink below min_position_floor_usd."""
+    floor = float(config.min_position_floor_usd)
+    slot = float(slot_notionals.get(ticker, 0.0) or 0.0)
+    if slot <= 0:
+        return 0.0
+    slot_min = slot * float(getattr(config, "min_slot_deploy_pct", 0.85))
+    w_cap = equity * max(weight, 0.08)
+    notional = max(min(slot, w_cap), slot_min, floor)
+    return min(notional, slot, equity * float(config.max_position_pct))
 
 
 def can_afford(algo, qty: float, price: float) -> tuple[bool, float, float]:

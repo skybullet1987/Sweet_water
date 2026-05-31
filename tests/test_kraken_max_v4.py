@@ -23,8 +23,9 @@ from data import SentimentSnapshot, adjust_deployment_cap  # noqa: E402
 
 def test_v4_config_flags():
     assert CONFIG.enable_brackets is False
-    assert CONFIG.use_erc_sizing is True
+    assert CONFIG.use_erc_sizing is False  # equal slots; ERC omitted tickers caused buys=0
     assert CONFIG.use_advanced_regime is False
+    assert CONFIG.require_momentum_cost_gate is False
 
 
 def test_hurst_and_vr_update():

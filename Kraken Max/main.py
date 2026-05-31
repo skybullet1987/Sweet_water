@@ -198,8 +198,9 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             )
         self.Debug(
             f"KRAKEN_MAX v8 init res={self.config.resolution_minutes}m "
-            f"reval={self.config.enable_auto_revalidation} dashboard={self.config.enable_dashboard_digest} "
-            f"regime_wf={self.config.use_regime_wf_weights}"
+            f"momentum=primary scalper={bool(getattr(self.config, 'enable_scalper', False))} "
+            f"deploy_cap={self.config.total_deployment_cap} entry>={self.config.entry_score_threshold} "
+            f"rebal={self.config.rebalance_hours}h min_hold={self.config.min_hold_hours}h"
         )
 
     def _ensure_subscribed(self, tickers: list[str]) -> None:
@@ -292,7 +293,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self._rebalance(now, slice)
             self._last_rebalance = now
 
-        if bool(self.config.enable_scalper) and (
+        if bool(getattr(self.config, "enable_scalper", False)) and (
             self._last_scalper is None
             or (now - self._last_scalper) >= timedelta(hours=int(self.config.scalper_cadence_hours))
         ):
@@ -694,8 +695,11 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             if position_qty(self, sym) <= 0:
                 continue
             if st and st.strategy_owner == "momentum" and ticker not in targets:
-                liquidate_symbol(self, sym)
-                if position_qty(self, sym) <= 1e-8:
+                held_h = (now - st.entry_time).total_seconds() / 3600.0
+                if held_h < float(self.config.min_hold_hours):
+                    continue
+                liquidate_symbol(self, sym, force_market=True, tag="KM:Momentum")
+                if hold_is_dust(self, sym) or position_qty(self, sym) <= 1e-8:
                     self._record_exit(ticker, st, sym)
 
         for ticker in targets:
@@ -735,15 +739,18 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                     sync_brackets(self, sym, state, qty)
                 self._last_trade_hours[ticker] = 0.0
 
+        top3 = scores[:3]
         msg = (
-            f"KRAKEN_MAX rebalance regime={regime.name} micro={regime.micro_regime} "
-            f"fg={sentiment.fear_greed:.2f} targets={targets}"
+            f"KRAKEN_MAX rebalance regime={regime.name} cap={regime.deployment_cap:.0%} "
+            f"targets={targets} top={[ (t, round(s, 3)) for t, s, _ in top3 ]}"
         )
         self.Debug(msg)
         if self.alerts and bool(self.config.alert_on_rebalance):
             self.alerts.notify("REBALANCE", msg, dedupe_key=f"rebal-{now.date()}")
 
     def _scalper_pass(self, now) -> None:  # pragma: no cover
+        if not bool(getattr(self.config, "enable_scalper", False)):
+            return
         if self.portfolio_risk.drawdown_halted(now, 0.0):
             return
         feature_map = {

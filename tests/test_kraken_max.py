@@ -45,7 +45,8 @@ def _synthetic_ohlcv(rows: int = 200) -> pd.DataFrame:
 
 def test_v2_config_flags():
     assert CONFIG.use_limit_orders is True
-    assert CONFIG.enable_scalper is True
+    assert CONFIG.enable_scalper is False
+    assert CONFIG.entry_score_threshold <= 0.35
     assert CONFIG.max_pairwise_corr == 0.82
     assert CONFIG.ml_retrain_days == 30
 

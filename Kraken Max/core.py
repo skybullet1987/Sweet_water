@@ -341,6 +341,28 @@ def max_corr_to_selected(ticker: str, selected: list[str], corr: pd.DataFrame) -
     return max(vals) if vals else 0.0
 
 
+def select_entry_candidates(
+    scores: list[tuple[str, float, dict]],
+    *,
+    config: KrakenMaxConfig = CONFIG,
+) -> list[tuple[str, float]]:
+    """Long-only entries: absolute threshold, else top-ranked names (bear markets score < 0)."""
+    thr = float(config.entry_score_threshold)
+    ranked = [(t, float(s)) for t, s, _ in scores]
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    above = [(t, s) for t, s in ranked if s >= thr]
+    if above:
+        return above
+    if not bool(getattr(config, "rank_entries_when_empty", True)) or not ranked:
+        return []
+    k = max(int(config.top_k) * 3, int(config.top_k) + 2)
+    floor = float(getattr(config, "rank_entry_score_floor", -2.0))
+    rel = [(t, s) for t, s in ranked if s >= floor]
+    if not rel:
+        rel = ranked[:k]
+    return rel[:k]
+
+
 def filter_uncorrelated_picks(
     ranked: list[tuple[str, float]],
     cache,
@@ -545,18 +567,26 @@ class AggressiveSizer:
         return min(float(self.config.kelly_cap), max(0.05, raw))
 
     def weight_for_score(self, score: float, rv_annual: float, rank_pct: float) -> float:
-        if score < float(self.config.entry_score_threshold):
-            return 0.0
+        thr = float(self.config.entry_score_threshold)
+        eff_score = float(score)
+        if eff_score < thr:
+            if not bool(getattr(self.config, "rank_entries_when_empty", True)):
+                return 0.0
+            eff_score = max(eff_score, thr * 0.35, 0.04)
         vol = max(float(rv_annual), 1e-6)
         vol_w = min(0.55, float(self.config.target_annual_vol) / vol)
-        conviction = min(1.0, (score - self.config.entry_score_threshold) / 0.8)
+        conviction = min(1.0, max(0.15, (eff_score - thr * 0.35) / 0.8))
         rank_boost = 0.5 + 0.5 * max(0.0, rank_pct - 0.5)
         raw = vol_w * self._kelly() * conviction * rank_boost
         return min(float(self.config.max_position_pct), max(0.0, raw))
 
     def passes_cost_gate(self, score: float, notional: float, algo=None) -> bool:
-        if score <= 0 or notional <= 0:
+        if notional <= 0:
             return False
+        if score <= 0 and not bool(getattr(self.config, "rank_entries_when_empty", True)):
+            return False
+        if score <= 0 and notional >= float(self.config.min_position_floor_usd):
+            return True
         if algo is not None and bool(self.config.use_calibrated_costs):
             from kraken_ops import CalibratedCostModel
 

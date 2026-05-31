@@ -63,6 +63,7 @@ def test_v6_config_flags():
 
 def test_track_order_submit_wires_fill_tracker():
     algo = _FakeAlgo()
+    algo.config = replace(CONFIG, use_limit_orders=True)
     ticket = type("T", (), {"OrderId": 42})()
     track_order_submit(algo, ticket, symbol="BTCUSD", qty=0.01, expected_price=50000.0)
     assert algo.fill_tracker.stats.limits_submitted == 1

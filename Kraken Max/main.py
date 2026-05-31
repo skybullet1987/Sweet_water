@@ -40,6 +40,7 @@ from core import (
     cross_section_ranks,
     evaluate_scalper_entry,
     filter_uncorrelated_picks,
+    select_entry_candidates,
     load_optimized_ensemble_weights,
     select_universe,
 )
@@ -199,8 +200,9 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.Debug(
             f"KRAKEN_MAX v8 init res={self.config.resolution_minutes}m "
             f"momentum=primary scalper={bool(getattr(self.config, 'enable_scalper', False))} "
-            f"deploy_cap={self.config.total_deployment_cap} entry>={self.config.entry_score_threshold} "
-            f"rebal={self.config.rebalance_hours}h min_hold={self.config.min_hold_hours}h"
+            f"deploy_cap={self.config.total_deployment_cap} rank_empty={self.config.rank_entries_when_empty} "
+            f"limits={self.config.use_limit_orders} rebal={self.config.rebalance_hours}h "
+            f"min_hold={self.config.min_hold_hours}h top_k={self.config.top_k} orders/d={self.config.max_orders_per_day}"
         )
 
     def _ensure_subscribed(self, tickers: list[str]) -> None:
@@ -651,7 +653,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 final += self.cross_venue.score_adjustment(ticker, now)
             scores.append((ticker, final, comp))
         scores.sort(key=lambda x: x[1], reverse=True)
-        candidates = [(t, s) for t, s, _ in scores if s >= float(self.config.entry_score_threshold)]
+        candidates = select_entry_candidates(scores, config=self.config)
         decorrelated = filter_uncorrelated_picks(
             candidates, self.feature_cache, top_k=int(self.config.top_k) * 2
         )
@@ -720,7 +722,8 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 continue
             if not self.portfolio_risk.can_place_order(now):
                 break
-            if place_buy_notional(self, sym, notional, tag="KM:Momentum"):
+            force_mkt = bool(getattr(self.config, "momentum_force_market", True))
+            if place_buy_notional(self, sym, notional, tag="KM:Momentum", force_market=force_mkt):
                 self.portfolio_risk.record_order()
                 close = float(feats.get("close", self.Securities[sym].Price))
                 atr = float(feats.get("atr", close * 0.02))
@@ -739,10 +742,11 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                     sync_brackets(self, sym, state, qty)
                 self._last_trade_hours[ticker] = 0.0
 
-        top3 = scores[:3]
+        top3 = [(t, round(s, 3)) for t, s, _ in scores[:3]]
+        mode = "rank" if candidates and candidates[0][1] < float(self.config.entry_score_threshold) else "abs"
         msg = (
             f"KRAKEN_MAX rebalance regime={regime.name} cap={regime.deployment_cap:.0%} "
-            f"targets={targets} top={[ (t, round(s, 3)) for t, s, _ in top3 ]}"
+            f"entry_mode={mode} targets={list(targets)} top={top3} n_cand={len(candidates)}"
         )
         self.Debug(msg)
         if self.alerts and bool(self.config.alert_on_rebalance):
@@ -839,13 +843,21 @@ class KrakenMaxAlgorithm(QCAlgorithm):
 
     def _maybe_pyramid(self, ticker: str, sym, feats: dict, score: float, equity: float) -> None:
         state = self.position_risk.get(ticker)
-        if state is None or state.pyramid_count >= 1:
+        max_pyr = int(getattr(self.config, "pyramid_max_adds", 2) or 2)
+        if state is None or state.pyramid_count >= max_pyr:
             return
         close = float(feats.get("close", self.Securities[sym].Price))
         pnl = (close / state.entry_price) - 1.0 if state.entry_price > 0 else 0.0
-        if pnl < float(self.config.pyramid_min_unrealized_pct) or score < float(self.config.entry_score_threshold) + 0.1:
+        min_sc = float(self.config.entry_score_threshold) * 0.25
+        if pnl < float(self.config.pyramid_min_unrealized_pct) or score < min_sc:
             return
-        if place_buy_notional(self, sym, equity * float(self.config.pyramid_add_pct), tag="KM:Pyramid"):
+        if place_buy_notional(
+            self,
+            sym,
+            equity * float(self.config.pyramid_add_pct),
+            tag="KM:Pyramid",
+            force_market=bool(getattr(self.config, "momentum_force_market", True)),
+        ):
             state.pyramid_count += 1
             state.highest_close = max(state.highest_close, close)
 

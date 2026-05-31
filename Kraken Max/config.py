@@ -43,32 +43,35 @@ class KrakenMaxConfig:
     subscribe_all_universe_on_init: bool = False  # True=subscribes ~50 pairs (slow QC warmup)
 
     universe_size: int = 24
-    top_k: int = 5
-    max_positions: int = 5
-    rebalance_hours: int = 8
-    min_hold_hours: int = 48  # let momentum run; avoid 1h flip-flops
+    top_k: int = 6
+    max_positions: int = 6
+    rebalance_hours: int = 2  # aggressive: rotate every 2h on hourly bars (~12/day)
+    min_hold_hours: int = 8  # faster rotation while avoiding same-bar churn
 
-    total_deployment_cap: float = 0.98
-    max_position_pct: float = 0.50
-    pyramid_add_pct: float = 0.15
-    pyramid_min_unrealized_pct: float = 0.05
+    total_deployment_cap: float = 0.99
+    max_position_pct: float = 0.55
+    pyramid_add_pct: float = 0.12
+    pyramid_max_adds: int = 2
+    pyramid_min_unrealized_pct: float = 0.03
     target_annual_vol: float = 0.85
     kelly_cap: float = 0.55
-    min_position_floor_usd: float = 25.0
+    min_position_floor_usd: float = 15.0
 
     w_momentum: float = 0.35
     w_breakout: float = 0.25
     w_dip: float = 0.15
     w_ml: float = 0.25
-    entry_score_threshold: float = 0.28
-    replace_score_delta: float = 0.08
+    entry_score_threshold: float = 0.18
+    rank_entries_when_empty: bool = True  # bear: deploy top ranks even if score < threshold
+    rank_entry_score_floor: float = -2.0
+    replace_score_delta: float = 0.06
 
     btc_trend_ema: int = 100
     vol_stress_threshold: float = 1.05
     breadth_bull_threshold: float = 0.55
     breadth_threshold: float = 0.30
-    bear_deployment_cap: float = 0.62
-    bear_prefer: tuple[str, ...] = ("BTCUSD", "ETHUSD")
+    bear_deployment_cap: float = 0.88
+    bear_prefer: tuple[str, ...] = ("BTCUSD", "ETHUSD", "SOLUSD", "LINKUSD", "XRPUSD")
     chop_return_threshold: float = 0.002
 
     hard_stop_pct: float = -0.08
@@ -77,16 +80,16 @@ class KrakenMaxConfig:
     sl_atr_mult: float = 1.2
     chandelier_atr_mult: float = 2.5
     activate_trail_above_pct: float = 0.06
-    time_stop_hours: float = 168.0
+    time_stop_hours: float = 96.0
 
     drawdown_halt_pct: float = -0.28
     drawdown_cooldown_hours: int = 24
-    max_orders_per_day: int = 28
+    max_orders_per_day: int = 72
     post_breaker_cooldown_hours: int = 12
 
     expected_round_trip_fees: float = 0.0052
-    edge_cost_multiplier: float = 1.15
-    edge_scale: float = 0.065
+    edge_cost_multiplier: float = 0.85
+    edge_scale: float = 0.08
     assumed_spread_bps: float = 18.0
     assumed_slippage_bps: float = 12.0
     min_rebalance_weight_delta: float = 0.02
@@ -95,7 +98,8 @@ class KrakenMaxConfig:
     score_clip: float = 4.0
     enable_shorts: bool = ENABLE_SHORTS
 
-    use_limit_orders: bool = True
+    use_limit_orders: bool = False  # limit entries → fill=0% on QC hourly; exits still market
+    momentum_force_market: bool = True
     max_participation_rate: float = 0.12
     limit_order_timeout_seconds: int = 45
     exit_retry_cooldown_hours: float = 12.0
@@ -122,7 +126,7 @@ class KrakenMaxConfig:
     funding_symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
 
     corr_lookback_hours: int = 24 * 7
-    max_pairwise_corr: float = 0.82
+    max_pairwise_corr: float = 0.90
     min_corr_samples: int = 48
     erc_shrinkage: float = 0.35
     erc_turnover_penalty: float = 0.20
@@ -188,7 +192,7 @@ class KrakenMaxConfig:
     use_regime_ensembles: bool = True
     regime_weights_path: str = "regime_weights.json"
     enable_cluster_risk: bool = True
-    max_positions_per_cluster: int = 2
+    max_positions_per_cluster: int = 3
 
     use_calibrated_costs: bool = True
     cost_calibration_min_fills: int = 5

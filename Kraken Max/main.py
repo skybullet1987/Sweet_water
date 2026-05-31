@@ -143,7 +143,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.active_universe: list[str] = []
         self._last_rebalance = None
         self._last_scalper = None
-        self._last_trade_hours: dict[str, float] = {}
+        self._last_trade_at: dict[str, object] = {}
         self._erc_weights: dict[str, float] = {}
         self._bar_count = 0
 
@@ -398,6 +398,40 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self._exit_fail_until = {}
         self._exit_fail_until[sym] = self.Time + timedelta(hours=hours)
 
+    def _portfolio_drawdown(self) -> float:
+        equity = float(self.Portfolio.TotalPortfolioValue)
+        return self.portfolio_risk.update_peak(equity)
+
+    def _hours_since_trade(self, ticker: str, now) -> float:
+        last = self._last_trade_at.get(ticker)
+        if last is None:
+            return 999.0
+        return (now - last).total_seconds() / 3600.0
+
+    def _touch_trade_time(self, ticker: str, when=None) -> None:
+        self._last_trade_at[ticker] = when or self.Time
+
+    def _init_momentum_state(self, ticker: str, sym, feats: dict, sc: float, now) -> None:
+        close = float(feats.get("close", self.Securities[sym].Price))
+        fill_px = float(getattr(self.Portfolio[sym], "AveragePrice", 0.0) or 0.0)
+        if fill_px > 0:
+            close = fill_px
+        atr = float(feats.get("atr", close * 0.02))
+        state = PositionRisk(
+            entry_price=close,
+            entry_time=now,
+            entry_atr=atr,
+            highest_close=close,
+            predicted_score=sc,
+            strategy_owner="momentum",
+        )
+        set_bracket_prices(state, close, atr)
+        self.position_risk[ticker] = state
+        qty = position_qty(self, sym)
+        if qty > 0:
+            sync_brackets(self, sym, state, qty)
+        self._touch_trade_time(ticker, now)
+
     def _order_event_tag(self, order_event) -> str:
         return str(
             getattr(order_event, "Tag", "")
@@ -421,17 +455,32 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         oid = int(getattr(order_event, "OrderId", 0) or 0)
         sym = getattr(order_event, "Symbol", None)
         tag = self._order_event_tag(order_event)
-        is_exit = tag == "Exit" or tag.endswith(":Exit")
+        fill_qty = float(getattr(order_event, "FillQuantity", 0.0) or 0.0)
+        is_sell_fill = fill_qty < 0
+        is_exit = (
+            is_sell_fill
+            or tag == "Exit"
+            or tag.endswith(":Exit")
+            or ":Exit" in tag
+        )
 
         if sym is not None and "Filled" in status:
             self._clear_pending_limit(sym, oid if oid > 0 else None)
+            ticker = self._ticker_for_symbol(sym)
+            if ticker and fill_qty > 0 and tag.startswith("KM:") and "Exit" not in tag:
+                feats = self.feature_cache.features(ticker) or {}
+                existing = self.position_risk.get(ticker)
+                sc = float(existing.predicted_score) if existing else 0.0
+                if position_qty(self, sym) > 0:
+                    self._init_momentum_state(ticker, sym, feats, sc, self.Time)
+                self._touch_trade_time(ticker)
             if is_exit:
-                ticker = self._ticker_for_symbol(sym)
                 st = self.position_risk.get(ticker) if ticker else None
                 if ticker and st and (hold_is_dust(self, sym) or position_qty(self, sym) <= 1e-8):
                     if hold_is_dust(self, sym):
                         mark_dust_symbol(self, sym, "post_exit_residual")
                     self._record_exit(ticker, st, sym)
+                    self._touch_trade_time(ticker)
 
         if sym is not None and "Invalid" in status and is_exit:
             self._mark_exit_fail_local(sym)
@@ -586,7 +635,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         return merge_external_sentiment(proxy, external)
 
     def _rebalance(self, now, slice) -> None:  # pragma: no cover
-        if self.portfolio_risk.drawdown_halted(now, 0.0):
+        if self.portfolio_risk.drawdown_halted(now, self._portfolio_drawdown()):
             return
 
         self.active_universe = select_universe(
@@ -638,8 +687,6 @@ class KrakenMaxAlgorithm(QCAlgorithm):
 
         scores: list[tuple[str, float, dict]] = []
         for ticker, feats in feature_map.items():
-            if regime.prefer_symbols and ticker not in regime.prefer_symbols and regime.name == "bear":
-                continue
             comp = self.ensemble.score_symbol(
                 feats,
                 rank_mom_21=rank_mom.get(ticker, 0.5),
@@ -649,6 +696,12 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 regime_name=regime.name,
             )
             final = float(comp["final"])
+            if (
+                regime.prefer_symbols
+                and regime.name == "bear"
+                and ticker not in regime.prefer_symbols
+            ):
+                final *= 0.88
             if self.cross_venue is not None:
                 final += self.cross_venue.score_adjustment(ticker, now)
             scores.append((ticker, final, comp))
@@ -725,22 +778,20 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             force_mkt = bool(getattr(self.config, "momentum_force_market", True))
             if place_buy_notional(self, sym, notional, tag="KM:Momentum", force_market=force_mkt):
                 self.portfolio_risk.record_order()
-                close = float(feats.get("close", self.Securities[sym].Price))
-                atr = float(feats.get("atr", close * 0.02))
-                state = PositionRisk(
-                    entry_price=close,
-                    entry_time=now,
-                    entry_atr=atr,
-                    highest_close=close,
-                    predicted_score=sc,
-                    strategy_owner="momentum",
-                )
-                set_bracket_prices(state, close, atr)
-                self.position_risk[ticker] = state
-                qty = position_qty(self, sym)
-                if qty > 0:
-                    sync_brackets(self, sym, state, qty)
-                self._last_trade_hours[ticker] = 0.0
+                pending = sym in (getattr(self, "_pending_limits", {}) or {})
+                if position_qty(self, sym) > 0 and not pending:
+                    self._init_momentum_state(ticker, sym, feats, sc, now)
+                elif pending:
+                    stub = self.position_risk.get(ticker)
+                    if stub is None:
+                        self.position_risk[ticker] = PositionRisk(
+                            entry_price=float(feats.get("close", self.Securities[sym].Price)),
+                            entry_time=now,
+                            entry_atr=float(feats.get("atr", 1.0)),
+                            highest_close=float(feats.get("close", self.Securities[sym].Price)),
+                            predicted_score=sc,
+                            strategy_owner="momentum",
+                        )
 
         top3 = [(t, round(s, 3)) for t, s, _ in scores[:3]]
         mode = "rank" if candidates and candidates[0][1] < float(self.config.entry_score_threshold) else "abs"
@@ -755,7 +806,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
     def _scalper_pass(self, now) -> None:  # pragma: no cover
         if not bool(getattr(self.config, "enable_scalper", False)):
             return
-        if self.portfolio_risk.drawdown_halted(now, 0.0):
+        if self.portfolio_risk.drawdown_halted(now, self._portfolio_drawdown()):
             return
         feature_map = {
             t: self.feature_cache.features(t)
@@ -822,7 +873,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 s_feats,
                 btc_ret_1h=btc_1h,
                 btc_ret_6h=btc_6h,
-                last_trade_hours=float(self._last_trade_hours.get(ticker, 999.0)),
+                last_trade_hours=self._hours_since_trade(ticker, now),
             )
             if not ok:
                 continue
@@ -851,6 +902,8 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         min_sc = float(self.config.entry_score_threshold) * 0.25
         if pnl < float(self.config.pyramid_min_unrealized_pct) or score < min_sc:
             return
+        if not self.portfolio_risk.can_place_order(self.Time):
+            return
         if place_buy_notional(
             self,
             sym,
@@ -858,8 +911,12 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             tag="KM:Pyramid",
             force_market=bool(getattr(self.config, "momentum_force_market", True)),
         ):
+            self.portfolio_risk.record_order()
             state.pyramid_count += 1
             state.highest_close = max(state.highest_close, close)
+            avg = float(getattr(self.Portfolio[sym], "AveragePrice", 0.0) or 0.0)
+            if avg > 0:
+                state.entry_price = avg
 
     def _record_exit(self, ticker: str, state: PositionRisk, sym) -> None:
         close = float(self.Securities[sym].Price)
@@ -876,13 +933,20 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.position_risk.pop(ticker, None)
 
     def _manage_positions(self, now) -> None:  # pragma: no cover
+        pending = getattr(self, "_pending_limits", {}) or {}
         for ticker, sym in self.symbol_by_ticker.items():
             if position_qty(self, sym) <= 0:
-                self.position_risk.pop(ticker, None)
+                if sym in pending:
+                    continue
+                st = self.position_risk.pop(ticker, None)
+                if st is not None:
+                    self._record_exit(ticker, st, sym)
                 continue
             if hold_is_dust(self, sym):
                 mark_dust_symbol(self, sym, "manage_positions_dust")
-                self.position_risk.pop(ticker, None)
+                st = self.position_risk.pop(ticker, None)
+                if st is not None:
+                    self._record_exit(ticker, st, sym)
                 continue
             state = self.position_risk.get(ticker)
             if state is None:

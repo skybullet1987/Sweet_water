@@ -60,17 +60,18 @@ class KrakenMaxConfig:
     w_momentum: float = 0.35
     w_breakout: float = 0.25
     w_dip: float = 0.15
-    w_ml: float = 0.25
+    w_ml: float = 0.10
     entry_score_threshold: float = 0.18
     rank_entries_when_empty: bool = True  # bear: deploy top ranks even if score < threshold
-    rank_entry_score_floor: float = -2.0
+    rank_entry_score_floor: float = -0.35
     replace_score_delta: float = 0.06
 
     btc_trend_ema: int = 100
     vol_stress_threshold: float = 1.05
     breadth_bull_threshold: float = 0.55
     breadth_threshold: float = 0.30
-    bear_deployment_cap: float = 0.88
+    bear_deployment_cap: float = 0.72
+    neutral_deployment_cap: float = 0.88
     bear_prefer: tuple[str, ...] = ("BTCUSD", "ETHUSD", "SOLUSD", "LINKUSD", "XRPUSD")
     chop_return_threshold: float = 0.002
 

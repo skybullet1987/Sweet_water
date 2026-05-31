@@ -43,13 +43,18 @@ class PortfolioRisk:
         return (float(equity) / self.peak_equity) - 1.0
 
     def drawdown_halted(self, now: datetime, drawdown: float) -> bool:
-        if self.halted_until and now < self.halted_until:
-            return True
-        if drawdown <= float(self.config.drawdown_halt_pct):
+        halt_pct = float(self.config.drawdown_halt_pct)
+        if drawdown <= halt_pct:
             hours = int(self.config.drawdown_cooldown_hours)
             self.halted_until = now + timedelta(hours=hours)
             return True
+        if self.halted_until and now < self.halted_until:
+            return True
         if self.halted_until and now >= self.halted_until:
+            # Cooldown elapsed — only resume if drawdown recovered past half the halt level
+            recovery_floor = halt_pct * 0.5
+            if drawdown <= recovery_floor:
+                return True
             self.halted_until = None
         return False
 

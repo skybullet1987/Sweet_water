@@ -350,9 +350,10 @@ def select_entry_candidates(
     thr = float(config.entry_score_threshold)
     ranked = [(t, float(s)) for t, s, _ in scores]
     ranked.sort(key=lambda x: x[1], reverse=True)
+    cap_n = max(int(config.top_k) * 2, int(config.top_k) + 2)
     above = [(t, s) for t, s in ranked if s >= thr]
     if above:
-        return above
+        return above[:cap_n]
     if not bool(getattr(config, "rank_entries_when_empty", True)) or not ranked:
         return []
     k = max(int(config.top_k) * 3, int(config.top_k) + 2)
@@ -517,11 +518,12 @@ def evaluate_scalper_exit(
     pnl = current_price / entry_price - 1.0
     if pnl <= float(config.scalper_hard_stop_pct):
         return True, "hard_stop"
-    z = float(feats.get("z_20h", 0.0))
-    if z >= float(config.scalper_overshoot_z):
-        return True, "overshoot"
-    if z >= float(config.scalper_meanrev_z):
-        return True, "mean_revert"
+    if feats and "z_20h" in feats:
+        z = float(feats["z_20h"])
+        if z >= float(config.scalper_overshoot_z):
+            return True, "overshoot"
+        if z >= float(config.scalper_meanrev_z):
+            return True, "mean_revert"
     atr = max(entry_atr, entry_price * 0.008)
     risk = atr * 1.2
     r_mult = (current_price - entry_price) / max(risk, 1e-9)
@@ -575,7 +577,9 @@ class AggressiveSizer:
             eff_score = max(eff_score, thr * 0.35, 0.04)
         vol = max(float(rv_annual), 1e-6)
         vol_w = min(0.55, float(self.config.target_annual_vol) / vol)
-        conviction = min(1.0, max(0.15, (eff_score - thr * 0.35) / 0.8))
+        conviction = min(1.0, max(0.0, (eff_score - thr * 0.35) / 0.8))
+        if float(score) < thr:
+            conviction *= 0.55
         rank_boost = 0.5 + 0.5 * max(0.0, rank_pct - 0.5)
         raw = vol_w * self._kelly() * conviction * rank_boost
         return min(float(self.config.max_position_pct), max(0.0, raw))
@@ -583,19 +587,22 @@ class AggressiveSizer:
     def passes_cost_gate(self, score: float, notional: float, algo=None) -> bool:
         if notional <= 0:
             return False
-        if score <= 0 and not bool(getattr(self.config, "rank_entries_when_empty", True)):
+        rank_mode = bool(getattr(self.config, "rank_entries_when_empty", True))
+        floor = float(getattr(self.config, "rank_entry_score_floor", -0.35))
+        if score <= 0 and not rank_mode:
             return False
-        if score <= 0 and notional >= float(self.config.min_position_floor_usd):
-            return True
+        if score < floor:
+            return False
+        edge_score = max(float(score), 0.04) if rank_mode and score <= 0 else float(score)
         if algo is not None and bool(self.config.use_calibrated_costs):
             from kraken_ops import CalibratedCostModel
 
-            return CalibratedCostModel(self.config).passes_edge_gate(score, notional, algo)
+            return CalibratedCostModel(self.config).passes_edge_gate(edge_score, notional, algo)
         fee = notional * float(self.config.expected_round_trip_fees)
         spread = notional * (float(self.config.assumed_spread_bps) / BPS)
         slip = notional * (float(self.config.assumed_slippage_bps) / BPS)
         cost_pct = (fee + spread + slip) / notional
-        edge = score * float(self.config.edge_scale)
+        edge = edge_score * float(self.config.edge_scale)
         return edge > cost_pct * float(self.config.edge_cost_multiplier)
 
 
@@ -715,7 +722,13 @@ class AlphaEnsemble:
         w_b = float(cfg.w_breakout)
         w_d = float(cfg.w_dip)
         w_ml = float(cfg.w_ml)
-        final = w_m * momentum + w_b * breakout + w_d * dip + w_ml * ml_score
+        weights = {"momentum": w_m, "breakout": w_b, "dip": w_d, "ml": w_ml}
+        active = {"momentum": momentum, "breakout": breakout, "dip": dip, "ml": ml_score}
+        if abs(ml_score) < 1e-9 and weights["ml"] > 0:
+            weights["ml"] = 0.0
+            total_w = sum(weights.values()) or 1.0
+            weights = {k: v / total_w for k, v in weights.items()}
+        final = sum(weights[k] * active[k] for k in active)
         clip = float(self.config.score_clip)
         final = max(-clip, min(clip, final))
         return {

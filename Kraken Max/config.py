@@ -61,6 +61,8 @@ class KrakenMaxConfig:
     w_dip: float = 0.15
     w_ml: float = 0.25
     entry_score_threshold: float = 0.28
+    rank_entries_when_empty: bool = True  # bear: deploy top ranks even if score < threshold
+    rank_entry_score_floor: float = -2.0
     replace_score_delta: float = 0.08
 
     btc_trend_ema: int = 100
@@ -95,7 +97,8 @@ class KrakenMaxConfig:
     score_clip: float = 4.0
     enable_shorts: bool = ENABLE_SHORTS
 
-    use_limit_orders: bool = True
+    use_limit_orders: bool = False  # limit entries → fill=0% on QC hourly; exits still market
+    momentum_force_market: bool = True
     max_participation_rate: float = 0.12
     limit_order_timeout_seconds: int = 45
     exit_retry_cooldown_hours: float = 12.0
@@ -174,7 +177,7 @@ class KrakenMaxConfig:
 
     enable_telemetry: bool = True
     telemetry_object_store_key: str = "kraken_max_telemetry.json"
-    telemetry_cadence_hours: int = 1
+    telemetry_cadence_hours: int = 24
 
     use_cross_venue_lead: bool = True
     cross_venue_lead_csv: str = "data/binance_spot_lead.csv"

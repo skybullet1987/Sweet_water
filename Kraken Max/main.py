@@ -40,6 +40,7 @@ from core import (
     cross_section_ranks,
     evaluate_scalper_entry,
     filter_uncorrelated_picks,
+    select_entry_candidates,
     load_optimized_ensemble_weights,
     select_universe,
 )
@@ -359,7 +360,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
     def _maybe_persist_telemetry(self) -> None:  # pragma: no cover
         if self.telemetry is None:
             return
-        cadence = timedelta(hours=int(self.config.telemetry_cadence_hours))
+        hours = int(self.config.telemetry_cadence_hours)
+        if not getattr(self, "LiveMode", False):
+            hours = max(hours, 24)
+        cadence = timedelta(hours=hours)
         now = self.Time
         if self._last_telemetry is not None and (now - self._last_telemetry) < cadence:
             return
@@ -651,7 +655,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 final += self.cross_venue.score_adjustment(ticker, now)
             scores.append((ticker, final, comp))
         scores.sort(key=lambda x: x[1], reverse=True)
-        candidates = [(t, s) for t, s, _ in scores if s >= float(self.config.entry_score_threshold)]
+        candidates = select_entry_candidates(scores, config=self.config)
         decorrelated = filter_uncorrelated_picks(
             candidates, self.feature_cache, top_k=int(self.config.top_k) * 2
         )
@@ -720,7 +724,8 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 continue
             if not self.portfolio_risk.can_place_order(now):
                 break
-            if place_buy_notional(self, sym, notional, tag="KM:Momentum"):
+            force_mkt = bool(getattr(self.config, "momentum_force_market", True))
+            if place_buy_notional(self, sym, notional, tag="KM:Momentum", force_market=force_mkt):
                 self.portfolio_risk.record_order()
                 close = float(feats.get("close", self.Securities[sym].Price))
                 atr = float(feats.get("atr", close * 0.02))
@@ -739,10 +744,11 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                     sync_brackets(self, sym, state, qty)
                 self._last_trade_hours[ticker] = 0.0
 
-        top3 = scores[:3]
+        top3 = [(t, round(s, 3)) for t, s, _ in scores[:3]]
+        mode = "rank" if candidates and candidates[0][1] < float(self.config.entry_score_threshold) else "abs"
         msg = (
             f"KRAKEN_MAX rebalance regime={regime.name} cap={regime.deployment_cap:.0%} "
-            f"targets={targets} top={[ (t, round(s, 3)) for t, s, _ in top3 ]}"
+            f"entry_mode={mode} targets={list(targets)} top={top3} n_cand={len(candidates)}"
         )
         self.Debug(msg)
         if self.alerts and bool(self.config.alert_on_rebalance):

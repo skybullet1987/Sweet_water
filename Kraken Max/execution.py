@@ -106,6 +106,22 @@ def available_sell_qty(algo, symbol) -> float:
     return max(0.0, hold - reserved_sell_qty(algo, symbol))
 
 
+def sellable_qty_for_exit(algo, symbol) -> float:
+    """Portfolio qty to sell on exit — buffered so cash accounts don't oversell after fees."""
+    avail = available_sell_qty(algo, symbol)
+    if avail <= POSITION_TOLERANCE:
+        return 0.0
+    lot = max(get_min_qty(algo, symbol), POSITION_TOLERANCE)
+    buffer_lots = int(getattr(CONFIG, "exit_sell_buffer_lots", 1) or 1)
+    buffered = avail - buffer_lots * lot
+    if buffered <= lot:
+        buffered = avail
+    qty = round_quantity(algo, symbol, buffered)
+    if qty <= 0 and avail >= lot:
+        qty = round_quantity(algo, symbol, avail - lot)
+    return max(0.0, min(qty, avail))
+
+
 def cancel_open_orders(algo, symbol) -> None:
     for order in _open_orders(algo, symbol):
         oid = getattr(order, "Id", None) or getattr(order, "OrderId", None)
@@ -280,7 +296,7 @@ def liquidate_symbol(algo, symbol, *, force_market: bool = True) -> bool:
     if _exit_blocked(algo, symbol):
         return False
     cancel_open_orders(algo, symbol)
-    qty = available_sell_qty(algo, symbol)
+    qty = sellable_qty_for_exit(algo, symbol)
     if qty <= POSITION_TOLERANCE:
         return False
     ok = place_limit_or_market(algo, symbol, -qty, tag="Exit", force_market=force_market)
@@ -360,11 +376,9 @@ def manage_exits(algo, symbol, state: PositionRisk, close: float, now: datetime,
             time_stop_hours=float(CONFIG.time_stop_hours),
         )
     if exit_now:
-        if liquidate_symbol(algo, symbol, force_market=True):
-            if hasattr(algo, "Debug"):
-                algo.Debug(f"KRAKEN_MAX exit {symbol} owner={state.strategy_owner} reason={reason}")
-            return True
-        return False
+        liquidate_symbol(algo, symbol, force_market=True)
+        if hasattr(algo, "Debug"):
+            algo.Debug(f"KRAKEN_MAX exit_submit {symbol} owner={state.strategy_owner} reason={reason}")
     return False
 
 # --- from execution_bridge.py ---

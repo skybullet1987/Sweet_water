@@ -99,7 +99,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             if bool(_g("use_sub_hour_bars", False))
             else int(_g("warmup_bars", 24 * 7))
         )
-        if bool(_g("fast_qc_backtest", True)) and not getattr(self, "LiveMode", False):
+        if bool(_g("fast_qc_backtest", False)) and not getattr(self, "LiveMode", False):
             sy, sm, sd = _g("fast_qc_start", (2024, 1, 1))
             ey, em, ed = _g("fast_qc_end", (2024, 4, 1))
             self.SetStartDate(int(sy), int(sm), int(sd))
@@ -368,6 +368,26 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self._last_telemetry = self.Time
         self.Debug(self.telemetry.summary_line(snap))
 
+    def _ticker_for_symbol(self, sym) -> str | None:
+        for ticker, mapped in self.symbol_by_ticker.items():
+            if mapped == sym:
+                return ticker
+        val = getattr(sym, "Value", None)
+        return str(val) if val else None
+
+    def _mark_exit_fail_local(self, sym) -> None:
+        hours = float(getattr(self.config, "exit_retry_cooldown_hours", 12.0) or 12.0)
+        if not hasattr(self, "_exit_fail_until"):
+            self._exit_fail_until = {}
+        self._exit_fail_until[sym] = self.Time + timedelta(hours=hours)
+
+    def _order_event_tag(self, order_event) -> str:
+        return str(
+            getattr(order_event, "Tag", "")
+            or getattr(order_event, "Message", "")
+            or ""
+        )
+
     def _clear_pending_limit(self, symbol, order_id=None) -> None:
         """Drop stale-limit tracking when QC fills a limit (lives in main.py for QC upload safety)."""
         pending = getattr(self, "_pending_limits", None)
@@ -383,8 +403,20 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         status = str(getattr(order_event, "Status", ""))
         oid = int(getattr(order_event, "OrderId", 0) or 0)
         sym = getattr(order_event, "Symbol", None)
-        if "Filled" in status and sym is not None:
+        tag = self._order_event_tag(order_event)
+        is_exit = tag == "Exit" or tag.endswith(":Exit")
+
+        if sym is not None and "Filled" in status:
             self._clear_pending_limit(sym, oid if oid > 0 else None)
+            if is_exit:
+                ticker = self._ticker_for_symbol(sym)
+                st = self.position_risk.get(ticker) if ticker else None
+                if ticker and st and position_qty(self, sym) <= 1e-8:
+                    self._record_exit(ticker, st, sym)
+
+        if sym is not None and ("Invalid" in status or "Canceled" in status) and is_exit:
+            self._mark_exit_fail_local(sym)
+
         if self.fill_tracker is None:
             return
         if "Canceled" in status:
@@ -392,7 +424,6 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         if "Filled" not in status:
             return
         fill_px = float(getattr(order_event, "FillPrice", 0.0) or 0.0)
-        tag = str(getattr(order_event, "Message", "") or "")
         is_limit = "Limit" in tag or getattr(order_event, "OrderType", "") == "Limit"
         self.fill_tracker.on_fill(oid, fill_px, is_limit=is_limit, tag=tag)
 
@@ -647,7 +678,8 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 continue
             if st and st.strategy_owner == "momentum" and ticker not in targets:
                 liquidate_symbol(self, sym)
-                self._record_exit(ticker, st, sym)
+                if position_qty(self, sym) <= 1e-8:
+                    self._record_exit(ticker, st, sym)
 
         for ticker in targets:
             sym = self.symbol_by_ticker.get(ticker)
@@ -814,13 +846,13 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 continue
             state = self.position_risk.get(ticker)
             if state is None:
-                px = float(self.Securities[sym].Price)
-                state = PositionRisk(entry_price=px, entry_time=now, entry_atr=px * 0.02, highest_close=px)
-                self.position_risk[ticker] = state
+                liquidate_symbol(self, sym, force_market=True)
+                continue
             close = float(self.Securities[sym].Price)
             state.highest_close = max(state.highest_close, close)
             feats = build_scalper_features(self.feature_cache.frame(ticker)) if state.strategy_owner == "scalper" else {}
-            if manage_position_exit(self, sym, state, close, now, feats or None):
+            manage_position_exit(self, sym, state, close, now, feats or None)
+            if position_qty(self, sym) <= 1e-8:
                 self._record_exit(ticker, state, sym)
 
     def _flatten_momentum_only(self, reason: str) -> None:
@@ -828,7 +860,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             st = self.position_risk.get(ticker)
             if position_qty(self, sym) > 0 and (st is None or st.strategy_owner == "momentum"):
                 liquidate_symbol(self, sym)
-                if st:
+                if st and position_qty(self, sym) <= 1e-8:
                     self._record_exit(ticker, st, sym)
         self.Debug(f"KRAKEN_MAX flatten_momentum {reason}")
 
@@ -837,7 +869,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             if position_qty(self, sym) > 0:
                 st = self.position_risk.get(ticker)
                 liquidate_symbol(self, sym)
-                if st:
+                if st and position_qty(self, sym) <= 1e-8:
                     self._record_exit(ticker, st, sym)
         self.position_risk.clear()
         self.Debug(f"KRAKEN_MAX flatten_all {reason}")

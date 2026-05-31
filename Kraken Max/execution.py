@@ -347,11 +347,21 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry",
     min_qty = get_min_qty(algo, symbol)
     qty = round_quantity(algo, symbol, notional / price)
     if qty < min_qty:
+        if hasattr(algo, "Debug"):
+            algo.Debug(
+                f"KRAKEN_MAX buy_fail_qty {symbol} usd={usd_notional:.2f} "
+                f"qty={qty:.8f} min_qty={min_qty:.8f} px={price:.4f}"
+            )
         return False
     cash = free_cash_usd(algo)
     max_affordable = round_quantity(algo, symbol, (cash * float(CONFIG.cash_safety_factor)) / price)
     qty = min(qty, max_affordable)
     if qty < min_qty:
+        if hasattr(algo, "Debug"):
+            algo.Debug(
+                f"KRAKEN_MAX buy_fail_cash {symbol} usd={usd_notional:.2f} "
+                f"cash={cash:.2f} max_qty={max_affordable:.8f} min_qty={min_qty:.8f}"
+            )
         return False
     return place_limit_or_market(algo, symbol, qty, tag=tag, force_market=force_market)
 

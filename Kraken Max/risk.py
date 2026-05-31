@@ -260,8 +260,13 @@ def allocate_erc_notionals(
     weights = erc_weights(sub)
     weights = _blend_weights(weights, previous_weights or {}, float(config.erc_turnover_penalty))
     deployable = equity * deployment_cap
-    out = {t: deployable * weights[t] for t in targets if t in weights}
-    if not out:
-        per = deployable / len(targets)
-        return {t: per for t in targets}
+    per = deployable / len(targets)
+    out: dict[str, float] = {t: per for t in targets}
+    if weights:
+        for t in targets:
+            if t in weights:
+                out[t] = deployable * float(weights[t])
+        total = sum(out.values()) or 1.0
+        scale = deployable / total
+        out = {t: max(per * 0.25, v * scale) for t, v in out.items()}
     return out

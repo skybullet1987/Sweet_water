@@ -205,13 +205,14 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 self._persist_telemetry,
             )
         self.Debug(
-            f"KRAKEN_MAX v8 init res={self.config.resolution_minutes}m "
+            f"KRAKEN_MAX v9-deploy init res={self.config.resolution_minutes}m "
             f"momentum=primary scalper={bool(getattr(self.config, 'enable_scalper', False))} "
             f"deploy_cap={self.config.total_deployment_cap} rank_empty={self.config.rank_entries_when_empty} "
-            f"limits={self.config.use_limit_orders} rebal={self.config.rebalance_hours}h "
-            f"bph={self.config.bph()} feat_min={self.config.min_feature_bars()} "
-            f"adv_regime={self.config.use_advanced_regime} cal_costs={self.config.use_calibrated_costs} "
-            f"min_hold={self.config.min_hold_hours}h top_k={self.config.top_k} orders/d={self.config.max_orders_per_day}"
+            f"limits={self.config.use_limit_orders} erc={self.config.use_erc_sizing} "
+            f"cost_gate={getattr(self.config, 'require_momentum_cost_gate', False)} "
+            f"rebal={self.config.rebalance_hours}h bph={self.config.bph()} "
+            f"feat_min={self.config.min_feature_bars()} top_k={self.config.top_k} "
+            f"orders/d={self.config.max_orders_per_day}"
         )
 
     def _ensure_subscribed(self, tickers: list[str]) -> None:
@@ -794,7 +795,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                     self._record_exit(ticker, st, sym)
 
         gate_blocked = 0
+        buy_fail = 0
+        held_skip = 0
         buys = 0
+        n_tgt = len(targets)
         for ticker in targets:
             sym = self.symbol_by_ticker.get(ticker)
             if sym is None:
@@ -803,25 +807,37 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             sc = next((x[1] for x in scores if x[0] == ticker), 0.0)
             weight = self.sizer.weight_for_score(sc, float(feats.get("rv_21d", 0.2)), rank_mom.get(ticker, 0.5))
             notional = momentum_entry_notional(
-                ticker, slot_notionals, equity, weight, config=self.config
+                ticker,
+                slot_notionals,
+                equity,
+                weight,
+                config=self.config,
+                n_targets=n_tgt,
             )
-            if not self.sizer.passes_cost_gate(sc, notional, self):
+            if notional < float(self.config.min_position_floor_usd):
                 gate_blocked += 1
-                if gate_blocked <= 2:
-                    self.Debug(
-                        f"KRAKEN_MAX gate_block {ticker} sc={sc:.3f} "
-                        f"n=${notional:.2f} slot=${float(slot_notionals.get(ticker, 0)):.2f} w={weight:.3f}"
-                    )
                 continue
+            if bool(getattr(self.config, "require_momentum_cost_gate", False)):
+                if not self.sizer.passes_cost_gate(sc, notional, self):
+                    gate_blocked += 1
+                    if gate_blocked <= 2:
+                        self.Debug(
+                            f"KRAKEN_MAX gate_block {ticker} sc={sc:.3f} "
+                            f"n=${notional:.2f} slot=${float(slot_notionals.get(ticker, 0)):.2f}"
+                        )
+                    continue
             st = self.position_risk.get(ticker)
             if position_qty(self, sym) > 0 and st and st.strategy_owner == "scalper":
                 liquidate_symbol(self, sym, force_market=True, tag="KM:Scalper:Exit")
                 if position_qty(self, sym) > POSITION_TOLERANCE:
                     continue
-            if position_qty(self, sym) > 0 and st and st.strategy_owner == "momentum":
-                self._maybe_pyramid(ticker, sym, feats, sc, equity)
-                continue
-            if position_qty(self, sym) > 0:
+            pq = position_qty(self, sym)
+            if pq > 0:
+                if st is None:
+                    self._init_momentum_state(ticker, sym, feats, sc, now)
+                elif st.strategy_owner == "momentum":
+                    self._maybe_pyramid(ticker, sym, feats, sc, equity)
+                held_skip += 1
                 continue
             if not self.portfolio_risk.can_place_order(now):
                 break
@@ -843,13 +859,25 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                             predicted_score=sc,
                             strategy_owner="momentum",
                         )
+            else:
+                buy_fail += 1
+                if buy_fail <= 2:
+                    cash = float(self.Portfolio.Cash)
+                    pq = position_qty(self, sym)
+                    self.Debug(
+                        f"KRAKEN_MAX buy_fail {ticker} n=${notional:.2f} cash=${cash:.2f} "
+                        f"hold_qty={pq:.6f} slot=${float(slot_notionals.get(ticker, 0)):.2f}"
+                    )
 
         top3 = [(t, round(s, 3)) for t, s, _ in scores[:3]]
         mode = "rank" if candidates and candidates[0][1] < float(self.config.entry_score_threshold) else "abs"
+        slots_s = {t: round(float(slot_notionals.get(t, 0)), 1) for t in targets[:4]}
         msg = (
             f"KRAKEN_MAX rebalance regime={regime.name} cap={regime.deployment_cap:.0%} "
             f"entry_mode={mode} targets={list(targets)} top={top3} n_cand={len(candidates)} "
-            f"gate_blk={gate_blocked} buys={buys} feats={len(feature_map)}"
+            f"slots={slots_s} gate_blk={gate_blocked} held={held_skip} "
+            f"buy_fail={buy_fail} buys={buys} feats={len(feature_map)} "
+            f"cash=${float(self.Portfolio.Cash):.0f}"
         )
         self.Debug(msg)
         if self.alerts and bool(self.config.alert_on_rebalance):

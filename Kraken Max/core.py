@@ -635,12 +635,14 @@ def momentum_entry_notional(
     weight: float,
     *,
     config: KrakenMaxConfig = CONFIG,
+    n_targets: int = 0,
 ) -> float:
-    """ERC slot is primary; vol-weight only caps — never shrink below min_position_floor_usd."""
+    """Deploy from slot table; never return dust below floor or zero from missing ERC keys."""
     floor = float(config.min_position_floor_usd)
+    n = max(int(n_targets), len(slot_notionals), 1)
     slot = float(slot_notionals.get(ticker, 0.0) or 0.0)
     if slot <= 0:
-        return 0.0
+        slot = equity * float(config.total_deployment_cap) / n
     slot_min = slot * float(getattr(config, "min_slot_deploy_pct", 0.85))
     w_cap = equity * max(weight, 0.08)
     notional = max(min(slot, w_cap), slot_min, floor)

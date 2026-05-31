@@ -368,14 +368,23 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self._last_telemetry = self.Time
         self.Debug(self.telemetry.summary_line(snap))
 
-    def OnOrderEvent(self, order_event) -> None:  # pragma: no cover
-        from execution import clear_pending_limit
+    def _clear_pending_limit(self, symbol, order_id=None) -> None:
+        """Drop stale-limit tracking when QC fills a limit (lives in main.py for QC upload safety)."""
+        pending = getattr(self, "_pending_limits", None)
+        if not pending:
+            return
+        meta = pending.get(symbol)
+        if meta is None:
+            return
+        if order_id is None or meta.get("order_id") == order_id:
+            pending.pop(symbol, None)
 
+    def OnOrderEvent(self, order_event) -> None:  # pragma: no cover
         status = str(getattr(order_event, "Status", ""))
         oid = int(getattr(order_event, "OrderId", 0) or 0)
         sym = getattr(order_event, "Symbol", None)
         if "Filled" in status and sym is not None:
-            clear_pending_limit(self, sym, oid if oid > 0 else None)
+            self._clear_pending_limit(sym, oid if oid > 0 else None)
         if self.fill_tracker is None:
             return
         if "Canceled" in status:

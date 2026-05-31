@@ -10,6 +10,8 @@ if str(KRAKEN_MAX) not in sys.path:
 from execution import (  # noqa: E402
     available_sell_qty,
     cancel_open_orders,
+    hold_is_dust,
+    is_dust_symbol,
     liquidate_symbol,
     place_limit_or_market,
     reserved_sell_qty,
@@ -88,14 +90,25 @@ def test_sellable_qty_for_exit_shaves_buffer_lot():
 
 
 def test_dust_link_hold_below_lot_marks_abandoned():
-    from execution import effective_lot_size, is_dust_symbol, mark_dust_symbol
-
     symbol = _Symbol("LINKUSD")
     algo, symbol, _, _ = _algo(hold=0.18816325, open_orders=[])
     algo.Securities[symbol].SymbolProperties = type("SP", (), {"LotSize": 0.2, "MinimumOrderSize": 0.2})()
     sellable = sellable_qty_for_exit(algo, symbol)
     assert sellable == 0.0
     assert is_dust_symbol(algo, symbol)
+
+
+def test_residual_trace_hold_is_dust_no_sell_order():
+    from execution import hold_is_dust, liquidate_symbol
+
+    symbol = _Symbol("LINKUSD")
+    submitted = []
+    algo, symbol, _, _ = _algo(hold=2e-8, open_orders=[])
+    algo.Securities[symbol].SymbolProperties = type("SP", (), {"LotSize": 0.2, "MinimumOrderSize": 0.2})()
+    algo.MarketOrder = lambda sym, qty, tag="": submitted.append((qty, tag))
+    assert hold_is_dust(algo, symbol)
+    assert liquidate_symbol(algo, symbol) is False
+    assert submitted == []
 
 
 def test_reserved_sell_qty_reduces_available():

@@ -56,7 +56,7 @@ def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) ->
 
 
 def compute_bar_features(frame: pd.DataFrame, config: KrakenMaxConfig = CONFIG) -> dict[str, float]:
-    min_bars = max(60, int(config.feature_min_bars) // max(config.bph(), 1))
+    min_bars = config.min_feature_bars()
     if frame is None or len(frame) < min_bars:
         return {}
     df = frame.copy()
@@ -84,7 +84,8 @@ def compute_bar_features(frame: pd.DataFrame, config: KrakenMaxConfig = CONFIG) 
     mom_accel = mom_7d - mom_21d / 3.0
 
     rv_window = min(len(ret), config.lookback_bars(21))
-    rv_21d = float(ret.tail(rv_window).std() * math.sqrt(24 * 365 * config.bph()))
+    bars_per_year = 24 * 365 * max(config.bph(), 1)
+    rv_21d = float(ret.tail(rv_window).std() * math.sqrt(bars_per_year))
     rv_21d_inv = 1.0 / max(rv_21d, 1e-6)
 
     ema_fast = _ema(close, config.lookback_bars(24))
@@ -598,12 +599,23 @@ class AggressiveSizer:
         if notional <= 0:
             return False
         rank_mode = bool(getattr(self.config, "rank_entries_when_empty", True))
+        thr = float(self.config.entry_score_threshold)
         floor = float(getattr(self.config, "rank_entry_score_floor", -0.35))
-        if score <= 0 and not rank_mode:
-            return False
         if score < floor:
             return False
-        edge_score = max(float(score), 0.04) if rank_mode and score <= 0 else float(score)
+        is_rank_entry = rank_mode and score < thr
+        if is_rank_entry:
+            min_n = float(self.config.min_position_floor_usd)
+            if notional < min_n:
+                return False
+            rt_cost = (
+                float(self.config.expected_round_trip_fees)
+                + (float(self.config.assumed_spread_bps) + float(self.config.assumed_slippage_bps)) / BPS
+            )
+            return notional >= min_n and notional * rt_cost < notional * 0.02
+        if score <= 0:
+            return False
+        edge_score = float(score)
         if algo is not None and bool(self.config.use_calibrated_costs):
             from kraken_ops import CalibratedCostModel
 

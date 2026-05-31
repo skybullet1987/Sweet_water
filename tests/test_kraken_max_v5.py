@@ -25,8 +25,9 @@ def _hourly_config():
 
 
 def test_v5_sub_hour_config():
-    assert CONFIG.resolution_minutes == 15
-    assert CONFIG.bph() == 4
+    assert CONFIG.resolution_minutes == 60
+    assert not CONFIG.use_sub_hour_bars
+    assert CONFIG.bph() == 1
     assert CONFIG.erc_shrinkage > 0
 
 

@@ -176,6 +176,11 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             self._hourly_maintenance,
         )
         self.Schedule.On(
+            self.DateRules.EveryDay(),
+            self.TimeRules.Every(timedelta(hours=int(self.config.rebalance_hours))),
+            self._scheduled_rebalance,
+        )
+        self.Schedule.On(
             self.DateRules.MonthStart(),
             self.TimeRules.At(0, 15),
             self._scheduled_ml_retrain,
@@ -203,6 +208,8 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             f"momentum=primary scalper={bool(getattr(self.config, 'enable_scalper', False))} "
             f"deploy_cap={self.config.total_deployment_cap} rank_empty={self.config.rank_entries_when_empty} "
             f"limits={self.config.use_limit_orders} rebal={self.config.rebalance_hours}h "
+            f"bph={self.config.bph()} feat_min={self.config.min_feature_bars()} "
+            f"adv_regime={self.config.use_advanced_regime} cal_costs={self.config.use_calibrated_costs} "
             f"min_hold={self.config.min_hold_hours}h top_k={self.config.top_k} orders/d={self.config.max_orders_per_day}"
         )
 
@@ -318,6 +325,16 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             qty = position_qty(self, sym)
             if st and qty > 0 and st.strategy_owner == "momentum":
                 sync_brackets(self, sym, st, qty)
+
+    def _scheduled_rebalance(self) -> None:  # pragma: no cover
+        """Clock-driven rebalance so sparse symbol bars cannot stall the whole book."""
+        if self.IsWarmingUp:
+            return
+        now = self.Time
+        if self.portfolio_risk.drawdown_halted(now, self._portfolio_drawdown()):
+            return
+        self._rebalance(now, None)
+        self._last_rebalance = now
 
     def _hourly_maintenance(self) -> None:  # pragma: no cover
         equity = float(self.Portfolio.TotalPortfolioValue)
@@ -634,7 +651,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             median_rv=median_rv,
             alt_median_mom_7d=alt_med,
         )
-        if not bool(self.config.use_external_sentiment):
+        if not bool(self.config.use_external_sentiment) or slice is None:
             return proxy
         external = self.sentiment_hub.update_from_slice(self, slice, feature_map)
         return merge_external_sentiment(proxy, external)
@@ -656,6 +673,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         }
         feature_map = {k: v for k, v in feature_map.items() if v}
         if len(feature_map) < 3:
+            self.Debug(
+                f"KRAKEN_MAX rebalance skip features={len(feature_map)} "
+                f"(need 3+, min_bars={self.config.min_feature_bars()})"
+            )
             return
 
         rank_mom = cross_section_ranks(feature_map, "mom_21d")
@@ -771,6 +792,8 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 if hold_is_dust(self, sym) or position_qty(self, sym) <= 1e-8:
                     self._record_exit(ticker, st, sym)
 
+        gate_blocked = 0
+        buys = 0
         for ticker in targets:
             sym = self.symbol_by_ticker.get(ticker)
             if sym is None:
@@ -780,6 +803,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             weight = self.sizer.weight_for_score(sc, float(feats.get("rv_21d", 0.2)), rank_mom.get(ticker, 0.5))
             notional = min(slot_notionals.get(ticker, 0.0), equity * weight)
             if not self.sizer.passes_cost_gate(sc, notional, self):
+                gate_blocked += 1
                 continue
             st = self.position_risk.get(ticker)
             if position_qty(self, sym) > 0 and st and st.strategy_owner == "scalper":
@@ -795,6 +819,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 break
             force_mkt = bool(getattr(self.config, "momentum_force_market", True))
             if place_buy_notional(self, sym, notional, tag="KM:Momentum", force_market=force_mkt):
+                buys += 1
                 self.portfolio_risk.record_order()
                 pending = sym in (getattr(self, "_pending_limits", {}) or {})
                 if position_qty(self, sym) > 0 and not pending:
@@ -815,7 +840,8 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         mode = "rank" if candidates and candidates[0][1] < float(self.config.entry_score_threshold) else "abs"
         msg = (
             f"KRAKEN_MAX rebalance regime={regime.name} cap={regime.deployment_cap:.0%} "
-            f"entry_mode={mode} targets={list(targets)} top={top3} n_cand={len(candidates)}"
+            f"entry_mode={mode} targets={list(targets)} top={top3} n_cand={len(candidates)} "
+            f"gate_blk={gate_blocked} buys={buys} feats={len(feature_map)}"
         )
         self.Debug(msg)
         if self.alerts and bool(self.config.alert_on_rebalance):

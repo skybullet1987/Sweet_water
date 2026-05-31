@@ -275,8 +275,6 @@ def walk_forward_optimize(
     inferred = infer_bar_minutes(ts)
     use_minutes = int(bar_minutes) if bar_minutes is not None else inferred
     if bar_minutes is not None or int(config.resolution_minutes) != use_minutes:
-        from dataclasses import replace
-
         config = replace(
             config,
             resolution_minutes=use_minutes,

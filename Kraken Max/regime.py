@@ -75,7 +75,7 @@ class RegimeEngine:
                 allow_scalper=False,
                 micro_regime="bear",
             )
-        cap = 0.75
+        cap = float(getattr(self.config, "neutral_deployment_cap", 0.85))
         if sentiment:
             cap = adjust_deployment_cap(cap, sentiment, "neutral", self.config)
         ranging = abs(btc_mom) < 0.03 and breadth > 0.4 and breadth < 0.65
@@ -233,9 +233,6 @@ class AdvancedRegimeEngine(RegimeEngine):
         elif self._btc_below_ema200 and base.name != "chaos":
             cap *= 0.88
             micro = "below_ema200"
-
-        if sentiment and base.name == "bull":
-            cap = adjust_deployment_cap(cap, sentiment, "bull", self.config)
 
         return RegimeState(
             name=base.name,

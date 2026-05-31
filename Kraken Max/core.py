@@ -100,13 +100,14 @@ def compute_bar_features(frame: pd.DataFrame, config: KrakenMaxConfig = CONFIG) 
     volume_surge = float(vol_recent / max(vol_med, 1e-9) - 1.0)
 
     rsi = float(_rsi(close).iloc[-1])
-    rsi_pullback = max(0.0, (45.0 - rsi) / 45.0) if trend_quality > 0 else 0.0
+    rsi_pullback = max(0.0, (45.0 - rsi) / 45.0)
 
     dd_63d = float((close.iloc[-1] / close.tail(min(len(close), config.lookback_bars(63 * 24))).max()) - 1.0)
     atr = float(_atr(high, low, close).iloc[-1])
     ema50 = float(_ema(close, 50).iloc[-1])
     ema200 = float(_ema(close, 200).iloc[-1])
-    ret_1h = float(close.iloc[-1] / close.iloc[-max(2, 2)] - 1.0) if len(close) > 2 else 0.0
+    look1 = min(len(close) - 1, config.lookback_bars(1))
+    ret_1h = float(close.iloc[-1] / close.iloc[-1 - look1] - 1.0) if look1 > 0 else 0.0
     look6 = min(len(close) - 1, config.lookback_bars(6))
     ret_6h = float(close.iloc[-1] / close.iloc[-1 - look6] - 1.0) if look6 > 0 else 0.0
 
@@ -321,10 +322,10 @@ def return_correlation(
             series_map[ticker] = rets
     if len(series_map) < 2:
         return pd.DataFrame()
-    aligned = pd.DataFrame(series_map).dropna(how="any")
-    if aligned.shape[0] < min_n:
+    aligned = pd.DataFrame(series_map)
+    if aligned.shape[1] < 2:
         return pd.DataFrame()
-    return aligned.corr()
+    return aligned.corr(min_periods=min_n)
 
 
 def max_corr_to_selected(ticker: str, selected: list[str], corr: pd.DataFrame) -> float:
@@ -341,6 +342,29 @@ def max_corr_to_selected(ticker: str, selected: list[str], corr: pd.DataFrame) -
     return max(vals) if vals else 0.0
 
 
+def select_entry_candidates(
+    scores: list[tuple[str, float, dict]],
+    *,
+    config: KrakenMaxConfig = CONFIG,
+) -> list[tuple[str, float]]:
+    """Long-only entries: absolute threshold, else top-ranked names (bear markets score < 0)."""
+    thr = float(config.entry_score_threshold)
+    ranked = [(t, float(s)) for t, s, _ in scores]
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    cap_n = max(int(config.top_k) * 2, int(config.top_k) + 2)
+    above = [(t, s) for t, s in ranked if s >= thr]
+    if above:
+        return above[:cap_n]
+    if not bool(getattr(config, "rank_entries_when_empty", True)) or not ranked:
+        return []
+    k = max(int(config.top_k) * 3, int(config.top_k) + 2)
+    floor = float(getattr(config, "rank_entry_score_floor", -2.0))
+    rel = [(t, s) for t, s in ranked if s >= floor]
+    if not rel:
+        rel = ranked[:k]
+    return rel[:k]
+
+
 def filter_uncorrelated_picks(
     ranked: list[tuple[str, float]],
     cache,
@@ -354,15 +378,24 @@ def filter_uncorrelated_picks(
     cap = float(max_corr if max_corr is not None else config.max_pairwise_corr)
     tickers = [t for t, _ in ranked]
     corr = return_correlation(cache, tickers)
-    chosen: list[str] = []
-    for ticker, _score in ranked:
-        if len(chosen) >= k:
-            break
-        if corr.empty:
-            chosen.append(ticker)
-            continue
-        if max_corr_to_selected(ticker, chosen, corr) <= cap:
-            chosen.append(ticker)
+    def _greedy(max_cap: float) -> list[str]:
+        picked: list[str] = []
+        for ticker, _score in ranked:
+            if len(picked) >= k:
+                break
+            if corr.empty:
+                picked.append(ticker)
+                continue
+            if max_corr_to_selected(ticker, picked, corr) <= max_cap:
+                picked.append(ticker)
+        return picked
+
+    chosen = _greedy(cap)
+    want = min(k, len(ranked))
+    relax = cap
+    while len(chosen) < want and relax < 0.98:
+        relax = min(0.98, relax + 0.04)
+        chosen = _greedy(relax)
     return chosen
 
 # --- from scalper_sleeve.py ---
@@ -495,11 +528,12 @@ def evaluate_scalper_exit(
     pnl = current_price / entry_price - 1.0
     if pnl <= float(config.scalper_hard_stop_pct):
         return True, "hard_stop"
-    z = float(feats.get("z_20h", 0.0))
-    if z >= float(config.scalper_overshoot_z):
-        return True, "overshoot"
-    if z >= float(config.scalper_meanrev_z):
-        return True, "mean_revert"
+    if feats and "z_20h" in feats:
+        z = float(feats["z_20h"])
+        if z >= float(config.scalper_overshoot_z):
+            return True, "overshoot"
+        if z >= float(config.scalper_meanrev_z):
+            return True, "mean_revert"
     atr = max(entry_atr, entry_price * 0.008)
     risk = atr * 1.2
     r_mult = (current_price - entry_price) / max(risk, 1e-9)
@@ -545,27 +579,40 @@ class AggressiveSizer:
         return min(float(self.config.kelly_cap), max(0.05, raw))
 
     def weight_for_score(self, score: float, rv_annual: float, rank_pct: float) -> float:
-        if score < float(self.config.entry_score_threshold):
-            return 0.0
+        thr = float(self.config.entry_score_threshold)
+        eff_score = float(score)
+        if eff_score < thr:
+            if not bool(getattr(self.config, "rank_entries_when_empty", True)):
+                return 0.0
+            eff_score = max(eff_score, thr * 0.35, 0.04)
         vol = max(float(rv_annual), 1e-6)
         vol_w = min(0.55, float(self.config.target_annual_vol) / vol)
-        conviction = min(1.0, (score - self.config.entry_score_threshold) / 0.8)
+        conviction = min(1.0, max(0.0, (eff_score - thr * 0.35) / 0.8))
+        if float(score) < thr:
+            conviction *= 0.55
         rank_boost = 0.5 + 0.5 * max(0.0, rank_pct - 0.5)
         raw = vol_w * self._kelly() * conviction * rank_boost
         return min(float(self.config.max_position_pct), max(0.0, raw))
 
     def passes_cost_gate(self, score: float, notional: float, algo=None) -> bool:
-        if score <= 0 or notional <= 0:
+        if notional <= 0:
             return False
+        rank_mode = bool(getattr(self.config, "rank_entries_when_empty", True))
+        floor = float(getattr(self.config, "rank_entry_score_floor", -0.35))
+        if score <= 0 and not rank_mode:
+            return False
+        if score < floor:
+            return False
+        edge_score = max(float(score), 0.04) if rank_mode and score <= 0 else float(score)
         if algo is not None and bool(self.config.use_calibrated_costs):
             from kraken_ops import CalibratedCostModel
 
-            return CalibratedCostModel(self.config).passes_edge_gate(score, notional, algo)
+            return CalibratedCostModel(self.config).passes_edge_gate(edge_score, notional, algo)
         fee = notional * float(self.config.expected_round_trip_fees)
         spread = notional * (float(self.config.assumed_spread_bps) / BPS)
         slip = notional * (float(self.config.assumed_slippage_bps) / BPS)
         cost_pct = (fee + spread + slip) / notional
-        edge = score * float(self.config.edge_scale)
+        edge = edge_score * float(self.config.edge_scale)
         return edge > cost_pct * float(self.config.edge_cost_multiplier)
 
 
@@ -672,7 +719,14 @@ class AlphaEnsemble:
             + 0.25 * max(0.0, float(features.get("volume_surge", 0.0)))
             + 0.15 * (rank_breakout - 0.5)
         )
-        dip = float(features.get("rsi_pullback", 0.0)) * max(0.0, float(features.get("trend_quality", 0.0)) * 5.0)
+        tq = float(features.get("trend_quality", 0.0))
+        rsi_pb = float(features.get("rsi_pullback", 0.0))
+        if tq > 0:
+            dip = rsi_pb * max(0.0, tq * 5.0)
+        elif regime_name in ("bear", "neutral"):
+            dip = rsi_pb * max(0.0, 1.0 + min(0.0, tq) * 2.5)
+        else:
+            dip = rsi_pb * 0.35
 
         ml_ctx = {
             "breadth": breadth,
@@ -685,7 +739,13 @@ class AlphaEnsemble:
         w_b = float(cfg.w_breakout)
         w_d = float(cfg.w_dip)
         w_ml = float(cfg.w_ml)
-        final = w_m * momentum + w_b * breakout + w_d * dip + w_ml * ml_score
+        weights = {"momentum": w_m, "breakout": w_b, "dip": w_d, "ml": w_ml}
+        active = {"momentum": momentum, "breakout": breakout, "dip": dip, "ml": ml_score}
+        if abs(ml_score) < 1e-9 and weights["ml"] > 0:
+            weights["ml"] = 0.0
+            total_w = sum(weights.values()) or 1.0
+            weights = {k: v / total_w for k, v in weights.items()}
+        final = sum(weights[k] * active[k] for k in active)
         clip = float(self.config.score_clip)
         final = max(-clip, min(clip, final))
         return {

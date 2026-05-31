@@ -356,10 +356,18 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry",
     return place_limit_or_market(algo, symbol, qty, tag=tag, force_market=force_market)
 
 
-def liquidate_symbol(algo, symbol, *, force_market: bool = True, tag: str = "Exit") -> bool:
-    if hold_is_dust(algo, symbol) or _exit_blocked(algo, symbol):
-        if hold_is_dust(algo, symbol):
-            mark_dust_symbol(algo, symbol, "liquidate_dust")
+def liquidate_symbol(
+    algo,
+    symbol,
+    *,
+    force_market: bool = True,
+    tag: str = "Exit",
+    emergency: bool = False,
+) -> bool:
+    if hold_is_dust(algo, symbol):
+        mark_dust_symbol(algo, symbol, "liquidate_dust")
+        return False
+    if not emergency and _exit_blocked(algo, symbol):
         return False
     cancel_open_orders(algo, symbol)
     qty = sellable_qty_for_exit(algo, symbol)
@@ -412,8 +420,11 @@ def escalate_stale_limits(algo) -> None:
         if qty > 0 and _limit_buy_already_filled(algo, symbol, qty):
             pending.pop(symbol, None)
             continue
-        if qty != 0:
-            place_limit_or_market(algo, symbol, qty, tag=tag, force_market=True)
+        held = position_qty(algo, symbol)
+        remaining = max(0.0, qty - held)
+        min_qty = get_min_qty(algo, symbol)
+        if remaining >= min_qty:
+            place_limit_or_market(algo, symbol, remaining, tag=tag, force_market=True)
         pending.pop(symbol, None)
 
 
@@ -442,7 +453,14 @@ def manage_exits(algo, symbol, state: PositionRisk, close: float, now: datetime,
             time_stop_hours=float(CONFIG.time_stop_hours),
         )
     if exit_now:
-        liquidate_symbol(algo, symbol, force_market=True)
+        emergency = reason in ("catastrophic", "hard_stop") or str(reason).startswith("hard")
+        liquidate_symbol(
+            algo,
+            symbol,
+            force_market=True,
+            tag=f"KM:{state.strategy_owner}:Exit",
+            emergency=emergency,
+        )
         if hasattr(algo, "Debug"):
             algo.Debug(f"KRAKEN_MAX exit_submit {symbol} owner={state.strategy_owner} reason={reason}")
     return False
@@ -563,10 +581,21 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry",
     return False
 
 
-def liquidate_symbol(algo, symbol, *, force_market: bool = True, tag: str = "Exit") -> bool:
+def liquidate_symbol(
+    algo,
+    symbol,
+    *,
+    force_market: bool = True,
+    tag: str = "Exit",
+    emergency: bool = False,
+) -> bool:
     # Always prefer local cash-safe liquidate (qc_runtime smart_liquidate can oversell dust).
     if _local_execution is not None:
-        return bool(_local_execution.liquidate_symbol(algo, symbol, force_market=force_market, tag=tag))
+        return bool(
+            _local_execution.liquidate_symbol(
+                algo, symbol, force_market=force_market, tag=tag, emergency=emergency
+            )
+        )
     if _USE_PRO and _qc_execution is not None:
         return bool(_qc_execution.smart_liquidate(algo, symbol, tag=tag))
     return False

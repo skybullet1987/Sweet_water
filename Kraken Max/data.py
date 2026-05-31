@@ -324,7 +324,12 @@ def adjust_deployment_cap(
     if regime_name in {"chaos", "bear"}:
         return cap
     if sentiment.fear_greed <= float(config.fg_extreme_fear):
-        cap *= 1.0 - float(config.sentiment_fear_cut)
+        if regime_name == "neutral":
+            cap = min(0.99, cap * (1.0 + float(config.sentiment_fear_cut) * 0.4))
+        elif regime_name == "bull":
+            cap *= 1.0 - float(config.sentiment_fear_cut) * 0.5
+        else:
+            cap *= 1.0 - float(config.sentiment_fear_cut) * 0.25
     elif sentiment.fear_greed >= float(config.fg_extreme_greed) and regime_name == "bull":
         cap = min(0.99, cap + float(config.sentiment_greed_boost))
     if sentiment.btc_dominance >= float(config.btc_dom_high) and regime_name == "bull":

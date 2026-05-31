@@ -98,6 +98,7 @@ class KrakenMaxConfig:
     use_limit_orders: bool = True
     max_participation_rate: float = 0.12
     limit_order_timeout_seconds: int = 45
+    exit_retry_cooldown_hours: float = 12.0
     stale_price_minutes: int = 90
     cash_safety_factor: float = 0.97
     failed_esc_cooldown_hours: float = 6.0

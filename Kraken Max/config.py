@@ -43,13 +43,13 @@ class KrakenMaxConfig:
     subscribe_all_universe_on_init: bool = False  # True=subscribes ~50 pairs (slow QC warmup)
 
     universe_size: int = 24
-    top_k: int = 4
-    max_positions: int = 4
-    rebalance_hours: int = 12
-    min_hold_hours: int = 6
+    top_k: int = 5
+    max_positions: int = 5
+    rebalance_hours: int = 8
+    min_hold_hours: int = 48  # let momentum run; avoid 1h flip-flops
 
     total_deployment_cap: float = 0.98
-    max_position_pct: float = 0.45
+    max_position_pct: float = 0.50
     pyramid_add_pct: float = 0.15
     pyramid_min_unrealized_pct: float = 0.05
     target_annual_vol: float = 0.85
@@ -60,33 +60,33 @@ class KrakenMaxConfig:
     w_breakout: float = 0.25
     w_dip: float = 0.15
     w_ml: float = 0.25
-    entry_score_threshold: float = 0.42
-    replace_score_delta: float = 0.12
+    entry_score_threshold: float = 0.28
+    replace_score_delta: float = 0.08
 
     btc_trend_ema: int = 100
     vol_stress_threshold: float = 1.05
     breadth_bull_threshold: float = 0.55
     breadth_threshold: float = 0.30
-    bear_deployment_cap: float = 0.35
+    bear_deployment_cap: float = 0.62
     bear_prefer: tuple[str, ...] = ("BTCUSD", "ETHUSD")
     chop_return_threshold: float = 0.002
 
     hard_stop_pct: float = -0.08
     catastrophic_stop_pct: float = -0.12
-    tp_atr_mult: float = 4.5
+    tp_atr_mult: float = 6.0
     sl_atr_mult: float = 1.2
     chandelier_atr_mult: float = 2.5
-    activate_trail_above_pct: float = 0.10
-    time_stop_hours: float = 72.0
+    activate_trail_above_pct: float = 0.06
+    time_stop_hours: float = 168.0
 
     drawdown_halt_pct: float = -0.28
     drawdown_cooldown_hours: int = 24
-    max_orders_per_day: int = 16
+    max_orders_per_day: int = 28
     post_breaker_cooldown_hours: int = 12
 
     expected_round_trip_fees: float = 0.0052
-    edge_cost_multiplier: float = 1.8
-    edge_scale: float = 0.04
+    edge_cost_multiplier: float = 1.15
+    edge_scale: float = 0.065
     assumed_spread_bps: float = 18.0
     assumed_slippage_bps: float = 12.0
     min_rebalance_weight_delta: float = 0.02
@@ -113,7 +113,7 @@ class KrakenMaxConfig:
     enable_brackets: bool = False  # cash spot: broker SL+TP double-books sell qty
     use_erc_sizing: bool = True
     use_advanced_regime: bool = True
-    use_qc_regime_gates: bool = True
+    use_qc_regime_gates: bool = False  # True blocks most entries in long backtests
     enable_live_alerts: bool = True
     alert_on_drawdown_halt: bool = True
     alert_on_rebalance: bool = False
@@ -140,7 +140,7 @@ class KrakenMaxConfig:
     ml_learning_rate: float = 0.06
     ml_object_store_key: str = "kraken_max_ml_weights.json"
 
-    enable_scalper: bool = True
+    enable_scalper: bool = False  # Kraken Max = momentum deployment; scalper is optional sleeve
     scalper_cadence_hours: int = 6
     scalper_max_positions: int = 2
     scalper_position_pct: float = 0.12

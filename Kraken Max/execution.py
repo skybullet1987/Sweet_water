@@ -356,7 +356,7 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry",
     return place_limit_or_market(algo, symbol, qty, tag=tag, force_market=force_market)
 
 
-def liquidate_symbol(algo, symbol, *, force_market: bool = True) -> bool:
+def liquidate_symbol(algo, symbol, *, force_market: bool = True, tag: str = "Exit") -> bool:
     if hold_is_dust(algo, symbol) or _exit_blocked(algo, symbol):
         if hold_is_dust(algo, symbol):
             mark_dust_symbol(algo, symbol, "liquidate_dust")
@@ -365,7 +365,7 @@ def liquidate_symbol(algo, symbol, *, force_market: bool = True) -> bool:
     qty = sellable_qty_for_exit(algo, symbol)
     if qty <= POSITION_TOLERANCE:
         return False
-    ok = place_limit_or_market(algo, symbol, -qty, tag="Exit", force_market=force_market)
+    ok = place_limit_or_market(algo, symbol, -qty, tag=tag, force_market=force_market)
     if not ok:
         _mark_exit_fail(algo, symbol)
     return ok
@@ -563,12 +563,12 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry",
     return False
 
 
-def liquidate_symbol(algo, symbol, *, force_market: bool = True) -> bool:
+def liquidate_symbol(algo, symbol, *, force_market: bool = True, tag: str = "Exit") -> bool:
     # Always prefer local cash-safe liquidate (qc_runtime smart_liquidate can oversell dust).
     if _local_execution is not None:
-        return bool(_local_execution.liquidate_symbol(algo, symbol, force_market=force_market))
+        return bool(_local_execution.liquidate_symbol(algo, symbol, force_market=force_market, tag=tag))
     if _USE_PRO and _qc_execution is not None:
-        return bool(_qc_execution.smart_liquidate(algo, symbol, tag="KM:Exit"))
+        return bool(_qc_execution.smart_liquidate(algo, symbol, tag=tag))
     return False
 
 

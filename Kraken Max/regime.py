@@ -49,7 +49,15 @@ class RegimeEngine:
         fg = float(sentiment.fear_greed) if sentiment else 0.5
 
         if vol_stress and breadth < 0.35:
-            return RegimeState("chaos", 0.0, False, (), allow_scalper=False, micro_regime="chaos")
+            cap = float(self.config.bear_deployment_cap) * 0.35
+            return RegimeState(
+                "chaos",
+                cap,
+                True,
+                tuple(self.config.bear_prefer),
+                allow_scalper=False,
+                micro_regime="chaos",
+            )
         if btc_trend > 0 and btc_mom > 0 and breadth >= float(self.config.breadth_bull_threshold):
             cap = float(self.config.total_deployment_cap)
             if sentiment:
@@ -71,12 +79,13 @@ class RegimeEngine:
         if sentiment:
             cap = adjust_deployment_cap(cap, sentiment, "neutral", self.config)
         ranging = abs(btc_mom) < 0.03 and breadth > 0.4 and breadth < 0.65
+        allow_scalper = bool(self.config.enable_scalper) and (ranging or fg < 0.45)
         return RegimeState(
             "neutral",
             cap,
             True,
             (),
-            allow_scalper=ranging or fg < 0.45,
+            allow_scalper=allow_scalper,
             micro_regime="ranging" if ranging else "neutral",
         )
 
@@ -213,7 +222,7 @@ class AdvancedRegimeEngine(RegimeEngine):
         micro = base.micro_regime
 
         if h_reg == "meanrev" and vr_reg == "meanrev":
-            allow_scalper = True
+            allow_scalper = bool(self.config.enable_scalper)
             micro = "meanrev"
             if base.name == "bull":
                 cap *= 0.92

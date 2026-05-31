@@ -90,7 +90,7 @@ class KrakenMaxConfig:
 
     expected_round_trip_fees: float = 0.0052
     edge_cost_multiplier: float = 0.85
-    edge_scale: float = 0.08
+    edge_scale: float = 0.095
     assumed_spread_bps: float = 18.0
     assumed_slippage_bps: float = 12.0
     min_rebalance_weight_delta: float = 0.02
@@ -214,7 +214,7 @@ class KrakenMaxConfig:
     validation_min_win_rate: float = 0.38
     validation_report_path: str = "validation_report.json"
 
-    use_regime_wf_weights: bool = True
+    use_regime_wf_weights: bool = False  # WF merge stub; use static regime_weights until trained
     regime_wf_min_bars: int = 80
     regime_weights_object_store_key: str = "kraken_max_regime_weights.json"
 

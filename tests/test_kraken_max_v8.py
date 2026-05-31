@@ -50,7 +50,7 @@ def test_v8_config():
     assert not CONFIG.subscribe_all_universe_on_init
     assert len(CONFIG.seed_subscribe_symbols) >= 6
     assert CONFIG.enable_dashboard_digest
-    assert CONFIG.use_regime_wf_weights
+    assert not CONFIG.use_regime_wf_weights  # static regime weights until WF merge is implemented
 
 
 def test_regime_label():

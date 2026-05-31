@@ -46,6 +46,7 @@ from core import (
 )
 from data import CrossVenueLead, SentimentDataHub, compute_sentiment, merge_external_sentiment
 from execution import (
+    POSITION_TOLERANCE,
     escalate_orders,
     hold_is_dust,
     init_execution_state,
@@ -283,8 +284,12 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         if self.IsWarmingUp:
             return
 
-        escalate_orders(self)
         now = self.Time
+        if self.portfolio_risk.drawdown_halted(now, self._portfolio_drawdown()):
+            self._manage_positions(now)
+            return
+
+        escalate_orders(self)
         if self.drift_monitor is not None:
             self.drift_monitor.record_equity(now, float(self.Portfolio.TotalPortfolioValue))
         if self.scorecard is not None:
@@ -682,8 +687,13 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self._last_regime_state = (regime.name, str(regime.micro_regime), float(regime.deployment_cap))
 
         if not regime.allow_new_entries or regime.deployment_cap <= 0:
-            self._flatten_momentum_only("regime_chaos")
+            self._flatten_momentum_only("regime_halt")
             return
+        if regime.name == "chaos":
+            self.Debug(
+                f"KRAKEN_MAX chaos micro={regime.micro_regime} cap={regime.deployment_cap:.0%} "
+                "rank_only"
+            )
 
         scores: list[tuple[str, float, dict]] = []
         for ticker, feats in feature_map.items():
@@ -711,13 +721,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             candidates, self.feature_cache, top_k=int(self.config.top_k) * 2
         )
         if bool(self.config.enable_cluster_risk):
-            holdings = [
-                t
-                for t, st in self.position_risk.items()
-                if st.strategy_owner == "momentum"
-                and (sym := self.symbol_by_ticker.get(t)) is not None
-                and position_qty(self, sym) > 0
-            ]
+            holdings = []
+            for t, sym in self.symbol_by_ticker.items():
+                if position_qty(self, sym) > 0:
+                    holdings.append(t)
             score_by_ticker = {t: s for t, s, _ in scores}
             ranked = [(t, score_by_ticker.get(t, 0.0)) for t in decorrelated]
             targets = filter_cluster_caps(
@@ -745,6 +752,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             per = deployable / max(len(targets), 1)
             slot_notionals = {t: per for t in targets}
 
+        score_by_ticker = {t: s for t, s, _ in scores}
+        best_target_score = max((score_by_ticker.get(t, -999.0) for t in targets), default=-999.0)
+        replace_delta = float(self.config.replace_score_delta)
+
         for ticker, sym in self.symbol_by_ticker.items():
             st = self.position_risk.get(ticker)
             if position_qty(self, sym) <= 0:
@@ -753,7 +764,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 held_h = (now - st.entry_time).total_seconds() / 3600.0
                 if held_h < float(self.config.min_hold_hours):
                     continue
-                liquidate_symbol(self, sym, force_market=True, tag="KM:Momentum")
+                my_sc = score_by_ticker.get(ticker, -999.0)
+                if targets and my_sc >= best_target_score - replace_delta:
+                    continue
+                liquidate_symbol(self, sym, force_market=True, tag="KM:Momentum:Exit")
                 if hold_is_dust(self, sym) or position_qty(self, sym) <= 1e-8:
                     self._record_exit(ticker, st, sym)
 
@@ -768,6 +782,10 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             if not self.sizer.passes_cost_gate(sc, notional, self):
                 continue
             st = self.position_risk.get(ticker)
+            if position_qty(self, sym) > 0 and st and st.strategy_owner == "scalper":
+                liquidate_symbol(self, sym, force_market=True, tag="KM:Scalper:Exit")
+                if position_qty(self, sym) > POSITION_TOLERANCE:
+                    continue
             if position_qty(self, sym) > 0 and st and st.strategy_owner == "momentum":
                 self._maybe_pyramid(ticker, sym, feats, sc, equity)
                 continue

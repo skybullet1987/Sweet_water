@@ -180,10 +180,13 @@ def _covariance_matrix(cache, tickers: list[str], lookback_hours: int) -> tuple[
             series_map[t] = rets
     if len(series_map) < 2:
         return pd.DataFrame(), []
-    aligned = pd.DataFrame(series_map).dropna(how="any")
-    if aligned.shape[0] < int(CONFIG.min_corr_samples):
+    aligned = pd.DataFrame(series_map)
+    if aligned.shape[1] < 2:
         return pd.DataFrame(), []
-    return aligned.cov(), list(aligned.columns)
+    min_n = int(CONFIG.min_corr_samples)
+    if aligned.count().min() < min_n:
+        return pd.DataFrame(), []
+    return aligned.cov(min_periods=min_n), list(aligned.columns)
 
 
 def shrink_covariance(cov: pd.DataFrame, intensity: float) -> pd.DataFrame:

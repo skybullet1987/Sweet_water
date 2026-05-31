@@ -13,6 +13,7 @@ from execution import (  # noqa: E402
     liquidate_symbol,
     place_limit_or_market,
     reserved_sell_qty,
+    sellable_qty_for_exit,
 )
 
 
@@ -77,6 +78,13 @@ def _algo(*, hold: float = 0.10418, open_orders=None):
     )()
     algo.MarketOrder = lambda sym, qty, tag="": submitted.append((float(qty), tag))
     return algo, symbol, submitted, open_orders
+
+
+def test_sellable_qty_for_exit_shaves_buffer_lot():
+    algo, symbol, _, _ = _algo(hold=0.05235042, open_orders=[])
+    sellable = sellable_qty_for_exit(algo, symbol)
+    assert sellable < 0.05235042
+    assert sellable > 0.05234
 
 
 def test_reserved_sell_qty_reduces_available():

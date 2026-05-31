@@ -16,10 +16,10 @@ class KrakenMaxConfig:
     start_year: int = 2022
     start_month: int = 1
     start_day: int = 1
-    end_year: int = 2026
-    end_month: int = 5
+    end_year: int = 2027
+    end_month: int = 1
     end_day: int = 1
-    fast_qc_backtest: bool = True  # 3-month window + short warmup so QC % moves off 0%
+    fast_qc_backtest: bool = False  # True = 3-month smoke test only
     fast_qc_start: tuple[int, int, int] = (2024, 1, 1)
     fast_qc_end: tuple[int, int, int] = (2024, 4, 1)
     warmup_bars_fast: int = 48  # ~2 days hourly
@@ -99,6 +99,7 @@ class KrakenMaxConfig:
     max_participation_rate: float = 0.12
     limit_order_timeout_seconds: int = 45
     exit_retry_cooldown_hours: float = 12.0
+    exit_sell_buffer_lots: int = 1  # shave lot steps off sells (fee/settlement buffer)
     stale_price_minutes: int = 90
     cash_safety_factor: float = 0.97
     failed_esc_cooldown_hours: float = 6.0

@@ -369,10 +369,15 @@ class KrakenMaxAlgorithm(QCAlgorithm):
         self.Debug(self.telemetry.summary_line(snap))
 
     def OnOrderEvent(self, order_event) -> None:  # pragma: no cover
-        if self.fill_tracker is None:
-            return
+        from execution import clear_pending_limit
+
         status = str(getattr(order_event, "Status", ""))
         oid = int(getattr(order_event, "OrderId", 0) or 0)
+        sym = getattr(order_event, "Symbol", None)
+        if "Filled" in status and sym is not None:
+            clear_pending_limit(self, sym, oid if oid > 0 else None)
+        if self.fill_tracker is None:
+            return
         if "Canceled" in status:
             self.fill_tracker.on_cancel(oid)
         if "Filled" not in status:

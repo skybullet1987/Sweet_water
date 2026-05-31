@@ -177,10 +177,11 @@ def place_limit_or_market(
     if quantity > 0 and getattr(algo, "long_only", True):
         pass
     elif quantity < 0:
+        hold = max(0.0, position_qty(algo, symbol))
         avail = available_sell_qty(algo, symbol)
-        quantity = -min(abs(quantity), avail)
-        quantity = round_quantity(algo, symbol, quantity)
-        if quantity == 0:
+        sell_abs = min(abs(quantity), avail, hold)
+        quantity = round_quantity(algo, symbol, -sell_abs)
+        if quantity == 0 or abs(quantity) > hold + POSITION_TOLERANCE:
             return False
 
     price_est = _limit_price(algo, symbol, quantity)
@@ -209,7 +210,56 @@ def place_limit_or_market(
     return True
 
 
+def _exit_blocked(algo, symbol) -> bool:
+    until = (getattr(algo, "_exit_fail_until", {}) or {}).get(symbol)
+    now = getattr(algo, "Time", None)
+    return until is not None and now is not None and now < until
+
+
+def _mark_exit_fail(algo, symbol) -> None:
+    hours = float(getattr(CONFIG, "exit_retry_cooldown_hours", 12.0) or 12.0)
+    now = getattr(algo, "Time", datetime.now(timezone.utc))
+    if not hasattr(algo, "_exit_fail_until"):
+        algo._exit_fail_until = {}
+    algo._exit_fail_until[symbol] = now + timedelta(hours=hours)
+
+
+def _order_status_text(algo, order_id) -> str:
+    if order_id is None:
+        return ""
+    try:
+        order = algo.Transactions.GetOrderById(int(order_id))
+        return str(getattr(order, "Status", "") or "")
+    except Exception:
+        return ""
+
+
+def _status_filled(status: str) -> bool:
+    return "fill" in str(status).lower()
+
+
+def _limit_buy_already_filled(algo, symbol, pending_qty: float) -> bool:
+    if pending_qty <= 0:
+        return False
+    return position_qty(algo, symbol) >= pending_qty - POSITION_TOLERANCE
+
+
+def clear_pending_limit(algo, symbol, order_id=None) -> None:
+    pending = getattr(algo, "_pending_limits", None)
+    if not pending:
+        return
+    meta = pending.get(symbol)
+    if meta is None:
+        return
+    if order_id is None or meta.get("order_id") == order_id:
+        pending.pop(symbol, None)
+
+
 def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry", force_market: bool = False) -> bool:
+    if symbol in (getattr(algo, "_pending_limits", {}) or {}):
+        return False
+    if position_qty(algo, symbol) > POSITION_TOLERANCE:
+        return False
     price = float(algo.Securities[symbol].Price)
     if price <= 0 or usd_notional <= 0:
         return False
@@ -226,11 +276,17 @@ def place_buy_notional(algo, symbol, usd_notional: float, *, tag: str = "Entry",
     return place_limit_or_market(algo, symbol, qty, tag=tag, force_market=force_market)
 
 
-def liquidate_symbol(algo, symbol, *, force_market: bool = True) -> None:
+def liquidate_symbol(algo, symbol, *, force_market: bool = True) -> bool:
+    if _exit_blocked(algo, symbol):
+        return False
     cancel_open_orders(algo, symbol)
     qty = available_sell_qty(algo, symbol)
-    if qty > POSITION_TOLERANCE:
-        place_limit_or_market(algo, symbol, -qty, tag="Exit", force_market=force_market)
+    if qty <= POSITION_TOLERANCE:
+        return False
+    ok = place_limit_or_market(algo, symbol, -qty, tag="Exit", force_market=force_market)
+    if not ok:
+        _mark_exit_fail(algo, symbol)
+    return ok
 
 
 def escalate_stale_limits(algo) -> None:
@@ -244,6 +300,14 @@ def escalate_stale_limits(algo) -> None:
         if submitted is None or (now - submitted) < timeout:
             continue
         order_id = meta.get("order_id")
+        qty = float(meta.get("qty", 0.0))
+        tag = str(meta.get("tag", "Escalate"))
+
+        status = _order_status_text(algo, order_id)
+        if _status_filled(status) or _limit_buy_already_filled(algo, symbol, qty):
+            pending.pop(symbol, None)
+            continue
+
         open_ids = set()
         try:
             for o in algo.Transactions.GetOpenOrders(symbol):
@@ -255,9 +319,19 @@ def escalate_stale_limits(algo) -> None:
                 algo.Transactions.CancelOrder(order_id)
             except Exception:
                 pass
-        qty = float(meta.get("qty", 0.0))
+            if _limit_buy_already_filled(algo, symbol, qty):
+                pending.pop(symbol, None)
+                continue
+        elif order_id is not None and not status:
+            if _limit_buy_already_filled(algo, symbol, qty):
+                pending.pop(symbol, None)
+                continue
+
+        if qty > 0 and _limit_buy_already_filled(algo, symbol, qty):
+            pending.pop(symbol, None)
+            continue
         if qty != 0:
-            place_limit_or_market(algo, symbol, qty, tag=str(meta.get("tag", "Escalate")), force_market=True)
+            place_limit_or_market(algo, symbol, qty, tag=tag, force_market=True)
         pending.pop(symbol, None)
 
 
@@ -286,10 +360,11 @@ def manage_exits(algo, symbol, state: PositionRisk, close: float, now: datetime,
             time_stop_hours=float(CONFIG.time_stop_hours),
         )
     if exit_now:
-        liquidate_symbol(algo, symbol, force_market=True)
-        if hasattr(algo, "Debug"):
-            algo.Debug(f"KRAKEN_MAX exit {symbol} owner={state.strategy_owner} reason={reason}")
-        return True
+        if liquidate_symbol(algo, symbol, force_market=True):
+            if hasattr(algo, "Debug"):
+                algo.Debug(f"KRAKEN_MAX exit {symbol} owner={state.strategy_owner} reason={reason}")
+            return True
+        return False
     return False
 
 # --- from execution_bridge.py ---
@@ -354,6 +429,7 @@ def init_execution_state(algo) -> None:
     algo._pending_limits = getattr(algo, "_pending_limits", {})
     algo._abandoned_dust = getattr(algo, "_abandoned_dust", set())
     algo._failed_escalations = getattr(algo, "_failed_escalations", {})
+    algo._exit_fail_until = getattr(algo, "_exit_fail_until", {})
     algo.stale_order_bars = int(getattr(getattr(algo, "config", None), "stale_order_bars", 3) or 3)
     algo.min_notional = float(getattr(getattr(algo, "config", None), "min_position_floor_usd", 25.0) or 25.0)
 
@@ -411,8 +487,7 @@ def liquidate_symbol(algo, symbol, *, force_market: bool = True) -> bool:
     if _USE_PRO and _qc_execution is not None:
         return bool(_qc_execution.smart_liquidate(algo, symbol, tag="KM:Exit"))
     if _local_execution is not None:
-        _local_execution.liquidate_symbol(algo, symbol, force_market=force_market)
-        return True
+        return bool(_local_execution.liquidate_symbol(algo, symbol, force_market=force_market))
     return False
 
 

@@ -50,6 +50,8 @@ def test_v2_config_flags():
     assert CONFIG.rank_entries_when_empty is True
     assert not CONFIG.use_calibrated_costs
     assert not CONFIG.use_advanced_regime
+    assert not CONFIG.use_erc_sizing
+    assert not CONFIG.require_momentum_cost_gate
     assert CONFIG.bph() == 1
     assert CONFIG.entry_score_threshold <= 0.35
     assert CONFIG.rebalance_hours <= 4

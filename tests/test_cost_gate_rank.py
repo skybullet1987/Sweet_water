@@ -31,6 +31,13 @@ def test_bph_hourly_is_one():
 
 def test_momentum_entry_notional_uses_slot_not_tiny_weight_cap():
     slots = {"ETHUSD": 200.0}
-    n = momentum_entry_notional("ETHUSD", slots, equity=1000.0, weight=0.005, config=CONFIG)
+    n = momentum_entry_notional(
+        "ETHUSD", slots, equity=1000.0, weight=0.005, config=CONFIG, n_targets=3
+    )
     assert n >= CONFIG.min_position_floor_usd
     assert n >= 200.0 * CONFIG.min_slot_deploy_pct * 0.99
+
+
+def test_momentum_entry_notional_fallback_when_slot_missing():
+    n = momentum_entry_notional("SOLUSD", {}, equity=1000.0, weight=0.1, config=CONFIG, n_targets=4)
+    assert n >= CONFIG.min_position_floor_usd

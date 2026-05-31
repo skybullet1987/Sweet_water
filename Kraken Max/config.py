@@ -55,7 +55,7 @@ class KrakenMaxConfig:
     pyramid_min_unrealized_pct: float = 0.03
     target_annual_vol: float = 0.85
     kelly_cap: float = 0.55
-    min_position_floor_usd: float = 10.0  # $1k account; must be <= typical ERC slot
+    min_position_floor_usd: float = 8.0  # $1k account minimum ticket
     min_slot_deploy_pct: float = 0.85  # use at least this fraction of ERC slot when weight cap is tiny
 
     w_momentum: float = 0.35
@@ -118,7 +118,8 @@ class KrakenMaxConfig:
     ensemble_weights_path: str = "ensemble_weights.json"
 
     enable_brackets: bool = False  # cash spot: broker SL+TP double-books sell qty
-    use_erc_sizing: bool = True
+    use_erc_sizing: bool = False  # ERC omitted tickers → $0 slots → buys=0; use equal slots
+    require_momentum_cost_gate: bool = False  # if True, rank/edge gate can block all entries
     use_advanced_regime: bool = False  # Hurst/EMA stacks caps; base regime enough for deployment
     use_qc_regime_gates: bool = False  # True blocks most entries in long backtests
     enable_live_alerts: bool = True

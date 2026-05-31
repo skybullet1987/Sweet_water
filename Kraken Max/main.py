@@ -327,7 +327,13 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 self.alerts.notify("FILL_QUALITY", msg, dedupe_key="fill_quality")
         if self.drift_monitor is not None:
             alert, msg = self.drift_monitor.should_alert()
-            if alert and self.alerts and bool(self.config.alert_on_drift):
+            live_only = bool(getattr(self.config, "ops_alerts_live_only", True))
+            if (
+                alert
+                and self.alerts
+                and bool(self.config.alert_on_drift)
+                and (getattr(self, "LiveMode", False) or not live_only)
+            ):
                 self.alerts.notify("DRIFT", msg, dedupe_key="drift")
         if self.ml_trainer.should_retrain(self.Time):
             self._run_ml_retrain()
@@ -335,7 +341,13 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             snap = self.scorecard.build(self, fill_tracker=self.fill_tracker)
             self.scorecard.persist(self, snap)
             ok, reason = self.scorecard.passes_paper_gate(snap)
-            if not ok and self.alerts and bool(self.config.alert_on_paper_gate_fail):
+            live_only = bool(getattr(self.config, "ops_alerts_live_only", True))
+            if (
+                not ok
+                and self.alerts
+                and bool(self.config.alert_on_paper_gate_fail)
+                and (getattr(self, "LiveMode", False) or not live_only)
+            ):
                 self.alerts.notify("PAPER_GATE", reason, dedupe_key="paper_gate")
             elif ok and snap.days_tracked >= float(self.config.paper_min_days):
                 self.Debug(self.scorecard.summary_line(snap))
@@ -414,8 +426,11 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                 if ticker and st and position_qty(self, sym) <= 1e-8:
                     self._record_exit(ticker, st, sym)
 
-        if sym is not None and ("Invalid" in status or "Canceled" in status) and is_exit:
+        if sym is not None and "Invalid" in status and is_exit:
             self._mark_exit_fail_local(sym)
+            if not hasattr(self, "_abandoned_dust"):
+                self._abandoned_dust = set()
+            self._abandoned_dust.add(sym)
 
         if self.fill_tracker is None:
             return

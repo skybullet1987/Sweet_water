@@ -58,7 +58,7 @@ def test_v6_config_flags():
     assert CONFIG.enable_telemetry
     assert CONFIG.use_cross_venue_lead
     assert CONFIG.auto_refresh_baseline
-    assert periods_per_year(CONFIG) == 24 * 365 * 4
+    assert periods_per_year(CONFIG) == 24 * 365
 
 
 def test_track_order_submit_wires_fill_tracker():

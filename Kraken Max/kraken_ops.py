@@ -230,8 +230,14 @@ class CalibratedCostModel:
         ft = getattr(algo, "fill_tracker", None)
         return self.from_fill_tracker(ft).total_pct
 
-    def passes_edge_gate(self, score: float, notional: float, algo) -> bool:
-        if score <= 0 or notional <= 0:
+    def passes_edge_gate(
+        self, score: float, notional: float, algo, *, rank_relative: bool = False
+    ) -> bool:
+        if notional <= 0:
+            return False
+        if rank_relative:
+            return notional >= float(self.config.min_position_floor_usd)
+        if score <= 0:
             return False
         cost_pct = self.round_trip_pct(algo)
         edge = score * float(self.config.edge_scale)

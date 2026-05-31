@@ -48,6 +48,9 @@ def test_v2_config_flags():
     assert CONFIG.momentum_force_market is True
     assert CONFIG.enable_scalper is False
     assert CONFIG.rank_entries_when_empty is True
+    assert not CONFIG.use_calibrated_costs
+    assert not CONFIG.use_advanced_regime
+    assert CONFIG.bph() == 1
     assert CONFIG.entry_score_threshold <= 0.35
     assert CONFIG.rebalance_hours <= 4
     assert CONFIG.max_orders_per_day >= 48

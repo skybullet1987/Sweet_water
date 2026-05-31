@@ -26,7 +26,7 @@ class KrakenMaxConfig:
     starting_cash: float = 1000.0
     account_currency: str = "USD"
     bar_resolution: str = "Hour"
-    resolution_minutes: int = 15
+    resolution_minutes: int = 60  # must match bar cadence: 60=Hour, 15=15m consolidated
     use_sub_hour_bars: bool = False  # False=hourly (first QC backtest). True needs Kraken Minute data.
     warmup_bars: int = 24 * 7  # ~7 days hourly (14d+50 symbols can look "stuck" on QC)
     warmup_bars_sub_hour: int = 24 * 7 * 4  # ~7 days of 15m bars when use_sub_hour_bars=True
@@ -95,7 +95,8 @@ class KrakenMaxConfig:
     assumed_slippage_bps: float = 12.0
     min_rebalance_weight_delta: float = 0.02
 
-    feature_min_bars: int = 48 * 4
+    feature_min_bars: int = 48  # min hourly bars for features when use_sub_hour_bars=False
+    feature_min_bars_sub_hour: int = 48 * 4
     score_clip: float = 4.0
     enable_shorts: bool = ENABLE_SHORTS
 
@@ -117,7 +118,7 @@ class KrakenMaxConfig:
 
     enable_brackets: bool = False  # cash spot: broker SL+TP double-books sell qty
     use_erc_sizing: bool = True
-    use_advanced_regime: bool = True
+    use_advanced_regime: bool = False  # Hurst/EMA stacks caps; base regime enough for deployment
     use_qc_regime_gates: bool = False  # True blocks most entries in long backtests
     enable_live_alerts: bool = True
     alert_on_drawdown_halt: bool = True
@@ -195,7 +196,7 @@ class KrakenMaxConfig:
     enable_cluster_risk: bool = True
     max_positions_per_cluster: int = 3
 
-    use_calibrated_costs: bool = True
+    use_calibrated_costs: bool = False  # True + rank mode silently blocked all entries (edge<fees)
     cost_calibration_min_fills: int = 5
 
     enable_scorecard: bool = True
@@ -244,10 +245,17 @@ class KrakenMaxConfig:
     })
 
     def bph(self) -> int:
+        if not self.use_sub_hour_bars:
+            return 1
         return bars_per_hour(self.resolution_minutes)
 
     def lookback_bars(self, hours: int) -> int:
         return max(2, int(hours) * self.bph())
+
+    def min_feature_bars(self) -> int:
+        if self.use_sub_hour_bars:
+            return max(60, int(self.feature_min_bars_sub_hour) // max(self.bph(), 1))
+        return max(24, int(self.feature_min_bars))
 
 
 CONFIG = KrakenMaxConfig()

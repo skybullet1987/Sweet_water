@@ -255,11 +255,49 @@ KRAKEN_MAX_UNIVERSE = (
 
 MIN_HOURLY_DOLLAR_VOLUME = 150_000.0
 DEFAULT_UNIVERSE_SIZE = 24
+DEFAULT_VOLUME_FALLBACK = 1000.0
+
+
+def history_bars_from_qc(hist: pd.DataFrame, *, default_volume: float = DEFAULT_VOLUME_FALLBACK) -> pd.DataFrame:
+    """Normalize QC History() to OHLCV; Kraken often has no volume column."""
+    if hist is None or hist.empty:
+        return pd.DataFrame()
+    h = hist.reset_index() if isinstance(hist.index, pd.MultiIndex) else hist.copy()
+    cols = {str(c).lower(): c for c in h.columns}
+
+    def _series(name: str, fallback: pd.Series | None = None) -> pd.Series:
+        key = cols.get(name)
+        if key is not None and key in h.columns:
+            return h[key].astype(float)
+        if fallback is not None:
+            return fallback
+        return pd.Series(float("nan"), index=h.index, dtype=float)
+
+    close = _series("close")
+    if close.isna().all():
+        return pd.DataFrame()
+    open_ = _series("open", close)
+    high = _series("high", close)
+    low = _series("low", close)
+    vol_key = cols.get("volume") or cols.get("vol") or cols.get("quantity")
+    if vol_key is not None and vol_key in h.columns:
+        volume = h[vol_key].astype(float)
+    else:
+        volume = pd.Series(float(default_volume), index=h.index, dtype=float)
+    out = pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close, "volume": volume}
+    )
+    return out.dropna(subset=["close"])
 
 
 def _median_dollar_volume(frame: pd.DataFrame) -> float:
+    if frame is None or frame.empty or "close" not in frame.columns:
+        return 0.0
     close = frame["close"].astype(float)
-    volume = frame["volume"].astype(float)
+    if "volume" in frame.columns:
+        volume = frame["volume"].astype(float)
+    else:
+        volume = pd.Series(DEFAULT_VOLUME_FALLBACK, index=frame.index, dtype=float)
     return float((close * volume).median())
 
 

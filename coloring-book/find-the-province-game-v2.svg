@@ -1,0 +1,340 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 612 792" width="612" height="792">
+  <defs>
+    <style>
+      .stroke-main { fill: none; stroke: #000; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+      .stroke-bold { fill: none; stroke: #000; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
+      .stroke-thin { fill: none; stroke: #000; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+      .stroke-dashed { fill: none; stroke: #000; stroke-width: 1.5; stroke-dasharray: 6 4; }
+      .fill-white { fill: #fff; }
+      .fill-map { fill: #e8e8e8; stroke: #ccc; stroke-width: 1; }
+      .text-title { font-family: Arial, Helvetica, sans-serif; font-weight: 900; font-size: 22px; fill: #fff; stroke: #000; stroke-width: 0.8px; paint-order: stroke fill; }
+      .text-label { font-family: Arial, Helvetica, sans-serif; font-weight: 800; font-size: 11px; fill: #000; }
+      .text-small { font-family: Arial, Helvetica, sans-serif; font-weight: 700; font-size: 8px; fill: #000; }
+      .text-hint { font-family: Arial, Helvetica, sans-serif; font-weight: 600; font-size: 7px; fill: #000; }
+    </style>
+    <!-- Track pattern -->
+    <symbol id="track" viewBox="0 0 24 12">
+      <ellipse cx="6" cy="6" rx="3" ry="4" fill="none" stroke="#000" stroke-width="1.2"/>
+      <ellipse cx="12" cy="6" rx="3" ry="4" fill="none" stroke="#000" stroke-width="1.2"/>
+      <ellipse cx="18" cy="6" rx="3" ry="4" fill="none" stroke="#000" stroke-width="1.2"/>
+    </symbol>
+    <!-- Maple leaf -->
+    <symbol id="maple" viewBox="0 0 40 40">
+      <path d="M20 4 L22 14 L32 8 L26 18 L38 18 L28 24 L34 36 L20 28 L6 36 L12 24 L2 18 L14 18 L8 8 L18 14 Z" fill="none" stroke="#000" stroke-width="1.8" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+
+  <!-- White page background -->
+  <rect width="612" height="792" fill="#fff"/>
+
+  <!-- ========== OUTER BORDER ========== -->
+  <rect x="24" y="24" width="564" height="744" class="stroke-bold" fill="none"/>
+  <!-- Track + leaf border pattern (top) -->
+  <g id="border-top">
+    <use href="#track" x="40" y="30" width="24" height="12"/>
+    <use href="#maple" x="68" y="26" width="16" height="16"/>
+    <use href="#track" x="92" y="30" width="24" height="12"/>
+    <use href="#maple" x="120" y="26" width="16" height="16"/>
+    <use href="#track" x="144" y="30" width="24" height="12"/>
+    <use href="#maple" x="172" y="26" width="16" height="16"/>
+    <use href="#track" x="196" y="30" width="24" height="12"/>
+    <use href="#maple" x="224" y="26" width="16" height="16"/>
+    <use href="#track" x="248" y="30" width="24" height="12"/>
+    <use href="#maple" x="276" y="26" width="16" height="16"/>
+    <use href="#track" x="300" y="30" width="24" height="12"/>
+    <use href="#maple" x="328" y="26" width="16" height="16"/>
+    <use href="#track" x="352" y="30" width="24" height="12"/>
+    <use href="#maple" x="380" y="26" width="16" height="16"/>
+    <use href="#track" x="404" y="30" width="24" height="12"/>
+    <use href="#maple" x="432" y="26" width="16" height="16"/>
+    <use href="#track" x="456" y="30" width="24" height="12"/>
+    <use href="#maple" x="484" y="26" width="16" height="16"/>
+    <use href="#track" x="508" y="30" width="24" height="12"/>
+    <use href="#maple" x="536" y="26" width="16" height="16"/>
+  </g>
+  <!-- Corner maple leaves (large) -->
+  <use href="#maple" x="28" y="28" width="36" height="36"/>
+  <use href="#maple" x="548" y="28" width="36" height="36"/>
+  <use href="#maple" x="28" y="728" width="36" height="36"/>
+  <use href="#maple" x="548" y="728" width="36" height="36"/>
+
+  <!-- Side border repeats (simplified tracks) -->
+  <g transform="translate(30, 70)">
+    <use href="#track" x="0" y="0" width="20" height="10" transform="rotate(90 10 5)"/>
+    <use href="#maple" x="-2" y="28" width="14" height="14"/>
+    <use href="#track" x="0" y="52" width="20" height="10" transform="rotate(90 10 57)"/>
+    <use href="#maple" x="-2" y="80" width="14" height="14"/>
+    <use href="#track" x="0" y="104" width="20" height="10" transform="rotate(90 10 109)"/>
+    <use href="#maple" x="-2" y="132" width="14" height="14"/>
+    <use href="#track" x="0" y="156" width="20" height="10" transform="rotate(90 10 161)"/>
+    <use href="#maple" x="-2" y="184" width="14" height="14"/>
+    <use href="#track" x="0" y="208" width="20" height="10" transform="rotate(90 10 213)"/>
+    <use href="#maple" x="-2" y="236" width="14" height="14"/>
+    <use href="#track" x="0" y="260" width="20" height="10" transform="rotate(90 10 265)"/>
+    <use href="#maple" x="-2" y="288" width="14" height="14"/>
+    <use href="#track" x="0" y="312" width="20" height="10" transform="rotate(90 10 317)"/>
+    <use href="#maple" x="-2" y="340" width="14" height="14"/>
+    <use href="#track" x="0" y="364" width="20" height="10" transform="rotate(90 10 369)"/>
+    <use href="#maple" x="-2" y="392" width="14" height="14"/>
+    <use href="#track" x="0" y="416" width="20" height="10" transform="rotate(90 10 421)"/>
+    <use href="#maple" x="-2" y="444" width="14" height="14"/>
+    <use href="#track" x="0" y="468" width="20" height="10" transform="rotate(90 10 473)"/>
+    <use href="#maple" x="-2" y="496" width="14" height="14"/>
+    <use href="#track" x="0" y="520" width="20" height="10" transform="rotate(90 10 525)"/>
+    <use href="#maple" x="-2" y="548" width="14" height="14"/>
+    <use href="#track" x="0" y="572" width="20" height="10" transform="rotate(90 10 577)"/>
+    <use href="#maple" x="-2" y="600" width="14" height="14"/>
+  </g>
+  <g transform="translate(562, 70)">
+    <use href="#track" x="0" y="0" width="20" height="10" transform="rotate(90 10 5)"/>
+    <use href="#maple" x="-2" y="28" width="14" height="14"/>
+    <use href="#track" x="0" y="52" width="20" height="10" transform="rotate(90 10 57)"/>
+    <use href="#maple" x="-2" y="80" width="14" height="14"/>
+    <use href="#track" x="0" y="104" width="20" height="10" transform="rotate(90 10 109)"/>
+    <use href="#maple" x="-2" y="132" width="14" height="14"/>
+    <use href="#track" x="0" y="156" width="20" height="10" transform="rotate(90 10 161)"/>
+    <use href="#maple" x="-2" y="184" width="14" height="14"/>
+    <use href="#track" x="0" y="208" width="20" height="10" transform="rotate(90 10 213)"/>
+    <use href="#maple" x="-2" y="236" width="14" height="14"/>
+    <use href="#track" x="0" y="260" width="20" height="10" transform="rotate(90 10 265)"/>
+    <use href="#maple" x="-2" y="288" width="14" height="14"/>
+    <use href="#track" x="0" y="312" width="20" height="10" transform="rotate(90 10 317)"/>
+    <use href="#maple" x="-2" y="340" width="14" height="14"/>
+    <use href="#track" x="0" y="364" width="20" height="10" transform="rotate(90 10 369)"/>
+    <use href="#maple" x="-2" y="392" width="14" height="14"/>
+    <use href="#track" x="0" y="416" width="20" height="10" transform="rotate(90 10 421)"/>
+    <use href="#maple" x="-2" y="444" width="14" height="14"/>
+    <use href="#track" x="0" y="520" width="20" height="10" transform="rotate(90 10 525)"/>
+    <use href="#maple" x="-2" y="548" width="14" height="14"/>
+    <use href="#track" x="0" y="572" width="20" height="10" transform="rotate(90 10 577)"/>
+    <use href="#maple" x="-2" y="600" width="14" height="14"/>
+  </g>
+  <!-- Bottom border -->
+  <g transform="translate(40, 748)">
+    <use href="#track" x="0" y="0" width="24" height="12"/>
+    <use href="#maple" x="28" y="-4" width="16" height="16"/>
+    <use href="#track" x="52" y="0" width="24" height="12"/>
+    <use href="#maple" x="80" y="-4" width="16" height="16"/>
+    <use href="#track" x="104" y="0" width="24" height="12"/>
+    <use href="#maple" x="132" y="-4" width="16" height="16"/>
+    <use href="#track" x="156" y="0" width="24" height="12"/>
+    <use href="#maple" x="184" y="-4" width="16" height="16"/>
+    <use href="#track" x="208" y="0" width="24" height="12"/>
+    <use href="#maple" x="236" y="-4" width="16" height="16"/>
+    <use href="#track" x="260" y="0" width="24" height="12"/>
+    <use href="#maple" x="288" y="-4" width="16" height="16"/>
+    <use href="#track" x="312" y="0" width="24" height="12"/>
+    <use href="#maple" x="340" y="-4" width="16" height="16"/>
+    <use href="#track" x="364" y="0" width="24" height="12"/>
+    <use href="#maple" x="392" y="-4" width="16" height="16"/>
+    <use href="#track" x="416" y="0" width="24" height="12"/>
+    <use href="#maple" x="444" y="-4" width="16" height="16"/>
+    <use href="#track" x="468" y="0" width="24" height="12"/>
+  </g>
+
+  <!-- ========== TITLE BANNER ========== -->
+  <path d="M 80 52 Q 306 38 532 52 L 548 88 Q 306 102 64 88 Z" class="stroke-bold" fill="#fff"/>
+  <text x="306" y="78" text-anchor="middle" class="text-title">FIND THE PROVINCE GAME</text>
+  <!-- Stars flanking title -->
+  <path d="M 95 70 L 97 76 L 103 76 L 98 80 L 100 86 L 95 82 L 90 86 L 92 80 L 87 76 L 93 76 Z" class="stroke-thin" fill="#fff"/>
+  <path d="M 517 70 L 519 76 L 525 76 L 520 80 L 522 86 L 517 82 L 512 86 L 514 80 L 509 76 L 515 76 Z" class="stroke-thin" fill="#fff"/>
+
+  <!-- ========== INSTRUCTION BOX ========== -->
+  <rect x="148" y="98" width="316" height="32" rx="6" class="stroke-main" fill="#fff"/>
+  <!-- Pencil icon -->
+  <g transform="translate(158, 106)">
+    <path d="M 2 18 L 8 4 L 14 4 L 20 18 Z" class="stroke-thin" fill="#fff"/>
+    <path d="M 8 4 L 11 4 L 11 18 L 8 18 Z" class="stroke-thin" fill="#fff"/>
+    <path d="M 6 20 L 16 20" class="stroke-thin"/>
+  </g>
+  <text x="306" y="118" text-anchor="middle" class="text-label" font-size="10">COLOR AND MATCH THE PROVINCES!</text>
+
+  <!-- Step instructions -->
+  <text x="306" y="142" text-anchor="middle" class="text-small">1. Color each shape  2. Draw a line from 1-4 to A-D  3. Color them on the big map!</text>
+
+  <!-- Example match (dotted) -->
+  <g transform="translate(248, 148)">
+    <circle cx="8" cy="8" r="7" class="stroke-thin" fill="#fff"/>
+    <text x="8" y="11" text-anchor="middle" class="text-hint" font-size="8" font-weight="800">1</text>
+    <path d="M 18 8 L 58 8" class="stroke-dashed"/>
+    <circle cx="68" cy="8" r="7" class="stroke-thin" fill="#fff"/>
+    <text x="68" y="11" text-anchor="middle" class="text-hint" font-size="8" font-weight="800">A</text>
+    <text x="38" y="22" text-anchor="middle" class="text-hint">example</text>
+  </g>
+
+  <!-- ========== FADED CANADA MAP (background) ========== -->
+  <g transform="translate(156, 175) scale(0.92)" opacity="1">
+  <!-- Simplified Canada silhouette -->
+  <path class="fill-map" d="
+    M 120 20 L 200 15 L 280 25 L 300 40 L 310 80 L 305 120 L 295 160 L 280 200
+    L 270 240 L 250 280 L 230 300 L 200 310 L 170 305 L 140 290 L 110 270
+    L 90 240 L 75 200 L 70 160 L 75 120 L 85 80 L 95 50 Z
+  "/>
+  <!-- Highlight regions for the 4 provinces (dotted - color me!) -->
+  <path class="stroke-dashed" d="M 175 195 L 210 175 L 235 200 L 220 240 L 185 245 Z" opacity="0.6"/> <!-- ON hint -->
+  <path class="stroke-dashed" d="M 235 120 L 275 100 L 290 150 L 270 200 L 240 210 L 225 170 Z" opacity="0.6"/> <!-- QC -->
+  <path class="stroke-dashed" d="M 55 200 L 85 170 L 95 220 L 80 270 L 55 260 Z" opacity="0.6"/> <!-- BC -->
+  <path class="stroke-dashed" d="M 95 200 L 130 185 L 140 230 L 125 265 L 95 255 Z" opacity="0.6"/> <!-- AB -->
+  <text x="150" y="330" text-anchor="middle" class="text-hint" fill="#999" stroke="none">CANADA</text>
+  </g>
+
+  <!-- Scattered deco stars and leaves -->
+  <use href="#maple" x="130" y="200" width="12" height="12" opacity="0.9"/>
+  <use href="#maple" x="470" y="220" width="12" height="12"/>
+  <path d="M 420 180 L 422 184 L 426 184 L 423 187 L 424 191 L 420 188 L 416 191 L 417 187 L 414 184 L 418 184 Z" class="stroke-thin" fill="#fff"/>
+  <path d="M 180 380 L 182 384 L 186 384 L 183 387 L 184 391 L 180 388 L 176 391 L 177 387 L 174 384 L 178 384 Z" class="stroke-thin" fill="#fff"/>
+  <use href="#maple" x="455" y="400" width="10" height="10"/>
+  <use href="#maple" x="145" y="420" width="10" height="10"/>
+
+  <!-- ========== COLUMN HEADERS ========== -->
+  <rect x="52" y="168" width="200" height="22" rx="4" class="stroke-main" fill="#fff"/>
+  <text x="152" y="183" text-anchor="middle" class="text-label">CANADIAN PROVINCES</text>
+
+  <rect x="360" y="168" width="200" height="22" rx="4" class="stroke-main" fill="#fff"/>
+  <text x="460" y="183" text-anchor="middle" class="text-label">UNIQUE SHAPES</text>
+
+  <!-- Center prompt -->
+  <text x="306" y="400" text-anchor="middle" class="text-label" font-size="12">Draw a line to match!</text>
+
+  <!-- ========== LEFT COLUMN - PROVINCES ========== -->
+
+  <!-- 1 ONTARIO -->
+  <g transform="translate(52, 200)">
+    <circle cx="14" cy="14" r="12" class="stroke-main" fill="#fff"/>
+    <text x="14" y="18" text-anchor="middle" class="text-label" font-size="12">1</text>
+    <g transform="translate(36, 0)">
+      <path class="stroke-main" d="
+        M 20 55 L 35 20 L 70 15 L 95 25 L 105 50 L 100 75 L 85 95
+        L 60 100 L 40 90 L 25 75 L 15 55 Z
+      " fill="#fff"/>
+      <!-- Great Lakes detail -->
+      <path class="stroke-thin" d="M 45 45 Q 55 55 50 70 Q 42 62 45 45"/>
+      <path class="stroke-thin" d="M 70 40 Q 78 50 72 65"/>
+      <text x="55" y="118" text-anchor="middle" class="text-label">ONTARIO</text>
+    </g>
+  </g>
+
+  <!-- 2 QUEBEC -->
+  <g transform="translate(52, 318)">
+    <circle cx="14" cy="14" r="12" class="stroke-main" fill="#fff"/>
+    <text x="14" y="18" text-anchor="middle" class="text-label" font-size="12">2</text>
+    <g transform="translate(36, 0)">
+      <path class="stroke-main" d="
+        M 30 100 L 45 25 L 90 15 L 115 40 L 120 80 L 110 110
+        L 85 105 L 70 90 L 55 100 Z
+      " fill="#fff"/>
+      <path class="stroke-thin" d="M 55 50 L 75 45 L 80 70 L 60 75 Z"/>
+      <text x="70" y="118" text-anchor="middle" class="text-label">QUEBEC</text>
+    </g>
+  </g>
+
+  <!-- 3 BRITISH COLUMBIA -->
+  <g transform="translate(52, 436)">
+    <circle cx="14" cy="14" r="12" class="stroke-main" fill="#fff"/>
+    <text x="14" y="18" text-anchor="middle" class="text-label" font-size="12">3</text>
+    <g transform="translate(36, 0)">
+      <path class="stroke-main" d="
+        M 15 95 L 25 30 L 55 15 L 75 25 L 85 55 L 80 85 L 65 100
+        L 40 105 L 20 100 Z
+      " fill="#fff"/>
+      <!-- Coast + mountains inside -->
+      <path class="stroke-thin" d="M 25 50 L 35 40 L 45 55 L 35 70"/>
+      <path class="stroke-thin" d="M 50 55 L 58 42 L 66 58 L 58 72"/>
+      <text x="52" y="118" text-anchor="middle" class="text-label" font-size="9">BRITISH COLUMBIA</text>
+    </g>
+  </g>
+
+  <!-- 4 ALBERTA -->
+  <g transform="translate(52, 554)">
+    <circle cx="14" cy="14" r="12" class="stroke-main" fill="#fff"/>
+    <text x="14" y="18" text-anchor="middle" class="text-label" font-size="12">4</text>
+    <g transform="translate(36, 0)">
+      <path class="stroke-main" d="
+        M 25 100 L 30 25 L 85 20 L 95 55 L 90 95 L 70 105 L 35 105 Z
+      " fill="#fff"/>
+      <!-- Foothills -->
+      <path class="stroke-thin" d="M 35 70 Q 50 60 65 70 Q 80 62 88 75"/>
+      <text x="60" y="118" text-anchor="middle" class="text-label">ALBERTA</text>
+    </g>
+  </g>
+
+  <!-- ========== RIGHT COLUMN - ICONS (shuffled: C, A, D, B order visually but letters fixed) ========== -->
+  <!-- A CN Tower - Ontario -->
+  <g transform="translate(360, 200)">
+    <circle cx="14" cy="14" r="12" class="stroke-main" fill="#fff"/>
+    <text x="14" y="18" text-anchor="middle" class="text-label" font-size="12">A</text>
+    <g transform="translate(30, 8)">
+      <!-- CN Tower -->
+      <path class="stroke-main" d="M 58 100 L 62 35 L 66 100 Z" fill="#fff"/>
+      <path class="stroke-main" d="M 48 55 L 76 55 L 74 62 L 50 62 Z" fill="#fff"/>
+      <path class="stroke-main" d="M 52 70 L 72 70 L 70 78 L 54 78 Z" fill="#fff"/>
+      <circle cx="62" cy="28" r="5" class="stroke-thin" fill="#fff"/>
+      <path class="stroke-thin" d="M 40 100 L 84 100"/>
+      <text x="62" y="118" text-anchor="middle" class="text-hint">Tall tower city</text>
+    </g>
+  </g>
+
+  <!-- B Fleur-de-lis - Quebec -->
+  <g transform="translate(360, 318)">
+    <circle cx="14" cy="14" r="12" class="stroke-main" fill="#fff"/>
+    <text x="14" y="18" text-anchor="middle" class="text-label" font-size="12">B</text>
+    <g transform="translate(38, 10)">
+      <path class="stroke-main" d="
+        M 62 25 C 62 25 58 45 48 50 C 58 48 62 55 62 65
+        C 62 55 66 48 76 50 C 66 45 62 25 62 25 Z
+        M 62 65 L 62 95
+        M 52 75 L 72 75
+        M 48 88 L 76 88
+      " fill="#fff"/>
+      <text x="62" y="118" text-anchor="middle" class="text-hint">Flag flower symbol</text>
+    </g>
+  </g>
+
+  <!-- C Mountain + tree - BC -->
+  <g transform="translate(360, 436)">
+    <circle cx="14" cy="14" r="12" class="stroke-main" fill="#fff"/>
+    <text x="14" y="18" text-anchor="middle" class="text-label" font-size="12">C</text>
+    <g transform="translate(28, 8)">
+      <path class="stroke-main" d="M 62 95 L 30 50 L 94 50 Z" fill="#fff"/>
+      <path class="stroke-main" d="M 30 50 L 62 25 L 94 50" fill="#fff"/>
+      <!-- Snow cap -->
+      <path class="stroke-thin" d="M 48 42 L 62 28 L 76 42 L 70 50 L 54 50 Z" fill="#fff"/>
+      <!-- Evergreen -->
+      <path class="stroke-main" d="M 18 95 L 18 70 L 12 70 L 22 55 L 28 70 L 22 70 L 22 95" fill="#fff"/>
+      <path class="stroke-thin" d="M 8 95 L 32 95"/>
+      <text x="62" y="118" text-anchor="middle" class="text-hint">Mountains &amp; forest</text>
+    </g>
+  </g>
+
+  <!-- D Oil derrick - Alberta -->
+  <g transform="translate(360, 554)">
+    <circle cx="14" cy="14" r="12" class="stroke-main" fill="#fff"/>
+    <text x="14" y="18" text-anchor="middle" class="text-label" font-size="12">D</text>
+    <g transform="translate(32, 8)">
+      <!-- Oil pump jack -->
+      <path class="stroke-main" d="M 35 95 L 90 95" />
+      <path class="stroke-main" d="M 50 95 L 50 75 L 75 55 L 85 75 L 70 75 L 70 50" fill="none"/>
+      <path class="stroke-main" d="M 70 50 L 70 35 L 55 35" fill="none"/>
+      <circle cx="70" cy="50" r="4" class="stroke-thin" fill="#fff"/>
+      <path class="stroke-thin" d="M 78 60 L 95 45 L 95 55 L 78 68" fill="none"/>
+      <text x="62" y="118" text-anchor="middle" class="text-hint">Energy &amp; prairies</text>
+    </g>
+  </g>
+
+  <!-- ========== FUN FACT BUBBLES (post-match learning) ========== -->
+  <g transform="translate(200, 680)">
+    <ellipse cx="106" cy="22" rx="100" ry="20" class="stroke-thin" fill="#fff"/>
+    <text x="106" y="20" text-anchor="middle" class="text-hint">Match all 4, then find each province on the map!</text>
+  </g>
+
+  <!-- ========== BONUS BOX ========== -->
+  <rect x="430" y="678" width="140" height="48" rx="4" class="stroke-thin" fill="#fff"/>
+  <text x="500" y="694" text-anchor="middle" class="text-hint" font-weight="800">BONUS</text>
+  <text x="500" y="706" text-anchor="middle" class="text-hint">Draw a symbol for</text>
+  <text x="500" y="718" text-anchor="middle" class="text-hint">another province!</text>
+
+  <!-- ========== FOOTER ========== -->
+  <rect x="276" y="738" width="60" height="22" rx="3" class="stroke-main" fill="#fff"/>
+  <text x="306" y="753" text-anchor="middle" class="text-label">40</text>
+</svg>

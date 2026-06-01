@@ -42,6 +42,7 @@ from core import (
     filter_uncorrelated_picks,
     select_entry_candidates,
     momentum_entry_notional,
+    history_bars_from_qc,
     load_optimized_ensemble_weights,
     select_universe,
 )
@@ -591,7 +592,12 @@ class KrakenMaxAlgorithm(QCAlgorithm):
                         "high": float(row[cols.get("high", "high")]),
                         "low": float(row[cols.get("low", "low")]),
                         "close": float(row[cols.get("close", "close")]),
-                        "volume": float(row.get(cols.get("volume", "volume"), 1000.0) or 1000.0),
+                        "volume": float(
+                            row.get(cols["volume"], 1000.0)
+                            if cols.get("volume") is not None
+                            else 1000.0
+                        )
+                        or 1000.0,
                     }
                 )
         if not rows:
@@ -619,20 +625,7 @@ class KrakenMaxAlgorithm(QCAlgorithm):
             hist = self.History(sym, start, end, Resolution.Hour)
         except Exception:
             return pd.DataFrame()
-        if hist is None or hist.empty:
-            return pd.DataFrame()
-        if isinstance(hist.index, pd.MultiIndex):
-            hist = hist.reset_index()
-        cols = {c.lower(): c for c in hist.columns}
-        return pd.DataFrame(
-            {
-                "open": hist[cols.get("open", "open")],
-                "high": hist[cols.get("high", "high")],
-                "low": hist[cols.get("low", "low")],
-                "close": hist[cols.get("close", "close")],
-                "volume": hist[cols.get("volume", "volume")],
-            }
-        ).dropna()
+        return history_bars_from_qc(hist)
 
     def _btc_returns(self) -> tuple[float, float]:
         btc = self.feature_cache.features("BTCUSD")
